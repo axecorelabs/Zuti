@@ -1,17 +1,20 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Upload, Link as LinkIcon, BookOpen, X } from 'lucide-react';
+import { Upload, Link as LinkIcon, BookOpen, X, FileText } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, orgsApi } from '@/lib/api';
 
-type TabType = 'file' | 'url';
+type TabType = 'file' | 'url' | 'text';
 
 export default function KnowledgePage() {
   const [orgId, setOrgId] = useState<string | null>(null);
   const [tab, setTab] = useState<TabType>('file');
   const [url, setUrl] = useState('');
+  const [urlName, setUrlName] = useState('');
   const [file, setFile] = useState<File | null>(null);
+  const [textName, setTextName] = useState('');
+  const [textContent, setTextContent] = useState('');
   const [loading, setLoading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -27,14 +30,34 @@ export default function KnowledgePage() {
     if (!orgId || !url) return;
     setLoading(true);
     try {
-      await api.post('/knowledge/ingest/url', {
+      await api.post(`/organizations/${orgId}/knowledge/ingest/url`, {
         url,
-        organization_id: orgId,
+        name: urlName || url,
       });
       toast.success('URL ingested successfully');
       setUrl('');
+      setUrlName('');
     } catch {
       toast.error('Failed to ingest URL');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleIngestText = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orgId || !textContent.trim()) return;
+    setLoading(true);
+    try {
+      await api.post(`/organizations/${orgId}/knowledge/ingest/text`, {
+        name: textName || 'Company writeup',
+        text: textContent,
+      });
+      toast.success('Text ingested successfully');
+      setTextName('');
+      setTextContent('');
+    } catch {
+      toast.error('Failed to ingest text');
     } finally {
       setLoading(false);
     }
@@ -46,9 +69,9 @@ export default function KnowledgePage() {
     setLoading(true);
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('organization_id', orgId);
+    formData.append('name', file.name);
     try {
-      await api.post('/knowledge/ingest/file', formData, {
+      await api.post(`/organizations/${orgId}/knowledge/ingest/file`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       toast.success('File ingested successfully');
@@ -67,7 +90,7 @@ export default function KnowledgePage() {
           Knowledge Base
         </h1>
         <p className="mt-1 text-sm text-zinc-500 font-light">
-          Train your AI with documents and URLs.
+          Train your AI with documents, URLs, or text writeups.
         </p>
       </div>
 
@@ -80,7 +103,7 @@ export default function KnowledgePage() {
 
           {/* Tabs */}
           <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 mb-6">
-            {(['file', 'url'] as TabType[]).map((t) => (
+            {(['file', 'url', 'text'] as TabType[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -90,8 +113,10 @@ export default function KnowledgePage() {
               >
                 {t === 'file' ? (
                   <><Upload className="w-3.5 h-3.5" /> Upload file</>
-                ) : (
+                ) : t === 'url' ? (
                   <><LinkIcon className="w-3.5 h-3.5" /> From URL</>
+                ) : (
+                  <><FileText className="w-3.5 h-3.5" /> Write text</>
                 )}
               </button>
             ))}
@@ -99,6 +124,18 @@ export default function KnowledgePage() {
 
           {tab === 'url' ? (
             <form onSubmit={handleIngestUrl} className="space-y-4">
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
+                  Name (optional)
+                </label>
+                <input
+                  type="text"
+                  value={urlName}
+                  onChange={(e) => setUrlName(e.target.value)}
+                  className="input-base"
+                  placeholder="e.g. FAQ page"
+                />
+              </div>
               <div>
                 <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
                   URL to scrape
@@ -118,6 +155,42 @@ export default function KnowledgePage() {
                 className="btn-primary w-full py-2.5 text-sm"
               >
                 {loading ? 'Ingesting…' : 'Ingest URL'}
+              </button>
+            </form>
+          ) : tab === 'text' ? (
+            <form onSubmit={handleIngestText} className="space-y-4">
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
+                  Name
+                </label>
+                <input
+                  type="text"
+                  value={textName}
+                  onChange={(e) => setTextName(e.target.value)}
+                  className="input-base"
+                  placeholder="e.g. Company overview"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
+                  Content
+                </label>
+                <textarea
+                  required
+                  value={textContent}
+                  onChange={(e) => setTextContent(e.target.value)}
+                  rows={10}
+                  className="input-base resize-none"
+                  placeholder="Paste your company writeup, FAQ, product info, or any text you want the AI to know about…"
+                />
+                <p className="text-xs text-zinc-700 mt-1">{textContent.length} characters</p>
+              </div>
+              <button
+                type="submit"
+                disabled={loading || !textContent.trim()}
+                className="btn-primary w-full py-2.5 text-sm"
+              >
+                {loading ? 'Processing…' : 'Save & ingest'}
               </button>
             </form>
           ) : (
@@ -183,8 +256,8 @@ export default function KnowledgePage() {
             {[
               {
                 n: '01',
-                title: 'Upload your content',
-                desc: 'Add PDF documents, DOCX files, or URLs with product info, FAQs, or support docs.',
+                title: 'Add your content',
+                desc: 'Upload PDF/DOCX files, scrape a URL, or paste a text writeup with product info, FAQs, or support docs.',
               },
               {
                 n: '02',

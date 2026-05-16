@@ -12,6 +12,13 @@ class IngestUrlRequest(BaseModel):
     name: str
 
 
+class IngestTextRequest(BaseModel):
+    organization_id: str
+    knowledge_file_id: str
+    name: str
+    text: str
+
+
 class IngestStatusResponse(BaseModel):
     knowledge_file_id: str
     status: str
@@ -25,6 +32,23 @@ async def ingest_url(request: IngestUrlRequest):
             organization_id=request.organization_id,
             knowledge_file_id=request.knowledge_file_id,
             url=request.url,
+        )
+        return IngestStatusResponse(
+            knowledge_file_id=request.knowledge_file_id,
+            status="completed",
+            chunk_count=chunk_count,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ingest/text", response_model=IngestStatusResponse)
+async def ingest_text(request: IngestTextRequest):
+    try:
+        chunk_count = await ingestion_service.ingest_plain_text(
+            organization_id=request.organization_id,
+            knowledge_file_id=request.knowledge_file_id,
+            text=request.text,
         )
         return IngestStatusResponse(
             knowledge_file_id=request.knowledge_file_id,

@@ -55,6 +55,14 @@ class IngestionService:
 
         return await self._ingest_text(organization_id, knowledge_file_id, text)
 
+    async def ingest_plain_text(
+        self,
+        organization_id: str,
+        knowledge_file_id: str,
+        text: str,
+    ) -> int:
+        return await self._ingest_text(organization_id, knowledge_file_id, text)
+
     async def ingest_bytes(
         self,
         organization_id: str,

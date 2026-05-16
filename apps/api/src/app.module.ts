@@ -9,6 +9,7 @@ import { QueueModule } from './modules/queue/queue.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
 import { EventsModule } from './modules/events/events.module';
+import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 
 @Module({
@@ -22,6 +23,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
     QueueModule,
     WebhooksModule,
     ConversationsModule,
+    KnowledgeModule,
   ],
   providers: [
     // Apply JWT guard globally — use @Public() to opt out
