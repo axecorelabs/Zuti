@@ -83,3 +83,4 @@ services:
     name: zuti-redis
     plan: free
     maxmemoryPolicy: noeviction
+    ipAllowList: []   # empty = only Render internal services can connect
