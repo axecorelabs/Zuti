@@ -6,12 +6,12 @@ export class CreateBotDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(100)
-  name: string;
+  declare name: string;
 
   @ApiProperty({ example: '123456:ABC-DEF...' })
   @IsString()
   @IsNotEmpty()
-  telegramToken: string;
+  declare telegramToken: string;
 }
 
 export class UpdateBotDto {

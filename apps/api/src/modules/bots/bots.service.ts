@@ -104,8 +104,8 @@ export class BotsService {
     return { webhookUrl, telegramResponse: (res as any).data };
   }
 
-  async deleteWebhook(telegramToken: string) {
-    return firstValueFrom(
+  async deleteWebhook(telegramToken: string): Promise<void> {
+    await firstValueFrom(
       this.http.post(`https://api.telegram.org/bot${telegramToken}/deleteWebhook`),
     );
   }

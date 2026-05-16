@@ -6,18 +6,18 @@ export class CreateOrganizationDto {
   @IsString()
   @MinLength(2)
   @MaxLength(100)
-  name: string;
+  declare name: string;
 
   @ApiProperty({ example: 'acme-corp' })
   @IsString()
   @MinLength(2)
   @MaxLength(50)
   @Matches(/^[a-z0-9-]+$/, { message: 'Slug can only contain lowercase letters, numbers, and hyphens' })
-  slug: string;
+  declare slug: string;
 }
 
 export class InviteMemberDto {
   @ApiProperty({ example: 'jane@example.com' })
   @IsString()
-  email: string;
+  declare email: string;
 }

@@ -117,8 +117,9 @@ export class TelegramProcessor {
           text: aiText,
         }),
       );
-    } catch (err) {
-      this.logger.error(`AI service error for conversation ${conversationId}: ${err.message}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`AI service error for conversation ${conversationId}: ${msg}`);
     }
   }
 }

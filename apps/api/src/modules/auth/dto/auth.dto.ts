@@ -5,24 +5,24 @@ export class RegisterDto {
   @ApiProperty({ example: 'John Doe' })
   @IsString()
   @MaxLength(100)
-  name: string;
+  declare name: string;
 
   @ApiProperty({ example: 'john@example.com' })
   @IsEmail()
-  email: string;
+  declare email: string;
 
   @ApiProperty({ example: 'strongpassword' })
   @IsString()
   @MinLength(8)
-  password: string;
+  declare password: string;
 }
 
 export class LoginDto {
   @ApiProperty({ example: 'john@example.com' })
   @IsEmail()
-  email: string;
+  declare email: string;
 
   @ApiProperty({ example: 'strongpassword' })
   @IsString()
-  password: string;
+  declare password: string;
 }
