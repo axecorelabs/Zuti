@@ -1,0 +1,85 @@
+services:
+  # ── Next.js Frontend ────────────────────────────────────────────────────────
+  - type: web
+    name: zuti-web
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install -g pnpm@9 && pnpm install --frozen-lockfile && cd apps/web && pnpm build
+    startCommand: cd apps/web && pnpm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        fromService:
+          name: zuti-api
+          type: web
+          property: host
+          # Render provides hostport; prepend https:// in your dashboard manually
+          # or set this manually to the zuti-api public URL after first deploy
+
+  # ── NestJS API ──────────────────────────────────────────────────────────────
+  - type: web
+    name: zuti-api
+    runtime: node
+    plan: free
+    rootDir: .
+    buildCommand: npm install -g pnpm@9 && pnpm install --frozen-lockfile && cd apps/api && pnpm build
+    startCommand: node apps/api/dist/main.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        sync: false         # Set in Render dashboard
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: REDIS_URL
+        fromService:
+          name: zuti-redis
+          type: redis
+          property: connectionString
+      - key: AI_SERVICE_URL
+        sync: false         # Set to zuti-ai-service public URL after first deploy
+      - key: WEBHOOK_BASE_URL
+        sync: false         # Set to zuti-api public URL after first deploy
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false         # Set to Qdrant Cloud URL
+      - key: QDRANT_API_KEY
+        sync: false
+
+  # ── Python AI Service ────────────────────────────────────────────────────────
+  - type: web
+    name: zuti-ai-service
+    runtime: python
+    plan: free
+    rootDir: apps/ai-service
+    buildCommand: pip install uv && uv sync --no-dev
+    startCommand: uv run uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          name: zuti-redis
+          type: redis
+          property: connectionString
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  - type: redis
+    name: zuti-redis
+    plan: free
+    maxmemoryPolicy: noeviction
