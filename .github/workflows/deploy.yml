@@ -38,7 +38,7 @@ jobs:
 
             # Rebuild web (with production env baked in)
             rm -rf apps/web/.next
-            cd apps/web && npx pnpm@9 run build && cd ../..
+            cd apps/web && NEXT_PUBLIC_API_URL=https://zuti-api.bords.app npx pnpm@9 run build && cd ../..
 
             # Restart services
             pm2 restart zuti-api zuti-web zuti-ai
