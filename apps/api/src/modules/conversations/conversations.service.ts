@@ -2,7 +2,6 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
-import { EventsGateway } from '../events/events.gateway';
 
 interface FindAllFilters {
   status?: string;
@@ -15,7 +14,6 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
-    private readonly events: EventsGateway,
   ) {}
 
   async findAll(organizationId: string, filters: FindAllFilters) {
@@ -107,9 +105,6 @@ export class ConversationsService {
       where: { id: conversationId },
       data: { lastMessageAt: new Date() },
     });
-
-    // Emit to other connected clients (e.g. other agent tabs)
-    this.events.emitNewMessage(organizationId, { conversationId, message });
 
     return message;
   }
