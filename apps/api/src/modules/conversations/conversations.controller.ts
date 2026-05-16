@@ -1,4 +1,13 @@
-import { Controller, Get, Param, Query, Body, Patch, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Param, Query, Body, Patch, Post, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { IsString, IsNotEmpty } from 'class-validator';
+import { ApiProperty } from '@nestjs/swagger';
+
+class SendMessageDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  declare content: string;
+}
 import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -62,5 +71,15 @@ export class ConversationsController {
     @CurrentUser() user: { id: string },
   ) {
     return this.service.update(orgId, conversationId, dto, user.id);
+  }
+
+  @Post(':conversationId/messages')
+  @ApiOperation({ summary: 'Send a message as agent (HUMAN mode only)' })
+  sendMessage(
+    @Param('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Body() dto: SendMessageDto,
+  ) {
+    return this.service.sendMessage(orgId, conversationId, dto.content);
   }
 }

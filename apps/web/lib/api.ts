@@ -71,4 +71,6 @@ export const conversationsApi = {
     api.get(`/organizations/${orgId}/conversations/${convId}`),
   update: (orgId: string, convId: string, data: Record<string, unknown>) =>
     api.patch(`/organizations/${orgId}/conversations/${convId}`, data),
+  sendMessage: (orgId: string, convId: string, content: string) =>
+    api.post(`/organizations/${orgId}/conversations/${convId}/messages`, { content }),
 };

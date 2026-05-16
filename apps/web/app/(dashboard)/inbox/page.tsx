@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { MessageSquare, User, Clock, Circle } from 'lucide-react';
+import { MessageSquare, User, Send } from 'lucide-react';
 import { conversationsApi, orgsApi } from '@/lib/api';
 
 interface Conversation {
@@ -45,6 +45,9 @@ export default function InboxPage() {
   const [selected, setSelected] = useState<Conversation | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'ALL' | 'OPEN' | 'ESCALATED'>('OPEN');
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -92,6 +95,23 @@ export default function InboxPage() {
     setConversations((prev) =>
       prev.map((c) => (c.id === selected.id ? { ...c, status: 'RESOLVED' } : c)),
     );
+  };
+
+  const handleSend = async () => {
+    if (!orgId || !selected || !reply.trim() || sending) return;
+    setSending(true);
+    try {
+      const res = await conversationsApi.sendMessage(orgId, selected.id, reply.trim());
+      setReply('');
+      setSelected((prev) =>
+        prev ? { ...prev, messages: [...(prev.messages ?? []), res.data] } : prev,
+      );
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    } catch {
+      // ignore
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -237,7 +257,31 @@ export default function InboxPage() {
                   </div>
                 );
               })}
+              <div ref={messagesEndRef} />
             </div>
+
+            {/* Reply input — only in HUMAN mode */}
+            {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' && (
+              <div className="px-6 py-4 border-t border-zinc-900 flex gap-3 items-end">
+                <textarea
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+                  }}
+                  placeholder="Type a message... (Enter to send)"
+                  rows={2}
+                  className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none focus:border-zinc-600"
+                />
+                <button
+                  onClick={handleSend}
+                  disabled={!reply.trim() || sending}
+                  className="btn-primary p-3 rounded-xl disabled:opacity-40"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            )}
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center">

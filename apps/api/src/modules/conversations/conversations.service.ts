@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { HttpService } from '@nestjs/axios';
+import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 
 interface FindAllFilters {
@@ -9,7 +11,10 @@ interface FindAllFilters {
 
 @Injectable()
 export class ConversationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly http: HttpService,
+  ) {}
 
   async findAll(organizationId: string, filters: FindAllFilters) {
     return this.prisma.conversation.findMany({
@@ -66,5 +71,41 @@ export class ConversationsService {
         assignedAgent: { select: { id: true, name: true, email: true } },
       },
     });
+  }
+
+  async sendMessage(organizationId: string, conversationId: string, content: string) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId },
+      include: { bot: true },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+    if (conversation.mode !== 'HUMAN') {
+      throw new BadRequestException('Can only send messages in HUMAN mode');
+    }
+
+    // Save message to DB
+    const message = await this.prisma.message.create({
+      data: {
+        conversationId,
+        role: 'AGENT',
+        content,
+      },
+    });
+
+    // Send via Telegram
+    await firstValueFrom(
+      this.http.post(
+        `https://api.telegram.org/bot${conversation.bot.telegramToken}/sendMessage`,
+        { chat_id: conversation.telegramChatId, text: content },
+      ),
+    ).catch(() => null);
+
+    // Update lastMessageAt
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { lastMessageAt: new Date() },
+    });
+
+    return message;
   }
 }
