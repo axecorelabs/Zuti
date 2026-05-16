@@ -24,7 +24,7 @@ services:
     runtime: node
     plan: free
     rootDir: .
-    buildCommand: npx pnpm@9 install --frozen-lockfile && cd packages/database && npx pnpm@9 exec prisma generate && cd ../../apps/api && npx pnpm@9 run build
+    buildCommand: npx pnpm@9 install --frozen-lockfile && npx prisma generate --schema=packages/database/prisma/schema.prisma && cd apps/api && npx pnpm@9 run build
     startCommand: node apps/api/dist/main.js
     envVars:
       - key: NODE_ENV
