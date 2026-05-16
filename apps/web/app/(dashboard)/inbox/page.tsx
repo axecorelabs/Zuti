@@ -97,8 +97,10 @@ export default function InboxPage() {
   useEffect(() => {
     if (!orgId) return;
 
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-    const socket = io(apiUrl, { path: '/ws', transports: ['websocket'] });
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+    // Ensure it's a valid absolute URL
+    const socketUrl = apiUrl.startsWith('http') ? apiUrl : `http://${apiUrl}`;
+    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'] });
     socketRef.current = socket;
 
     socket.on('connect', () => {

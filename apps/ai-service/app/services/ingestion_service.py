@@ -32,7 +32,7 @@ class IngestionService:
         from qdrant_client import AsyncQdrantClient
         from qdrant_client.models import Distance, VectorParams
 
-        client = AsyncQdrantClient(url=settings.QDRANT_URL)
+        client = AsyncQdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
         collection = _collection(organization_id)
         existing = [c.name for c in (await client.get_collections()).collections]
         if collection not in existing:
