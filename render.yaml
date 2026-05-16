@@ -5,8 +5,8 @@ services:
     runtime: node
     plan: free
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && cd apps/web && pnpm build
-    startCommand: cd apps/web && pnpm start
+    buildCommand: npx pnpm@9 install --frozen-lockfile && cd apps/web && npx pnpm@9 run build
+    startCommand: cd apps/web && npx pnpm@9 start
     envVars:
       - key: NODE_ENV
         value: production
@@ -24,7 +24,7 @@ services:
     runtime: node
     plan: free
     rootDir: .
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && cd apps/api && pnpm build
+    buildCommand: npx pnpm@9 install --frozen-lockfile && cd apps/api && npx pnpm@9 run build
     startCommand: node apps/api/dist/main.js
     envVars:
       - key: NODE_ENV
