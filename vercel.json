@@ -1,5 +1,0 @@
-{
-  "buildCommand": "cd ../.. && npx pnpm@9 install --frozen-lockfile && npx turbo run build --filter=@zuti/web...",
-  "outputDirectory": ".next",
-  "framework": "nextjs"
-}

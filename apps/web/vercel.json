@@ -1,0 +1,6 @@
+{
+  "installCommand": "cd ../.. && npx pnpm@9 install --frozen-lockfile",
+  "buildCommand": "cd ../.. && npx pnpm@9 run --filter=@zuti/web build",
+  "outputDirectory": ".next",
+  "framework": "nextjs"
+}
