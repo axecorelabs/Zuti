@@ -1,6 +1,5 @@
 {
   "buildCommand": "turbo run build --filter=@zuti/web...",
   "installCommand": "npx pnpm@9 install --frozen-lockfile",
-  "outputDirectory": "apps/web/.next",
-  "framework": "nextjs"
+  "outputDirectory": "apps/web/.next"
 }
