@@ -46,9 +46,10 @@ export class TelegramProcessor {
       .filter(Boolean)
       .join(' ') || message.from.username || String(message.from.id);
 
-    // Check for existing conversation
-    const existing = await this.prisma.conversation.findUnique({
-      where: { botId_telegramChatId: { botId, telegramChatId } },
+    // Check for the most recent conversation for this customer
+    const existing = await this.prisma.conversation.findFirst({
+      where: { botId, telegramChatId },
+      orderBy: { createdAt: 'desc' },
     });
 
     let conversation: Awaited<ReturnType<typeof this.prisma.conversation.create>>;

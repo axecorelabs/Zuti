@@ -146,7 +146,7 @@ model Conversation {
   messages         Message[]
   escalations      Escalation[]
 
-  @@unique([botId, telegramChatId])
+  @@index([botId, telegramChatId])
 }
 
 model Message {
