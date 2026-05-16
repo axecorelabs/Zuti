@@ -19,6 +19,10 @@ jobs:
             set -e
             cd /var/www/Zuti
 
+            # Discard any locally generated files before pulling
+            git checkout -- .
+            git clean -fd
+
             # Pull latest code
             git pull origin main
 

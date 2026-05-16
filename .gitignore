@@ -8,6 +8,7 @@ dist/
 out/
 build/
 .turbo/
+*.tsbuildinfo
 
 # Python
 __pycache__/
