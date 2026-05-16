@@ -52,11 +52,16 @@ export default function InboxPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  const filterRef = useRef(filter);
 
-  // Keep ref in sync with selected id for use inside socket callbacks
+  // Keep refs in sync with state for use inside socket callbacks
   useEffect(() => {
     selectedIdRef.current = selected?.id ?? null;
   }, [selected?.id]);
+
+  useEffect(() => {
+    filterRef.current = filter;
+  }, [filter]);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -112,17 +117,24 @@ export default function InboxPage() {
         setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
         return { ...prev, messages: [...(prev.messages ?? []), payload.message] };
       });
-      setConversations((prev) =>
-        prev.map((c) =>
+      setConversations((prev) => {
+        const updated = prev.map((c) =>
           c.id === payload.conversationId
             ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }
             : c,
-        ),
-      );
+        );
+        // Bubble the updated conversation to the top
+        return [...updated].sort(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        );
+      });
     });
 
     // New conversation created (e.g. resolved customer re-opens)
     socket.on('conversation:new', (conv: Conversation) => {
+      // Only add if it matches the current filter
+      const f = filterRef.current;
+      if (f !== 'ALL' && conv.status !== f) return;
       setConversations((prev) => {
         if (prev.some((c) => c.id === conv.id)) return prev;
         return [conv, ...prev];

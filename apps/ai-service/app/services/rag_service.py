@@ -24,15 +24,17 @@ class RagService:
         message: str,
         top_k: int = 5,
     ) -> tuple[str, list[dict]]:
-        # 1. Embed the user message
-        query_vector = await embedding_service.embed(message)
-
-        # 2. Search Qdrant for relevant chunks
+        # 1. Try RAG (embed + Qdrant search) — degrade gracefully if unavailable
         sources: list[dict] = []
         context = ""
         try:
+            query_vector = await embedding_service.embed(message)
+
             from qdrant_client import AsyncQdrantClient
-            client = AsyncQdrantClient(url=settings.QDRANT_URL)
+            client = AsyncQdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY or None,
+            )
             collection = _collection(organization_id)
 
             results = await client.search(
@@ -48,9 +50,9 @@ class RagService:
 
             context = "\n\n".join(s["content"] for s in sources)
         except Exception as e:
-            logger.warning(f"Qdrant search failed (continuing without context): {e}")
+            logger.warning(f"RAG search failed (continuing without context): {e}")
 
-        # 3. Generate reply
+        # 2. Generate reply
         reply = await llm_service.generate(
             user_message=message,
             context=context,
