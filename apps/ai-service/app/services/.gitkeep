@@ -1,0 +1,7 @@
+# app/services/
+#   rag_service.py        — retrieval + prompt assembly
+#   embedding_service.py  — generate and store embeddings
+#   llm_service.py        — LLM provider abstraction
+#   memory_service.py     — short/long-term conversation memory
+#   escalation_service.py — confidence scoring + escalation logic
+#   ingestion_service.py  — document chunking pipeline

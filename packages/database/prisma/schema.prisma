@@ -1,0 +1,241 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  passwordHash  String
+  name          String?
+  avatarUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  memberships   OrganizationMember[]
+  assignedConversations Conversation[] @relation("AssignedAgent")
+}
+
+// ─── Organizations ────────────────────────────────────────────────────────────
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logoUrl     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     OrganizationMember[]
+  bots        Bot[]
+  knowledgeFiles KnowledgeFile[]
+  conversations  Conversation[]
+  integrations   Integration[]
+  billing        Billing?
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           MemberRole @default(AGENT)
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  AGENT
+}
+
+// ─── Bots ─────────────────────────────────────────────────────────────────────
+
+model Bot {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  telegramToken  String   @unique
+  telegramUsername String?
+  webhookSet     Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  aiConfig       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversations  Conversation[]
+}
+
+// ─── Knowledge Base ───────────────────────────────────────────────────────────
+
+model KnowledgeFile {
+  id             String            @id @default(cuid())
+  organizationId String
+  name           String
+  type           KnowledgeFileType
+  url            String?
+  storageKey     String?
+  status         ProcessingStatus  @default(PENDING)
+  chunkCount     Int               @default(0)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization   Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  chunks         KnowledgeChunk[]
+}
+
+model KnowledgeChunk {
+  id              String   @id @default(cuid())
+  knowledgeFileId String
+  content         String
+  metadata        Json     @default("{}")
+  qdrantPointId   String?
+  createdAt       DateTime @default(now())
+
+  file            KnowledgeFile @relation(fields: [knowledgeFileId], references: [id], onDelete: Cascade)
+}
+
+enum KnowledgeFileType {
+  PDF
+  DOCX
+  TXT
+  URL
+  FAQ
+}
+
+enum ProcessingStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+// ─── Conversations ────────────────────────────────────────────────────────────
+
+model Conversation {
+  id               String             @id @default(cuid())
+  organizationId   String
+  botId            String
+  telegramChatId   String
+  customerName     String?
+  customerUsername String?
+  status           ConversationStatus @default(OPEN)
+  mode             ConversationMode   @default(AI)
+  assignedAgentId  String?
+  priority         Priority           @default(NORMAL)
+  tags             String[]
+  metadata         Json               @default("{}")
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  lastMessageAt    DateTime?
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bot              Bot          @relation(fields: [botId], references: [id])
+  assignedAgent    User?        @relation("AssignedAgent", fields: [assignedAgentId], references: [id])
+  messages         Message[]
+  escalations      Escalation[]
+
+  @@unique([botId, telegramChatId])
+}
+
+model Message {
+  id             String      @id @default(cuid())
+  conversationId String
+  role           MessageRole
+  content        String
+  telegramMsgId  Int?
+  metadata       Json        @default("{}")
+  createdAt      DateTime    @default(now())
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+enum ConversationStatus {
+  OPEN
+  PENDING
+  RESOLVED
+  ESCALATED
+}
+
+enum ConversationMode {
+  AI
+  HUMAN
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  AGENT
+}
+
+enum Priority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+// ─── Escalations ─────────────────────────────────────────────────────────────
+
+model Escalation {
+  id             String          @id @default(cuid())
+  conversationId String
+  reason         String?
+  triggeredBy    EscalationTrigger
+  resolvedAt     DateTime?
+  createdAt      DateTime        @default(now())
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+}
+
+enum EscalationTrigger {
+  USER_REQUEST
+  LOW_CONFIDENCE
+  KEYWORD
+  AGENT_MANUAL
+}
+
+// ─── Integrations ─────────────────────────────────────────────────────────────
+
+model Integration {
+  id             String   @id @default(cuid())
+  organizationId String
+  type           String
+  config         Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ─── Billing ──────────────────────────────────────────────────────────────────
+
+model Billing {
+  id             String      @id @default(cuid())
+  organizationId String      @unique
+  plan           BillingPlan @default(STARTER)
+  messageCount   Int         @default(0)
+  messageLimit   Int         @default(1000)
+  renewsAt       DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+enum BillingPlan {
+  STARTER
+  GROWTH
+  ENTERPRISE
+}

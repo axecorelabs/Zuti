@@ -1,0 +1,13 @@
+# NestJS module stubs — each will be built out fully
+
+# modules/
+#   auth/
+#   organizations/
+#   bots/
+#   conversations/
+#   knowledge/
+#   webhooks/
+#   agents/
+#   analytics/
+#   billing/
+#   queue/

@@ -1,0 +1,4 @@
+# app/api/v1/endpoints/
+#   chat.py        — process user messages, run RAG pipeline
+#   knowledge.py   — ingest documents, trigger embeddings
+#   health.py      — service health check
