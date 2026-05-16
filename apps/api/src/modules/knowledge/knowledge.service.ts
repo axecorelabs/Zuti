@@ -2,8 +2,6 @@ import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
-import { Readable } from 'stream';
-import * as FormData from 'form-data';
 
 @Injectable()
 export class KnowledgeService {
@@ -63,16 +61,11 @@ export class KnowledgeService {
     const form = new FormData();
     form.append('organization_id', organizationId);
     form.append('knowledge_file_id', knowledgeFileId);
-    form.append('file', Readable.from(buffer), {
-      filename: originalname,
-      contentType: mimetype,
-    });
+    form.append('file', new Blob([new Uint8Array(buffer)], { type: mimetype }), originalname);
 
     try {
       const res = await firstValueFrom(
-        this.http.post(`${this.aiUrl}/api/v1/knowledge/ingest/file`, form, {
-          headers: form.getHeaders(),
-        }),
+        this.http.post(`${this.aiUrl}/api/v1/knowledge/ingest/file`, form),
       );
       return res.data;
     } catch (err: unknown) {

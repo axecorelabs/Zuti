@@ -1,6 +1,10 @@
 import { Controller, Get, Param, Query, Body, Patch, Post, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
-import { IsString, IsNotEmpty } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
+import { ApiProperty, ApiBearerAuth, ApiOperation, ApiQuery, ApiTags, ApiPropertyOptional } from '@nestjs/swagger';
+import { ConversationsService } from './conversations.service';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { OrgMemberGuard } from '../../common/guards/org-member.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 class SendMessageDto {
   @ApiProperty()
@@ -8,13 +12,6 @@ class SendMessageDto {
   @IsNotEmpty()
   declare content: string;
 }
-import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
-import { ConversationsService } from './conversations.service';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { OrgMemberGuard } from '../../common/guards/org-member.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { IsOptional, IsString, IsIn } from 'class-validator';
-import { ApiPropertyOptional } from '@nestjs/swagger';
 
 class UpdateConversationDto {
   @ApiPropertyOptional({ enum: ['OPEN', 'PENDING', 'RESOLVED', 'ESCALATED'] })

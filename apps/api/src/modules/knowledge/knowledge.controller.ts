@@ -38,7 +38,7 @@ export class KnowledgeController {
   ingestFile(
     @Param('id') orgId: string,
     @Body('name') name: string,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFile() file: { buffer: Buffer; originalname: string; mimetype: string },
   ) {
     return this.knowledge.ingestFile(
       orgId,
