@@ -100,7 +100,58 @@ export default function InboxPage() {
       socket.emit('join', orgId);
     });
 
-    socket.on('message:new', (payload: {\n      conversationId: string;\n      message: { id: string; role: string; content: string; createdAt: string };\n      customerName?: string | null;\n    }) => {\n      // Append message to the selected conversation if open\n      setSelected((prev) => {\n        if (!prev || prev.id !== payload.conversationId) return prev;\n        const alreadyExists = prev.messages?.some((m) => m.id === payload.message.id);\n        if (alreadyExists) return prev;\n        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);\n        return { ...prev, messages: [...(prev.messages ?? []), payload.message] };\n      });\n\n      // Update conversation list: bump updatedAt and last message\n      setConversations((prev) =>\n        prev.map((c) =>\n          c.id === payload.conversationId\n            ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }\n            : c,\n        ),\n      );\n    });\n\n    // New conversation created (e.g. resolved customer re-opens)\n    socket.on('conversation:new', (conv: Conversation) => {\n      setConversations((prev) => {\n        if (prev.some((c) => c.id === conv.id)) return prev;\n        return [conv, ...prev];\n      });\n    });\n\n    // Conversation status/mode updated by another agent tab\n    socket.on('conversation:update', (payload: { conversationId: string; status?: string; mode?: string }) => {\n      setConversations((prev) =>\n        prev.map((c) =>\n          c.id === payload.conversationId\n            ? { ...c, ...(payload.status && { status: payload.status as Conversation['status'] }), ...(payload.mode && { mode: payload.mode as Conversation['mode'] }) }\n            : c,\n        ),\n      );\n      setSelected((prev) =>\n        prev && prev.id === payload.conversationId\n          ? { ...prev, ...(payload.status && { status: payload.status as Conversation['status'] }), ...(payload.mode && { mode: payload.mode as Conversation['mode'] }) }\n          : prev,\n      );\n    });
+    socket.on('message:new', (payload: {
+      conversationId: string;
+      message: { id: string; role: string; content: string; createdAt: string };
+      customerName?: string | null;
+    }) => {
+      setSelected((prev) => {
+        if (!prev || prev.id !== payload.conversationId) return prev;
+        const alreadyExists = prev.messages?.some((m) => m.id === payload.message.id);
+        if (alreadyExists) return prev;
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+        return { ...prev, messages: [...(prev.messages ?? []), payload.message] };
+      });
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === payload.conversationId
+            ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }
+            : c,
+        ),
+      );
+    });
+
+    // New conversation created (e.g. resolved customer re-opens)
+    socket.on('conversation:new', (conv: Conversation) => {
+      setConversations((prev) => {
+        if (prev.some((c) => c.id === conv.id)) return prev;
+        return [conv, ...prev];
+      });
+    });
+
+    // Conversation status/mode updated by another agent tab
+    socket.on('conversation:update', (payload: { conversationId: string; status?: string; mode?: string }) => {
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === payload.conversationId
+            ? {
+                ...c,
+                ...(payload.status && { status: payload.status as Conversation['status'] }),
+                ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
+              }
+            : c,
+        ),
+      );
+      setSelected((prev) =>
+        prev && prev.id === payload.conversationId
+          ? {
+              ...prev,
+              ...(payload.status && { status: payload.status as Conversation['status'] }),
+              ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
+            }
+          : prev,
+      );
+    });
 
     return () => {
       socket.disconnect();
