@@ -6,6 +6,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { EventsGateway } from '../events/events.gateway';
 
 export interface TelegramMessageJob {
   botId: string;
@@ -32,6 +33,7 @@ export class TelegramProcessor {
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
     private readonly config: ConfigService,
+    private readonly events: EventsGateway,
   ) {}
 
   @Process()
@@ -64,13 +66,20 @@ export class TelegramProcessor {
     });
 
     // Store incoming message
-    await this.prisma.message.create({
+    const userMessage = await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         role: 'USER',
         content: message.text,
         telegramMsgId: message.messageId,
       },
+    });
+
+    // Emit to inbox in real-time
+    this.events.emitNewMessage(organizationId, {
+      conversationId: conversation.id,
+      message: userMessage,
+      customerName: conversation.customerName,
     });
 
     // If in AI mode, call AI service
@@ -102,13 +111,22 @@ export class TelegramProcessor {
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
 
       // Store AI reply
-      await this.prisma.message.create({
+      const aiMessage = await this.prisma.message.create({
         data: {
           conversationId,
           role: 'ASSISTANT',
           content: aiText,
         },
       });
+
+      // Emit AI reply to inbox
+      const conv = await this.prisma.conversation.findUnique({ where: { id: conversationId } });
+      if (conv) {
+        this.events.emitNewMessage(conv.organizationId, {
+          conversationId,
+          message: aiMessage,
+        });
+      }
 
       // Send reply to Telegram
       await firstValueFrom(

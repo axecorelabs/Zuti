@@ -8,12 +8,14 @@ import { BotsModule } from './modules/bots/bots.module';
 import { QueueModule } from './modules/queue/queue.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
+import { EventsModule } from './modules/events/events.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    EventsModule,
     AuthModule,
     OrganizationsModule,
     BotsModule,

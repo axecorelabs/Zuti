@@ -3,11 +3,13 @@
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { MessageSquare, User, Send } from 'lucide-react';
+import { io, Socket } from 'socket.io-client';
 import { conversationsApi, orgsApi } from '@/lib/api';
 
 interface Conversation {
   id: string;
   telegramChatId: string;
+  customerName?: string | null;
   status: 'OPEN' | 'PENDING' | 'RESOLVED' | 'ESCALATED';
   mode: 'AI' | 'HUMAN';
   createdAt: string;
@@ -48,6 +50,13 @@ export default function InboxPage() {
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const socketRef = useRef<Socket | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+
+  // Keep ref in sync with selected id for use inside socket callbacks
+  useEffect(() => {
+    selectedIdRef.current = selected?.id ?? null;
+  }, [selected?.id]);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -78,6 +87,48 @@ export default function InboxPage() {
       setSelected(res.data);
     }).catch(() => {});
   }, [selected?.id, orgId]);
+
+  // Socket.io real-time connection
+  useEffect(() => {
+    if (!orgId) return;
+
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+    const socket = io(apiUrl, { path: '/ws', transports: ['websocket'] });
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      socket.emit('join', orgId);
+    });
+
+    socket.on('message:new', (payload: {
+      conversationId: string;
+      message: { id: string; role: string; content: string; createdAt: string };
+      customerName?: string | null;
+    }) => {
+      // Append message to the selected conversation if open
+      setSelected((prev) => {
+        if (!prev || prev.id !== payload.conversationId) return prev;
+        const alreadyExists = prev.messages?.some((m) => m.id === payload.message.id);
+        if (alreadyExists) return prev;
+        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+        return { ...prev, messages: [...(prev.messages ?? []), payload.message] };
+      });
+
+      // Update conversation list: bump updatedAt and last message
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === payload.conversationId
+            ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }
+            : c,
+        ),
+      );
+    });
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
+  }, [orgId]);
 
   const handleTakeOver = async () => {
     if (!orgId || !selected) return;
@@ -171,7 +222,7 @@ export default function InboxPage() {
                     <div className="flex items-center gap-1.5 min-w-0">
                       <User className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
                       <span className="text-sm text-zinc-200 font-normal truncate">
-                        User {conv.telegramChatId.slice(-4)}
+                        {conv.customerName || `User ${conv.telegramChatId.slice(-4)}`}
                       </span>
                     </div>
                     <span className="text-xs text-zinc-600 font-light shrink-0">
@@ -206,7 +257,7 @@ export default function InboxPage() {
             <div className="px-6 py-4 border-b border-zinc-900 flex items-center justify-between">
               <div>
                 <h2 className="font-brand font-semibold text-base tracking-tight text-white">
-                  User {selected.telegramChatId.slice(-4)}
+                  {selected.customerName || `User ${selected.telegramChatId.slice(-4)}`}
                 </h2>
                 <p className="text-xs text-zinc-600 font-light mt-0.5">
                   via {selected.bot?.name} · {timeSince(selected.updatedAt)}
