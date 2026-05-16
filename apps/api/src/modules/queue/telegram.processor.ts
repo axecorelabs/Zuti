@@ -46,24 +46,54 @@ export class TelegramProcessor {
       .filter(Boolean)
       .join(' ') || message.from.username || String(message.from.id);
 
-    const conversation = await this.prisma.conversation.upsert({
+    // Check for existing conversation
+    const existing = await this.prisma.conversation.findUnique({
       where: { botId_telegramChatId: { botId, telegramChatId } },
-      create: {
-        organizationId,
-        botId,
-        telegramChatId,
-        customerName,
-        customerUsername: message.from.username,
-        status: 'OPEN',
-        mode: 'AI',
-        lastMessageAt: new Date(),
-      },
-      update: {
-        lastMessageAt: new Date(),
-        customerName,
-        customerUsername: message.from.username,
-      },
     });
+
+    let conversation: Awaited<ReturnType<typeof this.prisma.conversation.create>>;
+
+    if (!existing) {
+      // First ever message from this customer
+      conversation = await this.prisma.conversation.create({
+        data: {
+          organizationId,
+          botId,
+          telegramChatId,
+          customerName,
+          customerUsername: message.from.username,
+          status: 'OPEN',
+          mode: 'AI',
+          lastMessageAt: new Date(),
+        },
+      });
+    } else if (existing.status === 'RESOLVED') {
+      // Customer re-opened after resolution — create a fresh conversation
+      conversation = await this.prisma.conversation.create({
+        data: {
+          organizationId,
+          botId,
+          telegramChatId,
+          customerName,
+          customerUsername: message.from.username,
+          status: 'OPEN',
+          mode: 'AI',
+          lastMessageAt: new Date(),
+        },
+      });
+      // Emit new conversation to inbox
+      this.events.emitNewConversation(organizationId, conversation);
+    } else {
+      // Existing active conversation — just update metadata
+      conversation = await this.prisma.conversation.update({
+        where: { id: existing.id },
+        data: {
+          lastMessageAt: new Date(),
+          customerName,
+          customerUsername: message.from.username,
+        },
+      });
+    }
 
     // Store incoming message
     const userMessage = await this.prisma.message.create({

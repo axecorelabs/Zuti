@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { EventsGateway } from '../events/events.gateway';
 
 interface FindAllFilters {
   status?: string;
@@ -14,6 +15,7 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
+    private readonly events: EventsGateway,
   ) {}
 
   async findAll(organizationId: string, filters: FindAllFilters) {
@@ -56,10 +58,11 @@ export class ConversationsService {
   ) {
     const conversation = await this.prisma.conversation.findFirst({
       where: { id: conversationId, organizationId },
+      include: { bot: true },
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
 
-    return this.prisma.conversation.update({
+    const updated = await this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
         ...(dto.status && { status: dto.status as any }),
@@ -71,6 +74,38 @@ export class ConversationsService {
         assignedAgent: { select: { id: true, name: true, email: true } },
       },
     });
+
+    const token = conversation.bot.telegramToken;
+    const chatId = conversation.telegramChatId;
+
+    // Notify customer when agent takes over
+    if (dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN') {
+      await firstValueFrom(
+        this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+          chat_id: chatId,
+          text: '👤 You have been connected to a support agent. We will be with you shortly.',
+        }),
+      ).catch(() => null);
+    }
+
+    // Notify customer when conversation is resolved
+    if (dto.status === 'RESOLVED' && conversation.status !== 'RESOLVED') {
+      await firstValueFrom(
+        this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+          chat_id: chatId,
+          text: '✅ Your support request has been resolved. Feel free to message us again if you need further help.',
+        }),
+      ).catch(() => null);
+    }
+
+    // Emit conversation update to inbox
+    this.events.emitConversationUpdate(organizationId, {
+      conversationId,
+      ...(dto.status && { status: dto.status }),
+      ...(dto.mode && { mode: dto.mode }),
+    });
+
+    return updated;
   }
 
   async sendMessage(organizationId: string, conversationId: string, content: string) {

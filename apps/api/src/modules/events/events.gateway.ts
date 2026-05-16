@@ -61,6 +61,13 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
+   * Emit a new conversation to the org room (e.g. resolved customer reopens).
+   */
+  emitNewConversation(organizationId: string, conversation: Record<string, any>) {
+    this.server.to(`org:${organizationId}`).emit('conversation:new', conversation);
+  }
+
+  /**
    * Emit a conversation update (status/mode change) to the org room.
    */
   emitConversationUpdate(
