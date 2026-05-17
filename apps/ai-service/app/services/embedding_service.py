@@ -1,59 +1,48 @@
 """
-Embedding service — wraps OpenAI text-embedding-3-small.
-Falls back gracefully when no API key is set.
+Embedding service — uses Jina AI jina-embeddings-v2-base-en.
+Falls back gracefully to zero vectors when no API key is set.
 """
 from __future__ import annotations
 import logging
+import httpx
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-EMBEDDING_DIM = 1536  # text-embedding-3-small
+EMBEDDING_DIM = 768  # jina-embeddings-v2-base-en
+JINA_API_URL = "https://api.jina.ai/v1/embeddings"
+JINA_MODEL = "jina-embeddings-v2-base-en"
 
 
 class EmbeddingService:
-    def __init__(self):
-        self._client = None
-
-    def _get_client(self):
-        if self._client is None:
-            from openai import AsyncOpenAI
-            self._client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-        return self._client
-
-    def _key_is_valid(self) -> bool:
-        """Return True only if key looks like a real OpenAI key (not OpenRouter)."""
-        k = settings.OPENAI_API_KEY or ""
-        return bool(k) and not k.startswith("sk-or-")
+    async def _call(self, texts: list[str]) -> list[list[float]]:
+        headers = {
+            "Authorization": f"Bearer {settings.JINA_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {"model": JINA_MODEL, "input": texts}
+        async with httpx.AsyncClient(timeout=30) as client:
+            res = await client.post(JINA_API_URL, json=payload, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+        return [item["embedding"] for item in data["data"]]
 
     async def embed(self, text: str) -> list[float]:
-        if not self._key_is_valid():
-            logger.warning("Valid OPENAI_API_KEY not set — returning zero vector")
+        if not settings.JINA_API_KEY:
+            logger.warning("JINA_API_KEY not set — returning zero vector")
             return [0.0] * EMBEDDING_DIM
-
         try:
-            client = self._get_client()
-            response = await client.embeddings.create(
-                model="text-embedding-3-small",
-                input=text,
-            )
-            return response.data[0].embedding
+            return (await self._call([text]))[0]
         except Exception as e:
-            logger.error(f"Embedding failed: {e} — returning zero vector")
+            logger.error(f"Jina embedding failed: {e} — returning zero vector")
             return [0.0] * EMBEDDING_DIM
 
     async def embed_many(self, texts: list[str]) -> list[list[float]]:
-        if not self._key_is_valid():
+        if not settings.JINA_API_KEY:
             return [[0.0] * EMBEDDING_DIM for _ in texts]
-
         try:
-            client = self._get_client()
-            response = await client.embeddings.create(
-                model="text-embedding-3-small",
-                input=texts,
-            )
-            return [item.embedding for item in response.data]
+            return await self._call(texts)
         except Exception as e:
-            logger.error(f"Batch embedding failed: {e} — returning zero vectors")
+            logger.error(f"Jina batch embedding failed: {e} — returning zero vectors")
             return [[0.0] * EMBEDDING_DIM for _ in texts]
 
 

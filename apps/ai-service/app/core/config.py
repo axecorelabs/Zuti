@@ -6,9 +6,9 @@ class Settings(BaseSettings):
     SECRET_KEY: str = ""
     ALLOWED_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:3001"]
 
-    # LLM — OpenRouter for completions, OpenAI for embeddings
+    # LLM — OpenRouter for completions, Jina AI for embeddings
     OPENROUTER_API_KEY: str = ""
-    OPENAI_API_KEY: str = ""  # used only for text-embedding-3-small
+    JINA_API_KEY: str = ""  # https://jina.ai — free 1M tokens/month
 
     # Qdrant
     QDRANT_URL: str = "http://localhost:6333"
