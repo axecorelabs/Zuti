@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, Plus, Webhook, Trash2, ToggleLeft, ToggleRight, Copy, Check } from 'lucide-react';
+import { Bot, Plus, Webhook, Trash2, ToggleLeft, ToggleRight, Copy, Check, Settings } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
 
@@ -13,6 +13,7 @@ interface BotRecord {
   isActive: boolean;
   webhookSet: boolean;
   createdAt: string;
+  aiConfig: Record<string, string> | null;
 }
 
 export default function BotsPage() {
@@ -23,6 +24,9 @@ export default function BotsPage() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: '', telegramToken: '' });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [editBot, setEditBot] = useState<BotRecord | null>(null);
+  const [editSystemPrompt, setEditSystemPrompt] = useState('');
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -102,6 +106,28 @@ export default function BotsPage() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const openEdit = (bot: BotRecord) => {
+    setEditBot(bot);
+    setEditSystemPrompt(bot.aiConfig?.systemPrompt ?? '');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!orgId || !editBot) return;
+    setSaving(true);
+    try {
+      const res = await botsApi.update(orgId, editBot.id, {
+        aiConfig: { ...(editBot.aiConfig ?? {}), systemPrompt: editSystemPrompt },
+      });
+      setBots((prev) => prev.map((b) => (b.id === editBot.id ? res.data : b)));
+      setEditBot(null);
+      toast.success('Bot settings saved');
+    } catch {
+      toast.error('Failed to save settings');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="p-8">
       {/* Header */}
@@ -119,6 +145,55 @@ export default function BotsPage() {
           Add bot
         </button>
       </div>
+
+      {/* Edit bot modal */}
+      {editBot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="card p-8 w-full max-w-md mx-4">
+            <h2 className="font-brand font-semibold text-xl tracking-tight text-white mb-1">
+              Bot settings
+            </h2>
+            <p className="text-sm text-zinc-500 font-light mb-6">
+              Customise how <span className="text-zinc-300">{editBot.name}</span> introduces itself and behaves.
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
+                  System prompt
+                  <span className="ml-1.5 text-zinc-600">(optional)</span>
+                </label>
+                <textarea
+                  rows={6}
+                  value={editSystemPrompt}
+                  onChange={(e) => setEditSystemPrompt(e.target.value)}
+                  className="input-base resize-none text-sm"
+                  placeholder={`You are ${editBot.name}, a helpful assistant for our company. Answer questions concisely and professionally.`}
+                />
+                <p className="text-[11px] text-zinc-600 mt-1.5 font-light">
+                  Leave blank to use the default prompt built from the bot and org name.
+                </p>
+              </div>
+              <div className="flex gap-3 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setEditBot(null)}
+                  className="btn-secondary flex-1 py-2.5"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSaveEdit}
+                  disabled={saving}
+                  className="btn-primary flex-1 py-2.5"
+                >
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Create bot modal */}
       {showCreate && (
@@ -262,6 +337,13 @@ export default function BotsPage() {
                       <Webhook className="w-4 h-4" />
                     </button>
                   )}
+                  <button
+                    onClick={() => openEdit(bot)}
+                    title="Bot settings"
+                    className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <Settings className="w-4 h-4" />
+                  </button>
                   <button
                     onClick={() => copyToken(bot.telegramToken, bot.id)}
                     title="Copy token"
