@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Leaf } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
@@ -33,74 +34,133 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center px-4">
-      <div className="w-full max-w-sm">
-        {/* Logo */}
-        <div className="mb-10 text-center">
-          <span className="font-brand font-semibold text-3xl tracking-tight text-white">
-            Zuti
-          </span>
-          <p className="mt-2 text-sm text-zinc-500 font-light">
-            AI-powered customer service
+    <div className="min-h-screen bg-black flex">
+      {/* ── Left panel ── */}
+      <div className="hidden lg:flex lg:w-[48%] xl:w-1/2 relative bg-zinc-950 border-r border-zinc-900 flex-col overflow-hidden">
+        {/* Dot grid */}
+        <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(circle, #27272a 1px, transparent 1px)', backgroundSize: '32px 32px', opacity: 0.35 }} />
+        {/* Top glow */}
+        <div className="absolute -top-32 left-1/3 w-[480px] h-[480px] bg-blue-600/8 rounded-full blur-3xl pointer-events-none" />
+        {/* Bottom glow */}
+        <div className="absolute -bottom-24 right-0 w-64 h-64 bg-blue-600/5 rounded-full blur-2xl pointer-events-none" />
+
+        {/* Content — fixed 3-zone layout with explicit padding */}
+        <div className="relative z-10 flex flex-col h-full px-12 py-10">
+          {/* Zone 1: Brand — top */}
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/25">
+              <Leaf className="w-4 h-4 text-white" />
+            </div>
+            <span className="font-brand font-semibold text-lg tracking-tight text-white">Zuti</span>
+          </div>
+
+          {/* Zone 2: Hero copy — vertically centred */}
+          <div className="flex-1 flex flex-col justify-center">
+            <p className="text-xs font-medium text-blue-400 tracking-widest uppercase mb-4">Customer Support Platform</p>
+            <h2 className="font-brand font-semibold text-[2rem] leading-tight tracking-tight text-white mb-4">
+              AI-powered support,<br />built for teams.
+            </h2>
+            <p className="text-sm text-zinc-500 font-light leading-relaxed max-w-xs mb-10">
+              Connect your Telegram bots, automate responses with AI, and step in when it matters most.
+            </p>
+
+            <div className="space-y-4">
+              {[
+                { label: 'Telegram bot management', desc: 'Connect and manage multiple bots' },
+                { label: 'AI-first conversations', desc: 'Handles routine questions instantly, 24/7' },
+                { label: 'Human escalation', desc: 'Take over any conversation in one click' },
+              ].map(({ label, desc }) => (
+                <div key={label} className="flex items-start gap-3">
+                  <div className="w-5 h-5 rounded-full bg-blue-600/20 border border-blue-500/25 flex items-center justify-center shrink-0 mt-0.5">
+                    <div className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-zinc-300 font-normal leading-snug">{label}</p>
+                    <p className="text-xs text-zinc-600 font-light mt-0.5">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Zone 3: Footer — bottom */}
+          <p className="text-xs text-zinc-700 font-light">
+            © 2026 axecorelabs
           </p>
         </div>
+      </div>
 
-        {/* Card */}
-        <div className="card p-8">
-          <h1 className="font-brand font-semibold text-xl tracking-tight text-white mb-6">
-            Sign in
-          </h1>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
-                Email
-              </label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="input-base"
-                placeholder="you@company.com"
-                autoComplete="email"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
-                Password
-              </label>
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="input-base"
-                placeholder="••••••••"
-                autoComplete="current-password"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full mt-2"
-            >
-              {loading ? 'Signing in…' : 'Sign in'}
-            </button>
-          </form>
+      {/* ── Right form panel ── */}
+      <div className="flex-1 flex flex-col min-h-screen">
+        {/* Mobile logo bar */}
+        <div className="lg:hidden flex items-center gap-2.5 px-6 pt-8 pb-0">
+          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shadow-md shadow-blue-600/25">
+            <Leaf className="w-3.5 h-3.5 text-white" />
+          </div>
+          <span className="font-brand font-semibold text-base tracking-tight text-white">Zuti</span>
         </div>
 
-        <p className="mt-6 text-center text-sm text-zinc-600 font-light">
-          No account?{' '}
-          <Link
-            href="/register"
-            className="text-zinc-400 hover:text-white transition-colors"
-          >
-            Create one
-          </Link>
-        </p>
+        {/* Form — centred in the remaining space */}
+        <div className="flex-1 flex items-center justify-center px-6 py-12">
+          <div className="w-full max-w-[360px]">
+
+            {/* Heading block */}
+            <div className="mb-8">
+              <h1 className="font-brand font-semibold text-2xl tracking-tight text-white leading-tight">Welcome back</h1>
+              <p className="mt-2 text-sm text-zinc-500 font-light">Sign in to continue to your workspace</p>
+            </div>
+
+            {/* Form fields */}
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div>
+                <label className="block text-xs text-zinc-400 mb-2 font-normal tracking-wide">Email address</label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="input-base"
+                  placeholder="you@company.com"
+                  autoComplete="email"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs text-zinc-400 font-normal tracking-wide">Password</label>
+                </div>
+                <input
+                  type="password"
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="input-base"
+                  placeholder="••••••••"
+                  autoComplete="current-password"
+                />
+              </div>
+
+              {/* CTA — extra top margin to visually separate from fields */}
+              <div className="pt-2">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                >
+                  {loading ? 'Signing in…' : 'Sign in'}
+                </button>
+              </div>
+            </form>
+
+            {/* Footer link — separated with more breathing room */}
+            <p className="mt-8 text-center text-sm text-zinc-600 font-light">
+              Don&apos;t have an account?{' '}
+              <Link href="/register" className="text-zinc-400 hover:text-white transition-colors font-normal">
+                Create one
+              </Link>
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );

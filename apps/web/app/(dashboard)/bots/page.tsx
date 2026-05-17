@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, Plus, Webhook, Trash2, ToggleLeft, ToggleRight, Copy, Check, Settings } from 'lucide-react';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
 
@@ -31,19 +31,13 @@ export default function BotsPage() {
   useEffect(() => {
     orgsApi.list().then((res) => {
       const orgs = res.data;
-      if (orgs.length > 0) {
-        setOrgId(orgs[0].id);
-      }
+      if (orgs.length > 0) setOrgId(orgs[0].id);
     }).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (!orgId) return;
-    botsApi
-      .list(orgId)
-      .then((res) => setBots(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    botsApi.list(orgId).then((res) => setBots(res.data)).catch(() => {}).finally(() => setLoading(false));
   }, [orgId]);
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -55,11 +49,9 @@ export default function BotsPage() {
       setBots((prev) => [...prev, res.data]);
       setShowCreate(false);
       setForm({ name: '', telegramToken: '' });
-      toast.success('Bot created successfully');
+      toast.success('Bot created');
     } catch (err: unknown) {
-      const msg =
-        (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
-        'Failed to create bot';
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to create bot';
       toast.error(Array.isArray(msg) ? msg[0] : msg);
     } finally {
       setCreating(false);
@@ -70,13 +62,9 @@ export default function BotsPage() {
     if (!orgId) return;
     try {
       await botsApi.setWebhook(orgId, bot.id);
-      setBots((prev) =>
-        prev.map((b) => (b.id === bot.id ? { ...b, webhookSet: true } : b)),
-      );
+      setBots((prev) => prev.map((b) => (b.id === bot.id ? { ...b, webhookSet: true } : b)));
       toast.success('Webhook set!');
-    } catch {
-      toast.error('Failed to set webhook');
-    }
+    } catch { toast.error('Failed to set webhook'); }
   };
 
   const handleToggle = async (bot: BotRecord) => {
@@ -84,9 +72,7 @@ export default function BotsPage() {
     try {
       const res = await botsApi.update(orgId, bot.id, { isActive: !bot.isActive });
       setBots((prev) => prev.map((b) => (b.id === bot.id ? res.data : b)));
-    } catch {
-      toast.error('Failed to update bot');
-    }
+    } catch { toast.error('Failed to update bot'); }
   };
 
   const handleDelete = async (bot: BotRecord) => {
@@ -95,9 +81,7 @@ export default function BotsPage() {
       await botsApi.delete(orgId, bot.id);
       setBots((prev) => prev.filter((b) => b.id !== bot.id));
       toast.success('Bot deleted');
-    } catch {
-      toast.error('Failed to delete bot');
-    }
+    } catch { toast.error('Failed to delete bot'); }
   };
 
   const copyToken = (token: string, id: string) => {
@@ -121,260 +105,209 @@ export default function BotsPage() {
       setBots((prev) => prev.map((b) => (b.id === editBot.id ? res.data : b)));
       setEditBot(null);
       toast.success('Bot settings saved');
-    } catch {
-      toast.error('Failed to save settings');
-    } finally {
-      setSaving(false);
-    }
+    } catch { toast.error('Failed to save settings'); } finally { setSaving(false); }
   };
 
+  const Modal = ({ children, onClose }: { children: React.ReactNode; onClose: () => void }) => (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()}>{children}</div>
+    </div>
+  );
+
   return (
-    <div className="p-8">
+    <div className="p-4 md:p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">
-            Bots
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500 font-light">
-            Manage your Telegram bots and webhooks.
-          </p>
+          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Bots</h1>
+          <p className="mt-1 text-sm text-zinc-500 font-light">Manage your Telegram bots and AI settings.</p>
         </div>
-        <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center gap-2 py-2.5 px-5 text-sm">
+        <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
           <Plus className="w-4 h-4" />
           Add bot
         </button>
       </div>
 
-      {/* Edit bot modal */}
+      {/* Edit modal */}
       {editBot && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="card p-8 w-full max-w-2xl mx-4">
-            <h2 className="font-brand font-semibold text-xl tracking-tight text-white mb-1">
-              Bot settings
-            </h2>
-            <p className="text-sm text-zinc-500 font-light mb-6">
-              Customise how <span className="text-zinc-300">{editBot.name}</span> introduces itself and behaves.
-            </p>
-
-            <div className="space-y-4">
+        <Modal onClose={() => setEditBot(null)}>
+          <div className="card p-8 w-full max-w-3xl mx-4 border border-zinc-800 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/20 flex items-center justify-center">
+                <Settings className="w-5 h-5 text-blue-400" />
+              </div>
               <div>
-                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
-                  System prompt
-                  <span className="ml-1.5 text-zinc-600">(optional)</span>
-                </label>
+                <h2 className="font-semibold text-lg text-white tracking-tight">AI Settings</h2>
+                <p className="text-sm text-zinc-500 font-light">{editBot.name}</p>
+              </div>
+            </div>
+            <div className="space-y-5">
+              <div>
+                <label className="block text-xs text-zinc-400 mb-2 font-medium">System prompt</label>
                 <textarea
-                  rows={6}
+                  rows={14}
                   value={editSystemPrompt}
                   onChange={(e) => setEditSystemPrompt(e.target.value)}
-                  className="input-base resize-none text-sm"
-                  placeholder={`You are ${editBot.name}, a helpful assistant for our company. Answer questions concisely and professionally.`}
+                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 resize-none focus:outline-none focus:border-blue-600/50 transition-colors font-light leading-relaxed"
+                  placeholder={`You are ${editBot.name}, a helpful assistant. Answer questions clearly and professionally.`}
                 />
                 <p className="text-[11px] text-zinc-600 mt-1.5 font-light">
-                  Leave blank to use the default prompt built from the bot and org name.
+                  Leave blank to use the default prompt. Use plain text — avoid markdown.
                 </p>
               </div>
-              <div className="flex gap-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setEditBot(null)}
-                  className="btn-secondary flex-1 py-2.5"
-                >
+              <div className="flex gap-3">
+                <button type="button" onClick={() => setEditBot(null)} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium">
                   Cancel
                 </button>
-                <button
-                  onClick={handleSaveEdit}
-                  disabled={saving}
-                  className="btn-primary flex-1 py-2.5"
-                >
-                  {saving ? 'Saving…' : 'Save'}
+                <button onClick={handleSaveEdit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors">
+                  {saving ? 'Saving…' : 'Save changes'}
                 </button>
               </div>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
-      {/* Create bot modal */}
+      {/* Create modal */}
       {showCreate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="card p-8 w-full max-w-md mx-4">
-            <h2 className="font-brand font-semibold text-xl tracking-tight text-white mb-1">
-              Add a bot
-            </h2>
-            <p className="text-sm text-zinc-500 font-light mb-6">
-              Create a bot on{' '}
-              <a
-                href="https://t.me/BotFather"
-                target="_blank"
-                rel="noreferrer"
-                className="text-zinc-400 hover:text-white transition-colors"
-              >
-                @BotFather
-              </a>{' '}
-              and paste the token below.
-            </p>
-
+        <Modal onClose={() => setShowCreate(false)}>
+          <div className="card p-8 w-full max-w-md mx-4 border border-zinc-800">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/20 flex items-center justify-center">
+                <Bot className="w-5 h-5 text-blue-400" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-lg text-white tracking-tight">Add a bot</h2>
+                <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="flex items-center gap-1 text-xs text-zinc-500 hover:text-blue-400 transition-colors">
+                  Get token from @BotFather <ExternalLink className="w-2.5 h-2.5" />
+                </a>
+              </div>
+            </div>
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
-                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
-                  Bot name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-                  className="input-base"
-                  placeholder="Support Bot"
-                />
+                <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Bot name</label>
+                <input type="text" required value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors" placeholder="Support Bot" />
               </div>
               <div>
-                <label className="block text-xs text-zinc-500 mb-1.5 font-normal">
-                  Telegram bot token
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={form.telegramToken}
-                  onChange={(e) => setForm((f) => ({ ...f, telegramToken: e.target.value }))}
-                  className="input-base font-mono text-xs"
-                  placeholder="123456789:AAFxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                />
+                <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Telegram bot token</label>
+                <input type="text" required value={form.telegramToken} onChange={(e) => setForm((f) => ({ ...f, telegramToken: e.target.value }))} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 font-mono placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors" placeholder="123456789:AAFxxxxxx…" />
               </div>
-              <div className="flex gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowCreate(false)}
-                  className="btn-secondary flex-1 py-2.5"
-                >
+              <div className="flex gap-3 pt-1">
+                <button type="button" onClick={() => setShowCreate(false)} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium">
                   Cancel
                 </button>
-                <button
-                  type="submit"
-                  disabled={creating}
-                  className="btn-primary flex-1 py-2.5"
-                >
+                <button type="submit" disabled={creating} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors">
                   {creating ? 'Creating…' : 'Create bot'}
                 </button>
               </div>
             </form>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Bot list */}
       {loading ? (
         <div className="space-y-3">
-          {[...Array(3)].map((_, i) => (
-            <div key={i} className="h-24 bg-zinc-900 animate-pulse rounded-2xl" />
-          ))}
+          {[...Array(3)].map((_, i) => <div key={i} className="h-24 bg-zinc-900 animate-pulse rounded-2xl" />)}
         </div>
       ) : bots.length === 0 ? (
-        <div className="card p-16 flex flex-col items-center text-center">
-          <Bot className="w-10 h-10 text-zinc-700 mb-4" />
-          <h3 className="font-brand font-semibold text-lg tracking-tight text-white mb-2">
-            No bots yet
-          </h3>
-          <p className="text-sm text-zinc-600 font-light mb-6">
-            Add your first Telegram bot to get started.
+        <div className="card p-16 flex flex-col items-center text-center border border-dashed border-zinc-800">
+          <div className="w-14 h-14 rounded-2xl bg-zinc-900 flex items-center justify-center mb-4">
+            <Bot className="w-7 h-7 text-zinc-700" />
+          </div>
+          <h3 className="font-semibold text-lg text-white mb-2">No bots yet</h3>
+          <p className="text-sm text-zinc-600 font-light mb-6 max-w-xs">
+            Add your first Telegram bot to start handling customer conversations with AI.
           </p>
-          <button onClick={() => setShowCreate(true)} className="btn-primary py-2.5 px-6 text-sm">
-            Add your first bot
+          <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
+            <Plus className="w-4 h-4" /> Add your first bot
           </button>
         </div>
       ) : (
         <div className="space-y-3">
           {bots.map((bot) => (
-            <div key={bot.id} className="card p-5">
-              <div className="flex items-start gap-4">
+            <div key={bot.id} className="card p-5 hover:border-zinc-700 transition-colors group">
+              <div className="flex items-center gap-4">
                 {/* Icon */}
-                <div className="w-10 h-10 rounded-xl bg-zinc-800 flex items-center justify-center shrink-0">
-                  <Bot className="w-5 h-5 text-zinc-500" />
+                <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                  bot.isActive ? 'bg-blue-600/15 border border-blue-600/20' : 'bg-zinc-900 border border-zinc-800'
+                }`}>
+                  <Bot className={`w-5 h-5 ${bot.isActive ? 'text-blue-400' : 'text-zinc-600'}`} />
                 </div>
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <h3 className="text-base font-normal text-white truncate">{bot.name}</h3>
+                  <div className="flex items-center gap-2 mb-1">
+                    <h3 className="text-sm font-medium text-white">{bot.name}</h3>
                     {bot.telegramUsername && (
-                      <span className="text-xs text-zinc-600 font-light">
-                        @{bot.telegramUsername}
-                      </span>
+                      <span className="text-xs text-zinc-600">@{bot.telegramUsername}</span>
                     )}
                   </div>
-
-                  <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded-md font-normal ${
-                        bot.isActive
-                          ? 'bg-green-500/20 text-green-400'
-                          : 'bg-zinc-800 text-zinc-500'
-                      }`}
-                    >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
+                      bot.isActive ? 'bg-blue-500/15 text-blue-400' : 'bg-zinc-800 text-zinc-500'
+                    }`}>
                       {bot.isActive ? 'Active' : 'Inactive'}
                     </span>
-                    <span
-                      className={`text-[10px] px-2 py-0.5 rounded-md font-normal ${
-                        bot.webhookSet
-                          ? 'bg-blue-500/20 text-blue-300'
-                          : 'bg-zinc-800 text-zinc-500'
-                      }`}
-                    >
-                      {bot.webhookSet ? 'Webhook set' : 'No webhook'}
+                    <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
+                      bot.webhookSet
+                        ? 'bg-zinc-800 text-zinc-500'
+                        : 'bg-orange-500/15 text-orange-400'
+                    }`}>
+                      {bot.webhookSet ? 'Webhook ready' : '⚠ No webhook'}
                     </span>
+                    {bot.aiConfig?.systemPrompt && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-blue-500/10 text-blue-500">
+                        Custom prompt
+                      </span>
+                    )}
                   </div>
                 </div>
 
                 {/* Actions */}
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity shrink-0">
                   {!bot.webhookSet && (
-                    <button
-                      onClick={() => handleSetWebhook(bot)}
-                      title="Set webhook"
-                      className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
-                    >
-                      <Webhook className="w-4 h-4" />
+                    <button onClick={() => handleSetWebhook(bot)} title="Set webhook" className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-orange-500/15 text-orange-400 hover:bg-orange-500/25 text-xs font-medium transition-colors border border-orange-500/20">
+                      <Webhook className="w-3.5 h-3.5" /> Set webhook
                     </button>
                   )}
-                  <button
-                    onClick={() => openEdit(bot)}
-                    title="Bot settings"
-                    className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
-                  >
+                  <button onClick={() => openEdit(bot)} title="AI settings" className="p-2 rounded-lg text-zinc-600 hover:text-blue-400 hover:bg-blue-500/10 transition-colors">
                     <Settings className="w-4 h-4" />
                   </button>
-                  <button
-                    onClick={() => copyToken(bot.telegramToken, bot.id)}
-                    title="Copy token"
-                    className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
-                  >
-                    {copiedId === bot.id ? (
-                      <Check className="w-4 h-4 text-green-400" />
-                    ) : (
-                      <Copy className="w-4 h-4" />
-                    )}
+                  <button onClick={() => copyToken(bot.telegramToken, bot.id)} title="Copy token" className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors">
+                    {copiedId === bot.id ? <Check className="w-4 h-4 text-blue-400" /> : <Copy className="w-4 h-4" />}
                   </button>
                   <button
                     onClick={() => handleToggle(bot)}
-                    title={bot.isActive ? 'Deactivate' : 'Activate'}
-                    className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                    title={bot.isActive ? 'Deactivate bot' : 'Activate bot'}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${
+                      bot.isActive ? 'bg-blue-600' : 'bg-zinc-700'
+                    }`}
                   >
-                    {bot.isActive ? (
-                      <ToggleRight className="w-4 h-4 text-green-400" />
-                    ) : (
-                      <ToggleLeft className="w-4 h-4" />
-                    )}
+                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                      bot.isActive ? 'translate-x-[18px]' : 'translate-x-0.5'
+                    }`} />
                   </button>
-                  <button
-                    onClick={() => handleDelete(bot)}
-                    title="Delete bot"
-                    className="p-2 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-zinc-800 transition-colors"
-                  >
+                  <button onClick={() => handleDelete(bot)} title="Delete" className="p-2 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-colors">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>
+
+              {/* Webhook CTA banner */}
+              {!bot.webhookSet && (
+                <div className="mt-4 flex items-center justify-between px-4 py-3 rounded-xl bg-orange-500/8 border border-orange-500/15">
+                  <div className="flex items-center gap-2">
+                    <Webhook className="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                    <p className="text-xs text-orange-400/80 font-light">
+                      Webhook not set — this bot won't receive Telegram messages until it's configured.
+                    </p>
+                  </div>
+                  <button onClick={() => handleSetWebhook(bot)} className="flex items-center gap-1 text-xs text-orange-400 hover:text-orange-300 font-medium shrink-0 ml-3 transition-colors">
+                    Fix now <ChevronRight className="w-3 h-3" />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

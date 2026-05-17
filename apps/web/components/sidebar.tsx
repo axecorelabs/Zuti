@@ -13,6 +13,8 @@ import {
   ChevronDown,
   Plus,
   Building2,
+  Leaf,
+  UserRound,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi } from '@/lib/api';
@@ -31,7 +33,7 @@ const navItems = [
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, clearAuth } = useAuthStore();
@@ -56,12 +58,15 @@ export default function Sidebar() {
   };
 
   return (
-    <aside className="w-60 shrink-0 h-screen bg-zinc-950 border-r border-zinc-900 flex flex-col">
+    <aside className={`fixed inset-y-0 left-0 z-50 md:relative md:inset-auto md:left-auto md:z-auto w-64 md:w-60 shrink-0 h-screen bg-zinc-950 border-r border-zinc-900 flex flex-col transition-transform duration-200 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
       {/* Brand */}
-      <div className="px-5 py-6 border-b border-zinc-900">
-        <span className="font-brand font-semibold text-xl tracking-tight text-white">
-          Zuti
-        </span>
+      <div className="px-4 py-5 border-b border-zinc-900">
+        <div className="flex items-center gap-2.5 px-1">
+          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-blue-600/30">
+            <Leaf className="w-3.5 h-3.5 text-white" />
+          </div>
+          <span className="font-brand font-semibold text-lg tracking-tight text-white">Zuti</span>
+        </div>
       </div>
 
       {/* Org switcher */}
@@ -112,13 +117,17 @@ export default function Sidebar() {
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-colors
-                ${isActive
-                  ? 'bg-zinc-900 text-white font-normal'
-                  : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/50 font-light'
-                }`}
+              onClick={onClose}
+              className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all relative ${
+                isActive
+                  ? 'bg-blue-600/10 text-white font-normal'
+                  : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light'
+              }`}
             >
-              <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : 'text-zinc-600'}`} />
+              {isActive && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-blue-500 rounded-r-full" />
+              )}
+              <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-400' : 'text-zinc-600'}`} />
               {label}
             </Link>
           );
@@ -126,19 +135,21 @@ export default function Sidebar() {
       </nav>
 
       {/* User */}
-      <div className="px-3 py-4 border-t border-zinc-900">
-        <div className="flex items-center gap-2.5 px-2 py-2">
-          <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center shrink-0">
-            <span className="text-xs text-zinc-300 font-medium">
-              {user?.name?.[0]?.toUpperCase() ?? 'U'}
-            </span>
+      <div className="px-3 py-3 border-t border-zinc-900">
+        <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-zinc-900/60 transition-colors group">
+          <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+            <UserRound className="w-4 h-4 text-zinc-400" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm text-zinc-300 font-light truncate">{user?.name}</p>
-            <p className="text-xs text-zinc-600 truncate">{user?.email}</p>
+            <p className="text-sm text-zinc-200 font-normal truncate leading-tight">{user?.name || 'Account'}</p>
+            <p className="text-[11px] text-zinc-600 truncate leading-tight">{user?.email}</p>
           </div>
-          <button onClick={handleLogout} className="text-zinc-600 hover:text-zinc-300 transition-colors">
-            <LogOut className="w-4 h-4" />
+          <button
+            onClick={handleLogout}
+            title="Sign out"
+            className="text-zinc-700 hover:text-zinc-300 transition-colors opacity-0 group-hover:opacity-100"
+          >
+            <LogOut className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>

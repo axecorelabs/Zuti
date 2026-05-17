@@ -138,6 +138,37 @@ export class TelegramProcessor {
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
 
+    // Check if the user is explicitly requesting a human agent
+    const humanRequestPhrases = [
+      'speak to a human', 'talk to a human', 'speak with a human', 'talk with a human',
+      'speak to a person', 'talk to a person', 'speak with a person', 'talk with a person',
+      'speak to an agent', 'talk to an agent', 'speak with an agent', 'connect me to an agent',
+      'real person', 'real human', 'actual person', 'live agent', 'human agent',
+      'i want a human', 'i need a human', 'get me a human',
+      'escalate', 'transfer me', 'transfer to human',
+    ];
+    const lowerUserText = userText.toLowerCase();
+    const userRequestsHuman = humanRequestPhrases.some((p) => lowerUserText.includes(p));
+
+    if (userRequestsHuman) {
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { status: 'ESCALATED', mode: 'HUMAN' },
+      });
+      this.events.emitConversationUpdate(organizationId, {
+        conversationId,
+        status: 'ESCALATED',
+        mode: 'HUMAN',
+      });
+      await firstValueFrom(
+        this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+          chat_id: telegramChatId,
+          text: 'Of course! I am connecting you with a human agent who will follow up shortly.',
+        }),
+      );
+      return;
+    }
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
