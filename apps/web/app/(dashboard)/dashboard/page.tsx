@@ -42,7 +42,7 @@ function buildVolumeData(convs: Conv[]) {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  OPEN: '#e4e4e7',
+  OPEN: '#3b82f6',
   PENDING: '#71717a',
   RESOLVED: '#3f3f46',
   ESCALATED: '#f87171',
@@ -108,14 +108,14 @@ export default function DashboardPage() {
     .slice(0, 5);
 
   const statCards = [
-    { label: 'Total conversations', value: stats.total, icon: MessageSquare },
-    { label: 'Open', value: stats.open, icon: AlertCircle },
-    { label: 'Active bots', value: stats.bots, icon: Bot },
-    { label: 'Team members', value: stats.members, icon: Users },
+    { label: 'Total conversations', value: stats.total, icon: MessageSquare, accent: 'bg-blue-600/15 border-blue-600/20 text-blue-400' },
+    { label: 'Open', value: stats.open, icon: AlertCircle, accent: 'bg-orange-500/15 border-orange-500/20 text-orange-400' },
+    { label: 'Active bots', value: stats.bots, icon: Bot, accent: 'bg-zinc-800 border-zinc-700 text-zinc-400' },
+    { label: 'Team members', value: stats.members, icon: Users, accent: 'bg-zinc-800 border-zinc-700 text-zinc-400' },
   ];
 
   return (
-    <div className="p-8 max-w-6xl">
+    <div className="p-4 md:p-8">
       {/* Header */}
       <div className="mb-8">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">
@@ -128,12 +128,12 @@ export default function DashboardPage() {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {statCards.map(({ label, value, icon: Icon }) => (
+        {statCards.map(({ label, value, icon: Icon, accent }) => (
           <div key={label} className="card p-5">
             <div className="flex items-center justify-between mb-4">
               <p className="text-xs text-zinc-500 font-normal">{label}</p>
-              <div className="w-7 h-7 rounded-lg bg-zinc-800 flex items-center justify-center">
-                <Icon className="w-3.5 h-3.5 text-zinc-400" />
+              <div className={`w-7 h-7 rounded-lg border flex items-center justify-center ${accent}`}>
+                <Icon className="w-3.5 h-3.5" />
               </div>
             </div>
             {loading
@@ -170,7 +170,7 @@ export default function DashboardPage() {
                   {volumeData.map((entry, i) => (
                     <Cell
                       key={i}
-                      fill={entry.count > 0 ? '#e4e4e7' : '#27272a'}
+                      fill={entry.count > 0 ? '#3b82f6' : '#27272a'}
                     />
                   ))}
                 </Bar>
@@ -231,7 +231,7 @@ export default function DashboardPage() {
         <div className="card p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-5">
             <h2 className="text-sm font-normal text-white">Recent conversations</h2>
-            <a href="/inbox" className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+              <a href="/inbox" className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 transition-colors">
               View all <ArrowRight className="w-3 h-3" />
             </a>
           </div>
@@ -263,10 +263,10 @@ export default function DashboardPage() {
                     </div>
                   </div>
                   <span className={`text-[10px] px-2 py-0.5 rounded-md font-normal ${
-                    c.status === 'OPEN' ? 'bg-zinc-800 text-zinc-300' :
+                    c.status === 'OPEN' ? 'bg-blue-500/15 text-blue-400' :
                     c.status === 'ESCALATED' ? 'bg-red-500/15 text-red-400' :
                     c.status === 'RESOLVED' ? 'bg-zinc-900 text-zinc-600' :
-                    'bg-zinc-800 text-zinc-500'
+                    'bg-orange-500/15 text-orange-400'
                   }`}>
                     {c.status.charAt(0) + c.status.slice(1).toLowerCase()}
                   </span>
