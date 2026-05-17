@@ -87,3 +87,17 @@ export const conversationsApi = {
   sendMessage: (orgId: string, convId: string, content: string) =>
     api.post(`/organizations/${orgId}/conversations/${convId}/messages`, { content }),
 };
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+export const notificationsApi = {
+  list: (orgId: string) => api.get(`/organizations/${orgId}/notifications`),
+  markRead: (orgId: string, notifId: string) =>
+    api.post(`/organizations/${orgId}/notifications/${notifId}/read`),
+  markAllRead: (orgId: string) =>
+    api.post(`/organizations/${orgId}/notifications/read-all`),
+};
+
+// ── Activity ──────────────────────────────────────────────────────────────────
+export const activityApi = {
+  list: (orgId: string) => api.get(`/organizations/${orgId}/activity`),
+};

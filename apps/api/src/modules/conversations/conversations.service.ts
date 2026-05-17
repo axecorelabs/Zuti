@@ -3,6 +3,8 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ActivityService, ActivityAction } from '../activity/activity.service';
 
 interface FindAllFilters {
   status?: string;
@@ -18,6 +20,8 @@ export class ConversationsService {
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
     private readonly events: EventsGateway,
+    private readonly notifications: NotificationsService,
+    private readonly activity: ActivityService,
   ) {}
 
   async findAll(organizationId: string, filters: FindAllFilters) {
@@ -88,12 +92,23 @@ export class ConversationsService {
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
 
+    // Resolve actor name for logging
+    const actor = actorId
+      ? await this.prisma.user.findUnique({ where: { id: actorId }, select: { name: true, email: true } })
+      : null;
+    const actorName = actor?.name ?? actor?.email ?? 'Unknown';
+
     const updated = await this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
         ...(dto.status && { status: dto.status as any }),
         ...(dto.mode && { mode: dto.mode as any }),
-        ...(dto.assignedAgentId !== undefined && { assignedAgentId: dto.assignedAgentId }),
+        // When switching to HUMAN mode, auto-assign the actor if no one is assigned yet
+        ...(dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN' && !conversation.assignedAgentId
+          ? { assignedAgentId: actorId }
+          : dto.assignedAgentId !== undefined
+            ? { assignedAgentId: dto.assignedAgentId }
+            : {}),
       },
       include: {
         bot: { select: { id: true, name: true } },
@@ -104,7 +119,7 @@ export class ConversationsService {
     const token = conversation.bot.telegramToken;
     const chatId = conversation.telegramChatId;
 
-    // Notify customer when agent takes over
+    // Agent takes over from AI
     if (dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN') {
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -112,9 +127,43 @@ export class ConversationsService {
           text: '👤 You have been connected to a support agent. We will be with you shortly.',
         }),
       ).catch(() => null);
+
+      await Promise.all([
+        this.activity.log(
+          organizationId, actorId, actorName,
+          ActivityAction.AGENT_TOOK_OVER,
+          'conversation', conversationId,
+          { previousMode: 'AI' },
+        ),
+        this.notifications.createOrgNotification(
+          organizationId,
+          'agent_took_over',
+          `${actorName} took over a conversation`,
+          `${actorName} switched conversation to human mode and is now handling it.`,
+          { conversationId, actorId },
+        ),
+      ]);
     }
 
-    // Notify customer when conversation is resolved
+    // Conversation escalated
+    if (dto.status === 'ESCALATED' && conversation.status !== 'ESCALATED') {
+      await Promise.all([
+        this.activity.log(
+          organizationId, actorId, actorName,
+          ActivityAction.CONVERSATION_ESCALATED,
+          'conversation', conversationId,
+        ),
+        this.notifications.createOrgNotification(
+          organizationId,
+          'conversation_escalated',
+          'Conversation escalated',
+          `A conversation was escalated${actorId ? ` by ${actorName}` : ' automatically'}.`,
+          { conversationId, actorId },
+        ),
+      ]);
+    }
+
+    // Conversation resolved
     if (dto.status === 'RESOLVED' && conversation.status !== 'RESOLVED') {
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
@@ -122,6 +171,26 @@ export class ConversationsService {
           text: '✅ Your support request has been resolved. Feel free to message us again if you need further help.',
         }),
       ).catch(() => null);
+
+      await this.activity.log(
+        organizationId, actorId, actorName,
+        ActivityAction.CONVERSATION_RESOLVED,
+        'conversation', conversationId,
+      );
+    }
+
+    // Explicit assignment change
+    if (
+      dto.assignedAgentId !== undefined &&
+      dto.assignedAgentId !== conversation.assignedAgentId &&
+      !(dto.mode === 'HUMAN' && !conversation.assignedAgentId) // don't double-log auto-assign
+    ) {
+      await this.activity.log(
+        organizationId, actorId, actorName,
+        ActivityAction.CONVERSATION_ASSIGNED,
+        'conversation', conversationId,
+        { assignedTo: dto.assignedAgentId },
+      );
     }
 
     // Emit conversation update to inbox

@@ -11,6 +11,8 @@ import { ConversationsModule } from './modules/conversations/conversations.modul
 import { EventsModule } from './modules/events/events.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { ActivityModule } from './modules/activity/activity.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 
 @Module({
@@ -26,6 +28,8 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
     ConversationsModule,
     KnowledgeModule,
     InvitationsModule,
+    NotificationsModule,
+    ActivityModule,
   ],
   providers: [
     // Apply JWT guard globally — use @Public() to opt out

@@ -6,10 +6,14 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
+import { ActivityService, ActivityAction } from '../activity/activity.service';
 
 @Injectable()
 export class OrganizationsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private activity: ActivityService,
+  ) {}
 
   async create(userId: string, dto: CreateOrganizationDto) {
     const slugTaken = await this.prisma.organization.findUnique({ where: { slug: dto.slug } });
@@ -58,16 +62,31 @@ export class OrganizationsService {
     await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
     if (requestingUserId === targetUserId) throw new ForbiddenException('Cannot remove yourself');
 
-    // Prevent ADMIN from removing an OWNER
     const target = await this.prisma.organizationMember.findUnique({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+      include: { user: { select: { name: true, email: true } } },
     });
     if (!target) throw new NotFoundException('Member not found');
     if (target.role === 'OWNER') throw new ForbiddenException('Cannot remove an owner');
 
-    return this.prisma.organizationMember.delete({
+    const requester = await this.prisma.user.findUnique({
+      where: { id: requestingUserId },
+      select: { name: true, email: true },
+    });
+
+    await this.prisma.organizationMember.delete({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
     });
+
+    await this.activity.log(
+      orgId,
+      requestingUserId,
+      requester?.name ?? requester?.email ?? 'Unknown',
+      ActivityAction.MEMBER_REMOVED,
+      'member',
+      targetUserId,
+      { removedUserName: target.user.name ?? target.user.email },
+    );
   }
 
   async listMembers(orgId: string, requestingUserId: string) {
@@ -82,16 +101,30 @@ export class OrganizationsService {
   async updateMemberRole(orgId: string, requestingUserId: string, targetUserId: string, role: string) {
     const requester = await this.prisma.organizationMember.findUnique({
       where: { organizationId_userId: { organizationId: orgId, userId: requestingUserId } },
+      include: { user: { select: { name: true, email: true } } },
     });
     if (!requester || requester.role !== 'OWNER') {
       throw new ForbiddenException('Only OWNER can change roles');
     }
     if (requestingUserId === targetUserId) throw new ForbiddenException('Cannot change your own role');
-    return this.prisma.organizationMember.update({
+
+    const updated = await this.prisma.organizationMember.update({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
       data: { role: role as any },
       include: { user: { select: { id: true, name: true, email: true } } },
     });
+
+    await this.activity.log(
+      orgId,
+      requestingUserId,
+      requester.user?.name ?? requester.user?.email ?? 'Unknown',
+      ActivityAction.MEMBER_ROLE_CHANGED,
+      'member',
+      targetUserId,
+      { newRole: role, targetName: updated.user.name ?? updated.user.email },
+    );
+
+    return updated;
   }
 
   private assertMember(org: { members: { userId: string }[] }, userId: string) {

@@ -40,6 +40,8 @@ model Organization {
   integrations   Integration[]
   billing        Billing?
   invitations    Invitation[]
+  notifications  Notification[]
+  activityLogs   ActivityLog[]
 }
 
 model OrganizationMember {
@@ -268,4 +270,41 @@ enum BillingPlan {
   STARTER
   GROWTH
   ENTERPRISE
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id           String   @id @default(cuid())
+  orgId        String
+  /// null = visible to all OWNER/ADMIN of the org; set = personal to that user
+  targetUserId String?
+  type         String
+  title        String
+  body         String
+  metadata     Json     @default("{}")
+  isRead       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, isRead])
+}
+
+// ─── Activity Log ─────────────────────────────────────────────────────────────
+
+model ActivityLog {
+  id         String   @id @default(cuid())
+  orgId      String
+  actorId    String?
+  actorName  String
+  action     String
+  targetType String?
+  targetId   String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt(sort: Desc)])
 }

@@ -20,9 +20,10 @@ import {
   CheckCircle,
   XCircle,
   Mail,
+  Activity,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
-import { orgsApi, invitationsApi } from '@/lib/api';
+import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
 import toast from 'react-hot-toast';
 
 interface Org {
@@ -42,7 +43,12 @@ interface PendingInvite {
 
 // ─── General notification model ──────────────────────────────────────────────
 // Add new types here as features grow (e.g. 'escalation' | 'mention' | 'system')
-export type NotificationType = 'invitation';
+export type NotificationType =
+  | 'invitation'
+  | 'member_joined'
+  | 'agent_took_over'
+  | 'conversation_escalated'
+  | string;
 
 export interface AppNotification {
   id: string;
@@ -51,6 +57,8 @@ export interface AppNotification {
   body: string;
   /** Invitation-specific payload — present when type === 'invitation' */
   inviteMeta?: PendingInvite;
+  /** Server notification id for markRead calls */
+  serverId?: string;
 }
 
 const navItems = [
@@ -59,6 +67,7 @@ const navItems = [
   { label: 'Bots', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: UserRound, agentVisible: false },
+  { label: 'Activity', href: '/activity', icon: Activity, agentVisible: false },
   { label: 'Settings', href: '/settings', icon: Settings, agentVisible: false },
 ];
 
@@ -94,7 +103,7 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
   }, [setOrgRoles]);
 
   const fetchNotifications = useCallback(() => {
-    // Invitations
+    // Invitations (personal, no org required)
     invitationsApi
       .listMine()
       .then((res) => {
@@ -105,15 +114,35 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
           body: `Invited by ${inv.invitedBy.name ?? inv.invitedBy.email} · ${inv.role}`,
           inviteMeta: inv,
         }));
-        // Merge with non-invitation notifications (future types preserved)
         setNotifications((prev) => [
           ...prev.filter((n) => n.type !== 'invitation'),
           ...inviteNotifs,
         ]);
       })
       .catch(() => {});
-    // Future: fetch other notification types here and merge them in the same way
   }, []);
+
+  // Separate effect: fetch server notifications whenever the active org changes
+  const fetchServerNotifications = useCallback(() => {
+    if (!activeOrg) return;
+    notificationsApi
+      .list(activeOrg.id)
+      .then((res) => {
+        interface ServerNotif { id: string; type: string; title: string; body: string; }
+        const serverNotifs: AppNotification[] = (res.data as ServerNotif[]).map((n) => ({
+          id: `server-${n.id}`,
+          serverId: n.id,
+          type: n.type,
+          title: n.title,
+          body: n.body,
+        }));
+        setNotifications((prev) => [
+          ...prev.filter((n) => !n.serverId),
+          ...serverNotifs,
+        ]);
+      })
+      .catch(() => {});
+  }, [activeOrg]);
 
   useEffect(() => {
     fetchOrgs();
@@ -121,6 +150,12 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
     const interval = setInterval(fetchNotifications, 60_000);
     return () => clearInterval(interval);
   }, [fetchOrgs, fetchNotifications]);
+
+  useEffect(() => {
+    fetchServerNotifications();
+    const interval = setInterval(fetchServerNotifications, 60_000);
+    return () => clearInterval(interval);
+  }, [fetchServerNotifications]);
 
   const handleAccept = async (token: string) => {
     setActingToken(token);
@@ -159,6 +194,18 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
 
   const notifCount = notifications.length;
 
+  const handleDismissServer = async (notif: AppNotification) => {
+    if (!notif.serverId || !activeOrg) return;
+    setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    await notificationsApi.markRead(activeOrg.id, notif.serverId).catch(() => {});
+  };
+
+  const handleMarkAllRead = async () => {
+    if (!activeOrg) return;
+    setNotifications((prev) => prev.filter((n) => n.type === 'invitation'));
+    await notificationsApi.markAllRead(activeOrg.id).catch(() => {});
+  };
+
   return (
     <>
       {/* Notification backdrop (mobile-only full dark, desktop transparent) */}
@@ -185,12 +232,22 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
               </span>
             )}
           </div>
-          <button
-            onClick={() => setNotifOpen(false)}
-            className="text-zinc-600 hover:text-zinc-300 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            {notifCount > 0 && (
+              <button
+                onClick={handleMarkAllRead}
+                className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                Mark all read
+              </button>
+            )}
+            <button
+              onClick={() => setNotifOpen(false)}
+              className="text-zinc-600 hover:text-zinc-300 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -238,10 +295,16 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
                   </div>
                 );
               }
-              // Generic fallback card for future notification types
+              // Server notification card (with dismiss button)
               return (
-                <div key={notif.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                  <p className="text-sm font-medium text-white mb-0.5">{notif.title}</p>
+                <div key={notif.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 relative">
+                  <button
+                    onClick={() => handleDismissServer(notif)}
+                    className="absolute top-2 right-2 text-zinc-600 hover:text-zinc-300 transition-colors"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                  <p className="text-sm font-medium text-white mb-0.5 pr-4">{notif.title}</p>
                   <p className="text-xs text-zinc-500 font-light">{notif.body}</p>
                 </div>
               );

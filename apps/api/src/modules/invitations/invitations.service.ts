@@ -10,6 +10,8 @@ import { MailService } from '../mail/mail.service';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { CreateInvitationDto } from './dto/invitation.dto';
+import { NotificationsService } from '../notifications/notifications.service';
+import { ActivityService, ActivityAction } from '../activity/activity.service';
 
 @Injectable()
 export class InvitationsService {
@@ -17,6 +19,8 @@ export class InvitationsService {
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
     private readonly config: ConfigService,
+    private readonly notifications: NotificationsService,
+    private readonly activity: ActivityService,
   ) {}
 
   async create(requestingUserId: string, dto: CreateInvitationDto) {
@@ -63,6 +67,17 @@ export class InvitationsService {
       inviterName: requester?.name ?? requester?.email ?? 'A team member',
       inviteUrl: `${appUrl}/invitations/${token}`,
     });
+
+    // Activity log
+    await this.activity.log(
+      dto.orgId,
+      requestingUserId,
+      requester?.name ?? requester?.email ?? 'Unknown',
+      ActivityAction.INVITATION_SENT,
+      'invitation',
+      invitation.id,
+      { email: dto.email, role: invitation.role },
+    );
 
     return invitation;
   }
@@ -130,6 +145,27 @@ export class InvitationsService {
     });
 
     await this.prisma.invitation.update({ where: { token }, data: { status: 'ACCEPTED' } });
+
+    // Notify OWNER/ADMIN that a member joined
+    await this.notifications.createOrgNotification(
+      invite.organizationId,
+      'member_joined',
+      `${user.name ?? user.email} joined the workspace`,
+      `${user.name ?? user.email} accepted an invitation and joined as ${invite.role}.`,
+      { userId: user.id, role: invite.role },
+    );
+
+    // Activity log
+    await this.activity.log(
+      invite.organizationId,
+      user.id,
+      user.name ?? user.email,
+      ActivityAction.MEMBER_JOINED,
+      'member',
+      user.id,
+      { role: invite.role },
+    );
+
     return { message: 'Invitation accepted' };
   }
 
