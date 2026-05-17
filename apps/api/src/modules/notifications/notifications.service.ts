@@ -48,7 +48,19 @@ export class NotificationsService {
     });
   }
 
-  async markRead(notificationId: string) {
+  /**
+   * Mark a single notification as read.
+   * Enforces ownership: the notification must belong to this user
+   * (either targeted at them or org-wide and they are OWNER/ADMIN).
+   */
+  async markRead(notificationId: string, userId: string, memberRole: string) {
+    const isPrivileged = memberRole === 'OWNER' || memberRole === 'ADMIN';
+    const notif = await this.prisma.notification.findUnique({ where: { id: notificationId } });
+    if (!notif) return;
+    const canRead =
+      notif.targetUserId === userId ||
+      (notif.targetUserId === null && isPrivileged);
+    if (!canRead) return; // silently ignore — no info leak
     return this.prisma.notification.update({
       where: { id: notificationId },
       data: { isRead: true },

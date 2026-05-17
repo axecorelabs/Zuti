@@ -199,10 +199,15 @@ export class OrganizationsService {
     if (requestingUserId !== targetUserId) {
       await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
     }
+    // Sanitize specializations: lowercase, max 30 chars each, max 20 tags
+    const specializations = dto.specializations
+      ?.map((s) => s.trim().toLowerCase().slice(0, 30))
+      .filter(Boolean)
+      .slice(0, 20);
     return this.prisma.organizationMember.update({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
       data: {
-        ...(dto.specializations !== undefined && { specializations: dto.specializations }),
+        ...(specializations !== undefined && { specializations }),
         ...(dto.isAvailable !== undefined && { isAvailable: dto.isAvailable }),
         ...(dto.maxConcurrentConversations !== undefined && {
           maxConcurrentConversations: dto.maxConcurrentConversations,

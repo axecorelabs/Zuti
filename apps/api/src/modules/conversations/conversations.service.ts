@@ -171,15 +171,14 @@ export class ConversationsService {
         );
       }
 
-      // Telegram message to customer
+      // Telegram message to customer — plain text (no parse_mode) avoids injection
       const agentLabel = assignedTo
-        ? `👤 You've been connected to *${assignedTo.name}*, one of our support agents.`
-        : '👤 Your request has been escalated to our support team. An agent will be with you shortly.';
+        ? `You've been connected to ${assignedTo.name}, one of our support agents.`
+        : 'Your request has been escalated to our support team. An agent will be with you shortly.';
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
           chat_id: chatId,
           text: agentLabel,
-          parse_mode: 'Markdown',
         }),
       ).catch(() => null);
 

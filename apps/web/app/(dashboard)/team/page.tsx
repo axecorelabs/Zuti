@@ -22,9 +22,9 @@ import { useAuthStore } from '@/lib/store';
 interface Member {
   userId: string;
   role: 'OWNER' | 'ADMIN' | 'AGENT';
-  specializations: string[];
-  isAvailable: boolean;
-  maxConcurrentConversations: number;
+  specializations?: string[] | null;
+  isAvailable?: boolean | null;
+  maxConcurrentConversations?: number | null;
   user: { id: string; name: string; email: string };
 }
 
@@ -176,7 +176,7 @@ export default function TeamPage() {
 
   const handleAvailabilityToggle = async (member: Member) => {
     if (!orgId) return;
-    const next = !member.isAvailable;
+    const next = !(member.isAvailable ?? true);
     setMembers((prev) => prev.map((m) => m.userId === member.userId ? { ...m, isAvailable: next } : m));
     try {
       await orgsApi.updateAgentProfile(orgId, member.userId, { isAvailable: next });
@@ -189,8 +189,8 @@ export default function TeamPage() {
 
   const openProfileEdit = (member: Member) => {
     setEditingProfile(member.userId);
-    setProfileSpecInput(member.specializations.join(', '));
-    setProfileMaxInput(member.maxConcurrentConversations);
+    setProfileSpecInput((member.specializations ?? []).join(', '));
+    setProfileMaxInput(member.maxConcurrentConversations ?? 10);
   };
 
   const handleSaveProfile = async (userId: string) => {
@@ -204,7 +204,12 @@ export default function TeamPage() {
         specializations,
         maxConcurrentConversations: profileMaxInput,
       });
-      setMembers((prev) => prev.map((m) => m.userId === userId ? { ...m, ...(res.data as Member) } : m));
+      const updated = res.data as Member;
+      setMembers((prev) => prev.map((m) =>
+        m.userId === userId
+          ? { ...m, specializations: updated.specializations, maxConcurrentConversations: updated.maxConcurrentConversations }
+          : m
+      ));
       setEditingProfile(null);
       toast.success('Profile saved');
     } catch {
@@ -293,9 +298,9 @@ export default function TeamPage() {
                         </div>
                         <p className="text-xs text-zinc-600 truncate">{m.user.email}</p>
                         {/* Specialization tags */}
-                        {m.role === 'AGENT' && m.specializations.length > 0 && (
+                        {m.role === 'AGENT' && (m.specializations?.length ?? 0) > 0 && (
                           <div className="flex flex-wrap gap-1 mt-1">
-                            {m.specializations.map((s) => (
+                            {(m.specializations ?? []).map((s) => (
                               <span key={s} className="text-[10px] px-1.5 py-0.5 rounded-md bg-zinc-800 text-zinc-500 border border-zinc-700">
                                 {s}
                               </span>
@@ -308,14 +313,14 @@ export default function TeamPage() {
                       {m.role === 'AGENT' && (myRole === 'OWNER' || myRole === 'ADMIN' || isMe) && (
                         <button
                           onClick={() => handleAvailabilityToggle(m)}
-                          title={m.isAvailable ? 'Mark unavailable' : 'Mark available'}
+                          title={(m.isAvailable ?? true) ? 'Mark unavailable' : 'Mark available'}
                           className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors ${
-                            m.isAvailable
+                            (m.isAvailable ?? true)
                               ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
                               : 'bg-zinc-800 text-zinc-600 border-zinc-700'
                           }`}
                         >
-                          {m.isAvailable ? 'Online' : 'Offline'}
+                          {(m.isAvailable ?? true) ? 'Online' : 'Offline'}
                         </button>
                       )}
                       {/* Edit profile (AGENT only, OWNER/ADMIN or self) */}
@@ -379,7 +384,7 @@ export default function TeamPage() {
                             min={1}
                             max={50}
                             value={profileMaxInput}
-                            onChange={(e) => setProfileMaxInput(Number(e.target.value))}
+                            onChange={(e) => setProfileMaxInput(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
                             className="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors"
                           />
                         </div>
