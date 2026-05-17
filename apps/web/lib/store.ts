@@ -10,15 +10,20 @@ interface AuthState {
   user: User | null;
   accessToken: string | null;
   isLoading: boolean;
+  /** Maps orgId → MemberRole ('OWNER' | 'ADMIN' | 'AGENT') */
+  orgRoles: Record<string, string>;
   setAuth: (user: User, accessToken: string, refreshToken: string) => void;
   clearAuth: () => void;
   loadFromStorage: () => void;
+  setOrgRoles: (roles: Record<string, string>) => void;
+  getRoleForOrg: (orgId: string) => string | undefined;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   accessToken: null,
   isLoading: true,
+  orgRoles: {},
 
   setAuth: (user, accessToken, refreshToken) => {
     if (typeof window !== 'undefined') {
@@ -33,7 +38,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
     }
-    set({ user: null, accessToken: null, isLoading: false });
+    set({ user: null, accessToken: null, isLoading: false, orgRoles: {} });
   },
 
   loadFromStorage: () => {
@@ -64,4 +69,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       set({ isLoading: false });
     }
   },
+
+  setOrgRoles: (roles) => set({ orgRoles: roles }),
+  getRoleForOrg: (orgId) => get().orgRoles[orgId],
 }));

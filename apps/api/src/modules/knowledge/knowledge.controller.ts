@@ -5,10 +5,15 @@ import {
   Param,
   UploadedFile,
   UseInterceptors,
+  UseGuards,
 } from '@nestjs/common';
 import { IsString, IsNotEmpty } from 'class-validator';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth } from '@nestjs/swagger';
 import { KnowledgeService } from './knowledge.service';
+import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { OrgMemberGuard } from '../../common/guards/org-member.guard';
+import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 
 class IngestUrlDto {
   @IsString() @IsNotEmpty() url: string;
@@ -20,6 +25,9 @@ class IngestTextDto {
   @IsString() @IsNotEmpty() text: string;
 }
 
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
+@RequireRole('OWNER', 'ADMIN')
 @Controller('organizations/:id/knowledge')
 export class KnowledgeController {
   constructor(private readonly knowledge: KnowledgeService) {}

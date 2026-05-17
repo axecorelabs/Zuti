@@ -44,6 +44,9 @@ export const orgsApi = {
   create: (name: string, slug: string) => api.post('/organizations', { name, slug }),
   removeMember: (orgId: string, userId: string) =>
     api.delete(`/organizations/${orgId}/members/${userId}`),
+  listMembers: (orgId: string) => api.get(`/organizations/${orgId}/members`),
+  updateMemberRole: (orgId: string, userId: string, role: string) =>
+    api.patch(`/organizations/${orgId}/members/${userId}/role`, { role }),
 };
 
 // ── Invitations ───────────────────────────────────────────────────────────────

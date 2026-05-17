@@ -8,6 +8,8 @@ interface FindAllFilters {
   status?: string;
   mode?: string;
   botId?: string;
+  /** When set, only return conversations assigned to this agent or unassigned */
+  agentId?: string;
 }
 
 @Injectable()
@@ -25,6 +27,13 @@ export class ConversationsService {
         ...(filters.status && { status: filters.status as any }),
         ...(filters.mode && { mode: filters.mode as any }),
         ...(filters.botId && { botId: filters.botId }),
+        // AGENT scope: show only their assigned conversations OR unassigned
+        ...(filters.agentId && {
+          OR: [
+            { assignedAgentId: filters.agentId },
+            { assignedAgentId: null },
+          ],
+        }),
       },
       include: {
         bot: { select: { id: true, name: true, telegramUsername: true } },

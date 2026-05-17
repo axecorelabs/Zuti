@@ -1,9 +1,16 @@
-import { Controller, Get, Post, Delete, Body, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
+import { IsString, IsIn } from 'class-validator';
 import { OrganizationsService } from './organizations.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
+class UpdateMemberRoleDto {
+  @IsString()
+  @IsIn(['ADMIN', 'AGENT'])
+  declare role: string;
+}
 
 @ApiTags('organizations')
 @ApiBearerAuth()
@@ -28,6 +35,23 @@ export class OrganizationsController {
   @ApiOperation({ summary: 'Get organization by slug' })
   findOne(@Param('slug') slug: string, @CurrentUser() user: { id: string }) {
     return this.organizationsService.findOne(slug, user.id);
+  }
+
+  @Get(':id/members')
+  @ApiOperation({ summary: 'List members of an organization (OWNER/ADMIN only)' })
+  listMembers(@Param('id') orgId: string, @CurrentUser() user: { id: string }) {
+    return this.organizationsService.listMembers(orgId, user.id);
+  }
+
+  @Patch(':id/members/:userId/role')
+  @ApiOperation({ summary: 'Update a member role (OWNER only)' })
+  updateMemberRole(
+    @Param('id') orgId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: { id: string },
+    @Body() dto: UpdateMemberRoleDto,
+  ) {
+    return this.organizationsService.updateMemberRole(orgId, user.id, targetUserId, dto.role);
   }
 
   @Delete(':id/members/:userId')

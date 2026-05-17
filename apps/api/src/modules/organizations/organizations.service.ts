@@ -31,7 +31,13 @@ export class OrganizationsService {
   async findAllForUser(userId: string) {
     return this.prisma.organization.findMany({
       where: { members: { some: { userId } } },
-      include: { _count: { select: { bots: true, conversations: true } } },
+      include: {
+        members: {
+          where: { userId },
+          select: { role: true },
+        },
+        _count: { select: { bots: true, conversations: true } },
+      },
     });
   }
 
@@ -53,6 +59,30 @@ export class OrganizationsService {
     if (requestingUserId === targetUserId) throw new ForbiddenException('Cannot remove yourself');
     return this.prisma.organizationMember.delete({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+    });
+  }
+
+  async listMembers(orgId: string, requestingUserId: string) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    return this.prisma.organizationMember.findMany({
+      where: { organizationId: orgId },
+      include: { user: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async updateMemberRole(orgId: string, requestingUserId: string, targetUserId: string, role: string) {
+    const requester = await this.prisma.organizationMember.findUnique({
+      where: { organizationId_userId: { organizationId: orgId, userId: requestingUserId } },
+    });
+    if (!requester || requester.role !== 'OWNER') {
+      throw new ForbiddenException('Only OWNER can change roles');
+    }
+    if (requestingUserId === targetUserId) throw new ForbiddenException('Cannot change your own role');
+    return this.prisma.organizationMember.update({
+      where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+      data: { role: role as any },
+      include: { user: { select: { id: true, name: true, email: true } } },
     });
   }
 

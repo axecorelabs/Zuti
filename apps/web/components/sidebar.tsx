@@ -54,17 +54,18 @@ export interface AppNotification {
 }
 
 const navItems = [
-  { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
-  { label: 'Inbox', href: '/inbox', icon: MessageSquare },
-  { label: 'Bots', href: '/bots', icon: Bot },
-  { label: 'Knowledge', href: '/knowledge', icon: BookOpen },
-  { label: 'Settings', href: '/settings', icon: Settings },
+  { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: false },
+  { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
+  { label: 'Bots', href: '/bots', icon: Bot, agentVisible: false },
+  { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
+  { label: 'Team', href: '/team', icon: UserRound, agentVisible: false },
+  { label: 'Settings', href: '/settings', icon: Settings, agentVisible: false },
 ];
 
 export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, clearAuth } = useAuthStore();
+  const { user, clearAuth, setOrgRoles, getRoleForOrg } = useAuthStore();
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [activeOrg, setActiveOrg] = useState<Org | null>(null);
   const [orgOpen, setOrgOpen] = useState(false);
@@ -72,16 +73,25 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [actingToken, setActingToken] = useState<string | null>(null);
 
+  const activeOrgRole = activeOrg ? getRoleForOrg(activeOrg.id) : undefined;
+  const isAgent = activeOrgRole === 'AGENT';
+
   const fetchOrgs = useCallback(() => {
     orgsApi
       .list()
       .then((res) => {
-        const list: Org[] = res.data;
+        const list: (Org & { members?: { role: string }[] })[] = res.data;
         setOrgs(list);
         if (list.length > 0) setActiveOrg((prev) => prev ?? list[0]);
+        // Store each org's role for the current user
+        const roles: Record<string, string> = {};
+        list.forEach((org) => {
+          if (org.members?.[0]?.role) roles[org.id] = org.members[0].role;
+        });
+        setOrgRoles(roles);
       })
       .catch(() => {});
-  }, []);
+  }, [setOrgRoles]);
 
   const fetchNotifications = useCallback(() => {
     // Invitations
@@ -309,7 +319,9 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-          {navItems.map(({ label, href, icon: Icon }) => {
+          {navItems
+            .filter((item) => !isAgent || item.agentVisible)
+            .map(({ label, href, icon: Icon }) => {
             const isActive = pathname === href || (href !== '/dashboard' && pathname.startsWith(href));
             return (
               <Link

@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Body, Patch, Post, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Param, Query, Body, Patch, Post, UseGuards, HttpCode, HttpStatus, Req } from '@nestjs/common';
 import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
 import { ApiProperty, ApiBearerAuth, ApiOperation, ApiQuery, ApiTags, ApiPropertyOptional } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
@@ -46,11 +46,13 @@ export class ConversationsController {
   @ApiQuery({ name: 'botId', required: false })
   findAll(
     @Param('id') orgId: string,
+    @Req() req: any,
     @Query('status') status?: string,
     @Query('mode') mode?: string,
     @Query('botId') botId?: string,
   ) {
-    return this.service.findAll(orgId, { status, mode, botId });
+    const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
+    return this.service.findAll(orgId, { status, mode, botId, agentId });
   }
 
   @Get(':conversationId')
