@@ -150,8 +150,13 @@ export class ConversationsService {
 
     // Conversation escalated
     if (dto.status === 'ESCALATED' && conversation.status !== 'ESCALATED') {
-      // Smart-route to best available agent
-      const bestAgent = await this.orgs.findBestAgent(organizationId, dto.escalationTopic);
+      // Smart-route using the bot's allowed roles (default: AGENT only)
+      const routeToRoles: string[] =
+        Array.isArray((conversation.bot as any).routeToRoles) &&
+        (conversation.bot as any).routeToRoles.length > 0
+          ? (conversation.bot as any).routeToRoles
+          : ['AGENT'];
+      const bestAgent = await this.orgs.findBestAgent(organizationId, dto.escalationTopic, routeToRoles);
       const assignedTo = bestAgent ?? null;
 
       if (assignedTo) {

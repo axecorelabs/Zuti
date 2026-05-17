@@ -14,6 +14,7 @@ interface BotRecord {
   webhookSet: boolean;
   createdAt: string;
   aiConfig: Record<string, string> | null;
+  routeToRoles: string[];
 }
 
 export default function BotsPage() {
@@ -26,6 +27,7 @@ export default function BotsPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
   const [editSystemPrompt, setEditSystemPrompt] = useState('');
+  const [editRouteToRoles, setEditRouteToRoles] = useState<string[]>(['AGENT']);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -96,6 +98,16 @@ export default function BotsPage() {
   const openSettings = (bot: BotRecord) => {
     setSettingsBot(bot);
     setEditSystemPrompt(bot.aiConfig?.systemPrompt ?? '');
+    setEditRouteToRoles(bot.routeToRoles?.length ? bot.routeToRoles : ['AGENT']);
+  };
+
+  const toggleRouteRole = (role: string) => {
+    setEditRouteToRoles((prev) =>
+      prev.includes(role)
+        ? prev.filter((r) => r !== role) // never allow empty — keep at least one
+            .length === 0 ? prev : prev.filter((r) => r !== role)
+        : [...prev, role],
+    );
   };
 
   const handleSaveSettings = async () => {
@@ -104,6 +116,7 @@ export default function BotsPage() {
     try {
       const res = await botsApi.update(orgId, settingsBot.id, {
         aiConfig: { ...(settingsBot.aiConfig ?? {}), systemPrompt: editSystemPrompt },
+        routeToRoles: editRouteToRoles,
       });
       setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? res.data : b)));
       setSettingsBot(res.data);
@@ -178,6 +191,55 @@ export default function BotsPage() {
               </div>
             </div>
 
+            {/* Routing */}
+            <div className="card p-6 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+                  <Zap className="w-4 h-4 text-zinc-400" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Escalation Routing</h2>
+                  <p className="text-xs text-zinc-500 font-light">Which roles the AI may auto-assign conversations to when escalating.</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {([
+                  { role: 'AGENT', label: 'Agents', description: 'Dedicated support staff — recommended' },
+                  { role: 'ADMIN', label: 'Admins', description: 'Managers and team leads' },
+                  { role: 'OWNER', label: 'Owners', description: 'Organization owners' },
+                ] as { role: string; label: string; description: string }[]).map(({ role, label, description }) => {
+                  const checked = editRouteToRoles.includes(role);
+                  const isLast = editRouteToRoles.length === 1 && checked;
+                  return (
+                    <label
+                      key={role}
+                      className={`flex items-center gap-3 px-4 py-3 rounded-xl border cursor-pointer transition-colors ${
+                        checked
+                          ? 'bg-blue-600/8 border-blue-600/25'
+                          : 'bg-zinc-900/50 border-zinc-800 hover:border-zinc-700'
+                      } ${isLast ? 'cursor-not-allowed opacity-60' : ''}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={isLast}
+                        onChange={() => toggleRouteRole(role)}
+                        className="w-4 h-4 rounded border-zinc-600 bg-zinc-900 accent-blue-500 shrink-0"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-white leading-none mb-0.5">{label}</p>
+                        <p className="text-[11px] text-zinc-500 font-light">{description}</p>
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-[11px] text-zinc-600 mt-3 font-light">
+                At least one role must be selected. Availability and capacity limits still apply.
+              </p>
+            </div>
+
             {/* Save / back */}
             <div className="flex gap-3">
               <button
@@ -239,6 +301,16 @@ export default function BotsPage() {
                   }`}>
                     {settingsBot.aiConfig?.systemPrompt ? 'Custom' : 'Default'}
                   </span>
+                </div>
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-zinc-500 shrink-0">Routes to</span>
+                  <div className="flex flex-wrap gap-1 justify-end">
+                    {(settingsBot.routeToRoles?.length ? settingsBot.routeToRoles : ['AGENT']).map((r) => (
+                      <span key={r} className="px-1.5 py-0.5 rounded-md font-medium text-[10px] bg-zinc-800 text-zinc-400">
+                        {r}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
 

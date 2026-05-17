@@ -110,6 +110,7 @@ model Bot {
   webhookSecret  String?  // Used to verify incoming Telegram webhook requests
   isActive       Boolean  @default(true)
   aiConfig       Json     @default("{}")
+  routeToRoles   String[] @default(["AGENT"]) // roles the AI may auto-assign escalations to
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 

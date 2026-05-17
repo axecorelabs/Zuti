@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, MaxLength, IsOptional, IsBoolean, IsObject } from 'class-validator';
+import { IsString, IsNotEmpty, MaxLength, IsOptional, IsBoolean, IsObject, IsArray, IsIn } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateBotDto {
@@ -30,4 +30,15 @@ export class UpdateBotDto {
   @IsOptional()
   @IsObject()
   aiConfig?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description: 'Roles the AI may auto-assign escalated conversations to',
+    example: ['AGENT'],
+    enum: ['AGENT', 'ADMIN', 'OWNER'],
+    isArray: true,
+  })
+  @IsOptional()
+  @IsArray()
+  @IsIn(['AGENT', 'ADMIN', 'OWNER'], { each: true })
+  routeToRoles?: string[];
 }

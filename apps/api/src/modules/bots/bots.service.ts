@@ -64,6 +64,7 @@ export class BotsService {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
         ...(dto.aiConfig !== undefined && { aiConfig: dto.aiConfig as any }),
+        ...(dto.routeToRoles !== undefined && { routeToRoles: dto.routeToRoles }),
       },
     });
   }

@@ -146,9 +146,15 @@ export class OrganizationsService {
    * Scoring: specialization match → least loaded → first available.
    * Returns null if no agents are available (all offline or all at capacity).
    */
-  async findBestAgent(orgId: string, topic?: string): Promise<{ userId: string; name: string } | null> {
+  async findBestAgent(
+    orgId: string,
+    topic?: string,
+    allowedRoles: string[] = ['AGENT'],
+  ): Promise<{ userId: string; name: string } | null> {
+    const safeRoles = allowedRoles.filter((r) => ['AGENT', 'ADMIN', 'OWNER'].includes(r));
+    if (!safeRoles.length) return null;
     const agents = await this.prisma.organizationMember.findMany({
-      where: { organizationId: orgId, role: 'AGENT', isAvailable: true },
+      where: { organizationId: orgId, role: { in: safeRoles as any[] }, isAvailable: true },
       include: { user: { select: { id: true, name: true, email: true } } },
     });
     if (!agents.length) return null;
