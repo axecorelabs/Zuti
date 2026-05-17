@@ -1,53 +1,47 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
-import { firstValueFrom } from 'rxjs';
 
 @Injectable()
 export class KnowledgeService {
-  constructor(
-    private readonly http: HttpService,
-    private readonly config: ConfigService,
-  ) {}
+  constructor(private readonly config: ConfigService) {}
 
   private get aiUrl() {
     return this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
   }
 
+  private async post(path: string, body: unknown): Promise<unknown> {
+    const res = await fetch(`${this.aiUrl}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new InternalServerErrorException(
+        `AI service error: ${res.status} ${JSON.stringify(data)}`,
+      );
+    }
+    return data;
+  }
+
   async ingestUrl(organizationId: string, url: string, name: string) {
     const knowledgeFileId = `kf_${organizationId}_${Date.now()}`;
-    try {
-      const res = await firstValueFrom(
-        this.http.post(`${this.aiUrl}/api/v1/knowledge/ingest/url`, {
-          organization_id: organizationId,
-          knowledge_file_id: knowledgeFileId,
-          url,
-          name,
-        }),
-      );
-      return res.data;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new InternalServerErrorException(`AI service error: ${msg}`);
-    }
+    return this.post('/api/v1/knowledge/ingest/url', {
+      organization_id: organizationId,
+      knowledge_file_id: knowledgeFileId,
+      url,
+      name,
+    });
   }
 
   async ingestText(organizationId: string, name: string, text: string) {
     const knowledgeFileId = `kf_${organizationId}_${Date.now()}`;
-    try {
-      const res = await firstValueFrom(
-        this.http.post(`${this.aiUrl}/api/v1/knowledge/ingest/text`, {
-          organization_id: organizationId,
-          knowledge_file_id: knowledgeFileId,
-          name,
-          text,
-        }),
-      );
-      return res.data;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new InternalServerErrorException(`AI service error: ${msg}`);
-    }
+    return this.post('/api/v1/knowledge/ingest/text', {
+      organization_id: organizationId,
+      knowledge_file_id: knowledgeFileId,
+      name,
+      text,
+    });
   }
 
   async ingestFile(
@@ -63,14 +57,16 @@ export class KnowledgeService {
     form.append('knowledge_file_id', knowledgeFileId);
     form.append('file', new Blob([new Uint8Array(buffer)], { type: mimetype }), originalname);
 
-    try {
-      const res = await firstValueFrom(
-        this.http.post(`${this.aiUrl}/api/v1/knowledge/ingest/file`, form),
+    const res = await fetch(`${this.aiUrl}/api/v1/knowledge/ingest/file`, {
+      method: 'POST',
+      body: form,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new InternalServerErrorException(
+        `AI service error: ${res.status} ${JSON.stringify(data)}`,
       );
-      return res.data;
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw new InternalServerErrorException(`AI service error: ${msg}`);
     }
+    return data;
   }
 }

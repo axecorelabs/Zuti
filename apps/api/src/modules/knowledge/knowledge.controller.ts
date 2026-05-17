@@ -6,17 +6,18 @@ import {
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import { IsString, IsNotEmpty } from 'class-validator';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { KnowledgeService } from './knowledge.service';
 
 class IngestUrlDto {
-  url: string;
-  name: string;
+  @IsString() @IsNotEmpty() url: string;
+  @IsString() @IsNotEmpty() name: string;
 }
 
 class IngestTextDto {
-  name: string;
-  text: string;
+  @IsString() @IsNotEmpty() name: string;
+  @IsString() @IsNotEmpty() text: string;
 }
 
 @Controller('organizations/:id/knowledge')
