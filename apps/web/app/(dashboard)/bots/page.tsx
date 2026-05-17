@@ -149,7 +149,7 @@ export default function BotsPage() {
       {/* Edit bot modal */}
       {editBot && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="card p-8 w-full max-w-md mx-4">
+          <div className="card p-8 w-full max-w-2xl mx-4">
             <h2 className="font-brand font-semibold text-xl tracking-tight text-white mb-1">
               Bot settings
             </h2>

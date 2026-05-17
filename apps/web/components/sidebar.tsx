@@ -12,6 +12,7 @@ import {
   LogOut,
   ChevronDown,
   Plus,
+  Building2,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi } from '@/lib/api';
@@ -70,9 +71,7 @@ export default function Sidebar() {
           className="w-full flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-zinc-900 transition-colors"
         >
           <div className="w-6 h-6 rounded-md bg-zinc-700 flex items-center justify-center shrink-0">
-            <span className="text-xs font-medium text-white">
-              {activeOrg?.name?.[0]?.toUpperCase() ?? '?'}
-            </span>
+            <Building2 className="w-3.5 h-3.5 text-zinc-300" />
           </div>
           <span className="text-sm text-zinc-300 font-light truncate flex-1 text-left">
             {activeOrg?.name ?? 'No workspace'}
