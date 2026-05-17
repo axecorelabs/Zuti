@@ -10,7 +10,7 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Default model — change to any model slug on https://openrouter.ai/models
-DEFAULT_MODEL = "openai/gpt-4o-mini"
+DEFAULT_MODEL = "google/gemini-2.5-flash"
 
 BASE_SYSTEM_PROMPT = """You are {bot_name}, a helpful customer service AI assistant for {org_name}.
 Use the provided context to answer questions accurately and concisely.
