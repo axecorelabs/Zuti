@@ -83,7 +83,7 @@ export const botsApi = {
 
 // ── Conversations ─────────────────────────────────────────────────────────────
 export const conversationsApi = {
-  list: (orgId: string, params?: Record<string, string>) =>
+  list: (orgId: string, params?: Record<string, string | undefined>) =>
     api.get(`/organizations/${orgId}/conversations`, { params }),
   get: (orgId: string, convId: string) =>
     api.get(`/organizations/${orgId}/conversations/${convId}`),

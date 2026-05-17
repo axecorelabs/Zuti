@@ -11,6 +11,8 @@ interface FindAllFilters {
   status?: string;
   mode?: string;
   botId?: string;
+  assignedAgentId?: string;
+  q?: string;
   /** When set, only return conversations assigned to this agent or unassigned */
   agentId?: string;
 }
@@ -28,19 +30,43 @@ export class ConversationsService {
   ) {}
 
   async findAll(organizationId: string, filters: FindAllFilters) {
+    const andClauses: any[] = [];
+
+    if (filters.agentId) {
+      andClauses.push({
+        OR: [
+          { assignedAgentId: filters.agentId },
+          { assignedAgentId: null },
+        ],
+      });
+    }
+
+    if (filters.assignedAgentId) {
+      andClauses.push(
+        filters.assignedAgentId === 'unassigned'
+          ? { assignedAgentId: null }
+          : { assignedAgentId: filters.assignedAgentId },
+      );
+    }
+
+    if (filters.q?.trim()) {
+      const q = filters.q.trim();
+      andClauses.push({
+        OR: [
+          { customerName: { contains: q, mode: 'insensitive' } },
+          { customerUsername: { contains: q, mode: 'insensitive' } },
+          { messages: { some: { content: { contains: q, mode: 'insensitive' } } } },
+        ],
+      });
+    }
+
     return this.prisma.conversation.findMany({
       where: {
         organizationId,
         ...(filters.status && { status: filters.status as any }),
         ...(filters.mode && { mode: filters.mode as any }),
         ...(filters.botId && { botId: filters.botId }),
-        // AGENT scope: show only their assigned conversations OR unassigned
-        ...(filters.agentId && {
-          OR: [
-            { assignedAgentId: filters.agentId },
-            { assignedAgentId: null },
-          ],
-        }),
+        ...(andClauses.length > 0 && { AND: andClauses }),
       },
       include: {
         bot: { select: { id: true, name: true, telegramUsername: true } },
@@ -71,7 +97,46 @@ export class ConversationsService {
     });
 
     if (!conversation) throw new NotFoundException('Conversation not found');
-    return conversation;
+
+    const [previousConversations, escalationHistory] = await Promise.all([
+      this.prisma.conversation.findMany({
+        where: {
+          organizationId,
+          telegramChatId: conversation.telegramChatId,
+          NOT: { id: conversation.id },
+        },
+        include: {
+          bot: { select: { id: true, name: true, telegramUsername: true } },
+          assignedAgent: { select: { id: true, name: true, email: true } },
+          _count: { select: { messages: true } },
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        take: 10,
+      }),
+      this.prisma.activityLog.findMany({
+        where: {
+          orgId: organizationId,
+          targetType: 'conversation',
+          targetId: conversation.id,
+          action: {
+            in: [
+              ActivityAction.CONVERSATION_ESCALATED,
+              ActivityAction.CONVERSATION_ASSIGNED,
+              ActivityAction.AGENT_TOOK_OVER,
+              ActivityAction.CONVERSATION_RESOLVED,
+            ],
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 30,
+      }),
+    ]);
+
+    return {
+      ...conversation,
+      previousConversations,
+      escalationHistory,
+    };
   }
 
   async update(
@@ -150,6 +215,14 @@ export class ConversationsService {
 
     // Conversation escalated
     if (dto.status === 'ESCALATED' && conversation.status !== 'ESCALATED') {
+      await this.prisma.escalation.create({
+        data: {
+          conversationId,
+          reason: dto.escalationTopic ?? null,
+          triggeredBy: 'AGENT_MANUAL',
+        },
+      });
+
       // Smart-route using the bot's allowed roles (default: AGENT only)
       const routeToRoles: string[] =
         Array.isArray((conversation.bot as any).routeToRoles) &&
@@ -206,6 +279,11 @@ export class ConversationsService {
 
     // Conversation resolved
     if (dto.status === 'RESOLVED' && conversation.status !== 'RESOLVED') {
+      await this.prisma.escalation.updateMany({
+        where: { conversationId, resolvedAt: null },
+        data: { resolvedAt: new Date() },
+      });
+
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
           chat_id: chatId,
@@ -239,6 +317,7 @@ export class ConversationsService {
       conversationId,
       ...(dto.status && { status: dto.status }),
       ...(dto.mode && { mode: dto.mode }),
+      ...(updated.assignedAgentId !== conversation.assignedAgentId && { assignedAgentId: updated.assignedAgentId }),
     });
 
     return updated;

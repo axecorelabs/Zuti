@@ -1,4 +1,8 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
@@ -9,19 +13,42 @@ export class KnowledgeService {
     return this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
   }
 
+  private async parseResponse(res: Response): Promise<unknown> {
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {
+      data = null;
+    }
+
+    if (!res.ok) {
+      const message = `AI service error: ${res.status} ${JSON.stringify(data)}`;
+      if (res.status >= 400 && res.status < 500) {
+        throw new BadRequestException(message);
+      }
+      throw new InternalServerErrorException(message);
+    }
+
+    return data;
+  }
+
+  private async request(path: string, init: RequestInit): Promise<unknown> {
+    const res = await fetch(`${this.aiUrl}${path}`, init);
+    return this.parseResponse(res);
+  }
+
   private async post(path: string, body: unknown): Promise<unknown> {
-    const res = await fetch(`${this.aiUrl}${path}`, {
+    return this.request(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new InternalServerErrorException(
-        `AI service error: ${res.status} ${JSON.stringify(data)}`,
-      );
-    }
-    return data;
+  }
+
+  async list(organizationId: string) {
+    return this.request(`/api/v1/knowledge/${organizationId}/items`, {
+      method: 'GET',
+    });
   }
 
   async ingestUrl(organizationId: string, url: string, name: string) {
@@ -61,12 +88,18 @@ export class KnowledgeService {
       method: 'POST',
       body: form,
     });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new InternalServerErrorException(
-        `AI service error: ${res.status} ${JSON.stringify(data)}`,
-      );
-    }
-    return data;
+    return this.parseResponse(res);
+  }
+
+  async deleteOne(organizationId: string, knowledgeFileId: string) {
+    return this.request(`/api/v1/knowledge/${organizationId}/items/${knowledgeFileId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async deleteAll(organizationId: string) {
+    return this.request(`/api/v1/knowledge/${organizationId}`, {
+      method: 'DELETE',
+    });
   }
 }

@@ -1,6 +1,8 @@
 import {
   Controller,
   Post,
+  Get,
+  Delete,
   Body,
   Param,
   UploadedFile,
@@ -32,6 +34,11 @@ class IngestTextDto {
 export class KnowledgeController {
   constructor(private readonly knowledge: KnowledgeService) {}
 
+  @Get()
+  list(@Param('id') orgId: string) {
+    return this.knowledge.list(orgId);
+  }
+
   @Post('ingest/url')
   ingestUrl(@Param('id') orgId: string, @Body() dto: IngestUrlDto) {
     return this.knowledge.ingestUrl(orgId, dto.url, dto.name);
@@ -56,5 +63,15 @@ export class KnowledgeController {
       file.originalname,
       file.mimetype,
     );
+  }
+
+  @Delete(':knowledgeFileId')
+  deleteOne(@Param('id') orgId: string, @Param('knowledgeFileId') knowledgeFileId: string) {
+    return this.knowledge.deleteOne(orgId, knowledgeFileId);
+  }
+
+  @Delete()
+  deleteAll(@Param('id') orgId: string) {
+    return this.knowledge.deleteAll(orgId);
   }
 }

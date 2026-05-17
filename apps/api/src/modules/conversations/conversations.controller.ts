@@ -49,15 +49,19 @@ export class ConversationsController {
   @ApiQuery({ name: 'status', required: false })
   @ApiQuery({ name: 'mode', required: false })
   @ApiQuery({ name: 'botId', required: false })
+  @ApiQuery({ name: 'assignedAgentId', required: false, description: 'Agent user id or "unassigned"' })
+  @ApiQuery({ name: 'q', required: false, description: 'Search by customer name/username or message content' })
   findAll(
     @Param('id') orgId: string,
     @Req() req: any,
     @Query('status') status?: string,
     @Query('mode') mode?: string,
     @Query('botId') botId?: string,
+    @Query('assignedAgentId') assignedAgentId?: string,
+    @Query('q') q?: string,
   ) {
     const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
-    return this.service.findAll(orgId, { status, mode, botId, agentId });
+    return this.service.findAll(orgId, { status, mode, botId, assignedAgentId, q, agentId });
   }
 
   @Get(':conversationId')
