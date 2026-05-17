@@ -57,8 +57,13 @@ export class ConversationsController {
 
   @Get(':conversationId')
   @ApiOperation({ summary: 'Get conversation with messages' })
-  findOne(@Param('id') orgId: string, @Param('conversationId') conversationId: string) {
-    return this.service.findOne(orgId, conversationId);
+  findOne(
+    @Param('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Req() req: any,
+  ) {
+    const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
+    return this.service.findOne(orgId, conversationId, agentId);
   }
 
   @Patch(':conversationId')
@@ -68,8 +73,9 @@ export class ConversationsController {
     @Param('conversationId') conversationId: string,
     @Body() dto: UpdateConversationDto,
     @CurrentUser() user: { id: string },
+    @Req() req: any,
   ) {
-    return this.service.update(orgId, conversationId, dto, user.id);
+    return this.service.update(orgId, conversationId, dto, user.id, req.memberRole);
   }
 
   @Post(':conversationId/messages')
@@ -78,7 +84,9 @@ export class ConversationsController {
     @Param('id') orgId: string,
     @Param('conversationId') conversationId: string,
     @Body() dto: SendMessageDto,
+    @Req() req: any,
   ) {
-    return this.service.sendMessage(orgId, conversationId, dto.content);
+    const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
+    return this.service.sendMessage(orgId, conversationId, dto.content, agentId);
   }
 }

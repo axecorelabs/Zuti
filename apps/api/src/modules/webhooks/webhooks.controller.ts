@@ -25,6 +25,7 @@ export class WebhooksController {
   @HttpCode(HttpStatus.OK)
   async handleTelegramUpdate(
     @Param('botId') botId: string,
+    @Headers('x-telegram-bot-api-secret-token') secretHeader: string | undefined,
     @Body() update: any,
   ) {
     const bot = await this.prisma.bot.findFirst({
@@ -35,6 +36,15 @@ export class WebhooksController {
       // Return 200 to prevent Telegram from retrying
       this.logger.warn(`Received webhook for unknown/inactive bot: ${botId}`);
       return { ok: true };
+    }
+
+    // Verify secret token when one is set (all bots registered after the security fix will have one)
+    if (bot.webhookSecret) {
+      if (!secretHeader || secretHeader !== bot.webhookSecret) {
+        this.logger.warn(`Webhook secret mismatch for bot ${botId} — request rejected`);
+        // Return 200 so Telegram doesn't retry, but silently drop the forged update
+        return { ok: true };
+      }
     }
 
     const message = update?.message;

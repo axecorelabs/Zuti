@@ -157,7 +157,7 @@ export default function TeamPage() {
   const handleRevokeInvite = async (token: string, email: string) => {
     if (!confirm(`Revoke invitation for ${email}?`)) return;
     try {
-      await invitationsApi.decline(token);
+      await invitationsApi.revoke(token);
       setInvites((prev) => prev.filter((i) => i.token !== token));
       toast.success('Invitation revoked');
     } catch {

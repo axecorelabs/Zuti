@@ -97,6 +97,7 @@ model Bot {
   telegramToken  String   @unique
   telegramUsername String?
   webhookSet     Boolean  @default(false)
+  webhookSecret  String?  // Used to verify incoming Telegram webhook requests
   isActive       Boolean  @default(true)
   aiConfig       Json     @default("{}")
   createdAt      DateTime @default(now())

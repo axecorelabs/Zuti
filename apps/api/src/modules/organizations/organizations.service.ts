@@ -57,6 +57,14 @@ export class OrganizationsService {
   async removeMember(orgId: string, requestingUserId: string, targetUserId: string) {
     await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
     if (requestingUserId === targetUserId) throw new ForbiddenException('Cannot remove yourself');
+
+    // Prevent ADMIN from removing an OWNER
+    const target = await this.prisma.organizationMember.findUnique({
+      where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+    });
+    if (!target) throw new NotFoundException('Member not found');
+    if (target.role === 'OWNER') throw new ForbiddenException('Cannot remove an owner');
+
     return this.prisma.organizationMember.delete({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
     });

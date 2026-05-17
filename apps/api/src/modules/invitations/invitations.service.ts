@@ -150,6 +150,21 @@ export class InvitationsService {
     return { message: 'Invitation declined' };
   }
 
+  /** OWNER/ADMIN cancels an invitation they sent */
+  async revoke(token: string, requestingUserId: string) {
+    const invite = await this.prisma.invitation.findUnique({ where: { token } });
+    if (!invite) throw new NotFoundException('Invitation not found');
+
+    if (invite.status !== 'PENDING')
+      throw new BadRequestException(`Invitation is already ${invite.status.toLowerCase()}`);
+
+    // Must be OWNER or ADMIN of the org that sent the invite
+    await this.assertRole(invite.organizationId, requestingUserId, ['OWNER', 'ADMIN']);
+
+    await this.prisma.invitation.update({ where: { token }, data: { status: 'DECLINED' } });
+    return { message: 'Invitation revoked' };
+  }
+
   private async assertRole(orgId: string, userId: string, roles: string[]) {
     const member = await this.prisma.organizationMember.findUnique({
       where: { organizationId_userId: { organizationId: orgId, userId } },

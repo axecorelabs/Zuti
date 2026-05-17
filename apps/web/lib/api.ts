@@ -58,6 +58,7 @@ export const invitationsApi = {
   getByToken: (token: string) => api.get(`/invitations/${token}`),
   accept: (token: string) => api.post(`/invitations/${token}/accept`),
   decline: (token: string) => api.post(`/invitations/${token}/decline`),
+  revoke: (token: string) => api.post(`/invitations/${token}/revoke`),
 };
 
 // ── Bots ──────────────────────────────────────────────────────────────────────

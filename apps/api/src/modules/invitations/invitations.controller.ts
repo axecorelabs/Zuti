@@ -54,11 +54,20 @@ export class InvitationsController {
   }
 
   @Post(':token/decline')
-  @ApiOperation({ summary: 'Decline an invitation' })
+  @ApiOperation({ summary: 'Decline an invitation (invitee only)' })
   decline(
     @Param('token') token: string,
     @CurrentUser() user: { id: string },
   ) {
     return this.service.decline(token, user.id);
+  }
+
+  @Post(':token/revoke')
+  @ApiOperation({ summary: 'Revoke a pending invitation (OWNER/ADMIN only)' })
+  revoke(
+    @Param('token') token: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.service.revoke(token, user.id);
   }
 }

@@ -44,9 +44,17 @@ export class ConversationsService {
     });
   }
 
-  async findOne(organizationId: string, conversationId: string) {
+  async findOne(organizationId: string, conversationId: string, agentId?: string) {
+    const where: Record<string, unknown> = { id: conversationId, organizationId };
+    if (agentId) {
+      // AGENT: must be assigned to this conversation or it must be unassigned
+      (where as any).OR = [
+        { assignedAgentId: agentId },
+        { assignedAgentId: null },
+      ];
+    }
     const conversation = await this.prisma.conversation.findFirst({
-      where: { id: conversationId, organizationId },
+      where: where as any,
       include: {
         bot: { select: { id: true, name: true, telegramUsername: true } },
         assignedAgent: { select: { id: true, name: true, email: true } },
@@ -64,9 +72,18 @@ export class ConversationsService {
     conversationId: string,
     dto: { status?: string; mode?: string; assignedAgentId?: string },
     actorId: string,
+    actorRole?: string,
   ) {
+    const where: Record<string, unknown> = { id: conversationId, organizationId };
+    if (actorRole === 'AGENT') {
+      // AGENT can only update conversations assigned to them or unassigned
+      (where as any).OR = [
+        { assignedAgentId: actorId },
+        { assignedAgentId: null },
+      ];
+    }
     const conversation = await this.prisma.conversation.findFirst({
-      where: { id: conversationId, organizationId },
+      where: where as any,
       include: { bot: true },
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
@@ -117,9 +134,16 @@ export class ConversationsService {
     return updated;
   }
 
-  async sendMessage(organizationId: string, conversationId: string, content: string) {
+  async sendMessage(organizationId: string, conversationId: string, content: string, agentId?: string) {
+    const where: Record<string, unknown> = { id: conversationId, organizationId };
+    if (agentId) {
+      (where as any).OR = [
+        { assignedAgentId: agentId },
+        { assignedAgentId: null },
+      ];
+    }
     const conversation = await this.prisma.conversation.findFirst({
-      where: { id: conversationId, organizationId },
+      where: where as any,
       include: { bot: true },
     });
     if (!conversation) throw new NotFoundException('Conversation not found');

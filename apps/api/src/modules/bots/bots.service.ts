@@ -7,6 +7,7 @@ import {
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
+import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
 
@@ -83,10 +84,13 @@ export class BotsService {
       throw new BadRequestException('WEBHOOK_BASE_URL is not configured');
     }
 
+    // Generate a secret token (max 256 chars, alphanumeric+underscore per Telegram docs)
+    const webhookSecret = randomBytes(32).toString('hex');
     const webhookUrl = `${baseUrl}/api/webhooks/telegram/${botId}`;
     const res = await firstValueFrom(
       this.http.post<any>(`https://api.telegram.org/bot${bot.telegramToken}/setWebhook`, {
         url: webhookUrl,
+        secret_token: webhookSecret,
         allowed_updates: ['message', 'callback_query'],
         drop_pending_updates: true,
       }),
@@ -98,7 +102,7 @@ export class BotsService {
 
     await this.prisma.bot.update({
       where: { id: botId },
-      data: { webhookSet: true },
+      data: { webhookSet: true, webhookSecret },
     });
 
     return { webhookUrl, telegramResponse: (res as any).data };
