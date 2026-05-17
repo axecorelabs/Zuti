@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight } from 'lucide-react';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
 
@@ -24,7 +24,7 @@ export default function BotsPage() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: '', telegramToken: '' });
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [editBot, setEditBot] = useState<BotRecord | null>(null);
+  const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
   const [editSystemPrompt, setEditSystemPrompt] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -72,6 +72,8 @@ export default function BotsPage() {
     try {
       const res = await botsApi.update(orgId, bot.id, { isActive: !bot.isActive });
       setBots((prev) => prev.map((b) => (b.id === bot.id ? res.data : b)));
+      // keep settings view in sync
+      if (settingsBot?.id === bot.id) setSettingsBot(res.data);
     } catch { toast.error('Failed to update bot'); }
   };
 
@@ -80,6 +82,7 @@ export default function BotsPage() {
     try {
       await botsApi.delete(orgId, bot.id);
       setBots((prev) => prev.filter((b) => b.id !== bot.id));
+      if (settingsBot?.id === bot.id) setSettingsBot(null);
       toast.success('Bot deleted');
     } catch { toast.error('Failed to delete bot'); }
   };
@@ -90,22 +93,33 @@ export default function BotsPage() {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const openEdit = (bot: BotRecord) => {
-    setEditBot(bot);
+  const openSettings = (bot: BotRecord) => {
+    setSettingsBot(bot);
     setEditSystemPrompt(bot.aiConfig?.systemPrompt ?? '');
   };
 
-  const handleSaveEdit = async () => {
-    if (!orgId || !editBot) return;
+  const handleSaveSettings = async () => {
+    if (!orgId || !settingsBot) return;
     setSaving(true);
     try {
-      const res = await botsApi.update(orgId, editBot.id, {
-        aiConfig: { ...(editBot.aiConfig ?? {}), systemPrompt: editSystemPrompt },
+      const res = await botsApi.update(orgId, settingsBot.id, {
+        aiConfig: { ...(settingsBot.aiConfig ?? {}), systemPrompt: editSystemPrompt },
       });
-      setBots((prev) => prev.map((b) => (b.id === editBot.id ? res.data : b)));
-      setEditBot(null);
-      toast.success('Bot settings saved');
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? res.data : b)));
+      setSettingsBot(res.data);
+      toast.success('Settings saved');
     } catch { toast.error('Failed to save settings'); } finally { setSaving(false); }
+  };
+
+  const handleSetWebhookInSettings = async (bot: BotRecord) => {
+    if (!orgId) return;
+    try {
+      await botsApi.setWebhook(orgId, bot.id);
+      const updated = { ...bot, webhookSet: true };
+      setBots((prev) => prev.map((b) => (b.id === bot.id ? updated : b)));
+      setSettingsBot(updated);
+      toast.success('Webhook set!');
+    } catch { toast.error('Failed to set webhook'); }
   };
 
   const Modal = ({ children, onClose }: { children: React.ReactNode; onClose: () => void }) => (
@@ -113,6 +127,179 @@ export default function BotsPage() {
       <div onClick={(e) => e.stopPropagation()}>{children}</div>
     </div>
   );
+
+  // ── Settings step (full-page inline view) ─────────────────────────────────
+  if (settingsBot) {
+    return (
+      <div className="p-4 md:p-8">
+        {/* Breadcrumb nav */}
+        <div className="flex items-center gap-2 mb-8">
+          <button
+            onClick={() => setSettingsBot(null)}
+            className="flex items-center gap-1.5 text-sm text-zinc-500 hover:text-white transition-colors"
+          >
+            <ChevronLeft className="w-4 h-4" />
+            Bots
+          </button>
+          <ChevronRight className="w-3 h-3 text-zinc-700" />
+          <span className="text-sm text-white font-medium">{settingsBot.name}</span>
+          <ChevronRight className="w-3 h-3 text-zinc-700" />
+          <span className="text-sm text-zinc-500">AI Settings</span>
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+          {/* Left: editor sections */}
+          <div className="xl:col-span-2 space-y-5">
+            {/* System Prompt */}
+            <div className="card p-6 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-8 h-8 rounded-lg bg-blue-600/15 border border-blue-500/20 flex items-center justify-center shrink-0">
+                  <Sparkles className="w-4 h-4 text-blue-400" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">System Prompt</h2>
+                  <p className="text-xs text-zinc-500 font-light">Define the bot&apos;s personality, tone, and capabilities.</p>
+                </div>
+              </div>
+              <textarea
+                rows={24}
+                value={editSystemPrompt}
+                onChange={(e) => setEditSystemPrompt(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50 transition-colors font-light leading-relaxed"
+                placeholder={`You are ${settingsBot.name}, a helpful and friendly support assistant.\n\nYour role is to:\n- Answer customer questions clearly and professionally\n- Escalate complex issues to a human agent when needed\n- Stay on-topic and avoid discussing unrelated subjects\n\nTone: Professional yet approachable.`}
+              />
+              <div className="flex items-center justify-between mt-2.5">
+                <p className="text-[11px] text-zinc-600 font-light">
+                  Leave blank to use the default prompt. Plain text only.
+                </p>
+                <span className="text-[11px] text-zinc-700 tabular-nums font-light">
+                  {editSystemPrompt.length.toLocaleString()} chars
+                </span>
+              </div>
+            </div>
+
+            {/* Save / back */}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setSettingsBot(null)}
+                className="px-5 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium"
+              >
+                ← Back to bots
+              </button>
+              <button
+                onClick={handleSaveSettings}
+                disabled={saving}
+                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+              >
+                {saving ? 'Saving…' : 'Save settings'}
+              </button>
+            </div>
+          </div>
+
+          {/* Right: bot info sidebar */}
+          <div className="space-y-4">
+            {/* Status card */}
+            <div className="card p-5 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-4">
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                  settingsBot.isActive ? 'bg-blue-600/15 border border-blue-600/20' : 'bg-zinc-900 border border-zinc-800'
+                }`}>
+                  <Bot className={`w-5 h-5 ${settingsBot.isActive ? 'text-blue-400' : 'text-zinc-600'}`} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-medium text-white truncate">{settingsBot.name}</h3>
+                  {settingsBot.telegramUsername && (
+                    <p className="text-xs text-zinc-500 truncate">@{settingsBot.telegramUsername}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Status</span>
+                  <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
+                    settingsBot.isActive ? 'bg-blue-500/15 text-blue-400' : 'bg-zinc-800 text-zinc-500'
+                  }`}>
+                    {settingsBot.isActive ? 'Active' : 'Inactive'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Webhook</span>
+                  <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
+                    settingsBot.webhookSet ? 'bg-zinc-800 text-zinc-500' : 'bg-orange-500/15 text-orange-400'
+                  }`}>
+                    {settingsBot.webhookSet ? 'Ready' : 'Not set'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Prompt</span>
+                  <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
+                    settingsBot.aiConfig?.systemPrompt ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-800 text-zinc-600'
+                  }`}>
+                    {settingsBot.aiConfig?.systemPrompt ? 'Custom' : 'Default'}
+                  </span>
+                </div>
+              </div>
+
+              <div className="mt-4 pt-4 border-t border-zinc-800/60 space-y-1.5">
+                <button
+                  onClick={() => handleToggle(settingsBot)}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors text-xs text-zinc-400 hover:text-white"
+                >
+                  <span>{settingsBot.isActive ? 'Deactivate bot' : 'Activate bot'}</span>
+                  {settingsBot.isActive ? <ZapOff className="w-3.5 h-3.5" /> : <Zap className="w-3.5 h-3.5" />}
+                </button>
+                {!settingsBot.webhookSet && (
+                  <button
+                    onClick={() => handleSetWebhookInSettings(settingsBot)}
+                    className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-orange-500/10 hover:bg-orange-500/15 border border-orange-500/20 transition-colors text-xs text-orange-400"
+                  >
+                    <span>Set webhook</span>
+                    <Webhook className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  onClick={() => copyToken(settingsBot.telegramToken, settingsBot.id)}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 transition-colors text-xs text-zinc-400 hover:text-white"
+                >
+                  <span>Copy token</span>
+                  {copiedId === settingsBot.id
+                    ? <Check className="w-3.5 h-3.5 text-blue-400" />
+                    : <Copy className="w-3.5 h-3.5" />}
+                </button>
+                <button
+                  onClick={() => handleDelete(settingsBot)}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-lg bg-zinc-900 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-colors text-xs text-zinc-600 hover:text-red-400"
+                >
+                  <span>Delete bot</span>
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Tips */}
+            <div className="card p-4 border border-zinc-800/50 bg-zinc-950/40">
+              <p className="text-[11px] font-medium text-zinc-500 mb-2.5">Tips for a good system prompt</p>
+              <ul className="space-y-2">
+                {[
+                  "State the bot's name and purpose in the first line.",
+                  'List what topics it should and should not discuss.',
+                  'Specify when to escalate to a human agent.',
+                  'Set the language and tone for your audience.',
+                ].map((tip) => (
+                  <li key={tip} className="text-[11px] text-zinc-600 font-light flex gap-1.5 leading-relaxed">
+                    <span className="text-zinc-700 shrink-0 mt-px">·</span>
+                    {tip}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 md:p-8">
@@ -127,46 +314,6 @@ export default function BotsPage() {
           Add bot
         </button>
       </div>
-
-      {/* Edit modal */}
-      {editBot && (
-        <Modal onClose={() => setEditBot(null)}>
-          <div className="card p-8 w-full max-w-3xl mx-4 border border-zinc-800 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/20 flex items-center justify-center">
-                <Settings className="w-5 h-5 text-blue-400" />
-              </div>
-              <div>
-                <h2 className="font-semibold text-lg text-white tracking-tight">AI Settings</h2>
-                <p className="text-sm text-zinc-500 font-light">{editBot.name}</p>
-              </div>
-            </div>
-            <div className="space-y-5">
-              <div>
-                <label className="block text-xs text-zinc-400 mb-2 font-medium">System prompt</label>
-                <textarea
-                  rows={14}
-                  value={editSystemPrompt}
-                  onChange={(e) => setEditSystemPrompt(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 resize-none focus:outline-none focus:border-blue-600/50 transition-colors font-light leading-relaxed"
-                  placeholder={`You are ${editBot.name}, a helpful assistant. Answer questions clearly and professionally.`}
-                />
-                <p className="text-[11px] text-zinc-600 mt-1.5 font-light">
-                  Leave blank to use the default prompt. Use plain text — avoid markdown.
-                </p>
-              </div>
-              <div className="flex gap-3">
-                <button type="button" onClick={() => setEditBot(null)} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium">
-                  Cancel
-                </button>
-                <button onClick={handleSaveEdit} disabled={saving} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors">
-                  {saving ? 'Saving…' : 'Save changes'}
-                </button>
-              </div>
-            </div>
-          </div>
-        </Modal>
-      )}
 
       {/* Create modal */}
       {showCreate && (
@@ -271,7 +418,7 @@ export default function BotsPage() {
                       <Webhook className="w-3.5 h-3.5" /> Set webhook
                     </button>
                   )}
-                  <button onClick={() => openEdit(bot)} title="AI settings" className="p-2 rounded-lg text-zinc-600 hover:text-blue-400 hover:bg-blue-500/10 transition-colors">
+                  <button onClick={() => openSettings(bot)} title="AI settings" className="p-2 rounded-lg text-zinc-600 hover:text-blue-400 hover:bg-blue-500/10 transition-colors">
                     <Settings className="w-4 h-4" />
                   </button>
                   <button onClick={() => copyToken(bot.telegramToken, bot.id)} title="Copy token" className="p-2 rounded-lg text-zinc-600 hover:text-zinc-300 hover:bg-zinc-800 transition-colors">
