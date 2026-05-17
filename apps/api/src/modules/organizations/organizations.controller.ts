@@ -1,7 +1,7 @@
 import { Controller, Get, Post, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { OrganizationsService } from './organizations.service';
-import { CreateOrganizationDto, InviteMemberDto } from './dto/organization.dto';
+import { CreateOrganizationDto } from './dto/organization.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
@@ -28,16 +28,6 @@ export class OrganizationsController {
   @ApiOperation({ summary: 'Get organization by slug' })
   findOne(@Param('slug') slug: string, @CurrentUser() user: { id: string }) {
     return this.organizationsService.findOne(slug, user.id);
-  }
-
-  @Post(':id/members')
-  @ApiOperation({ summary: 'Invite a member to the organization' })
-  inviteMember(
-    @Param('id') orgId: string,
-    @CurrentUser() user: { id: string },
-    @Body() dto: InviteMemberDto,
-  ) {
-    return this.organizationsService.inviteMember(orgId, user.id, dto);
   }
 
   @Delete(':id/members/:userId')

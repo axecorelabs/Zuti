@@ -42,10 +42,19 @@ export const orgsApi = {
   list: () => api.get('/organizations'),
   get: (slug: string) => api.get(`/organizations/${slug}`),
   create: (name: string, slug: string) => api.post('/organizations', { name, slug }),
-  inviteMember: (orgId: string, email: string) =>
-    api.post(`/organizations/${orgId}/members`, { email }),
   removeMember: (orgId: string, userId: string) =>
     api.delete(`/organizations/${orgId}/members/${userId}`),
+};
+
+// ── Invitations ───────────────────────────────────────────────────────────────
+export const invitationsApi = {
+  create: (orgId: string, email: string, role?: string) =>
+    api.post('/invitations', { orgId, email, role }),
+  listMine: () => api.get('/invitations/mine'),
+  listByOrg: (orgId: string) => api.get(`/invitations/org/${orgId}`),
+  getByToken: (token: string) => api.get(`/invitations/${token}`),
+  accept: (token: string) => api.post(`/invitations/${token}/accept`),
+  decline: (token: string) => api.post(`/invitations/${token}/decline`),
 };
 
 // ── Bots ──────────────────────────────────────────────────────────────────────

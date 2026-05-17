@@ -10,6 +10,7 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ConversationsModule } from './modules/conversations/conversations.module';
 import { EventsModule } from './modules/events/events.module';
 import { KnowledgeModule } from './modules/knowledge/knowledge.module';
+import { InvitationsModule } from './modules/invitations/invitations.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 
 @Module({
@@ -24,6 +25,7 @@ import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
     WebhooksModule,
     ConversationsModule,
     KnowledgeModule,
+    InvitationsModule,
   ],
   providers: [
     // Apply JWT guard globally — use @Public() to opt out

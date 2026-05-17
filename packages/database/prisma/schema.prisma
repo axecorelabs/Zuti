@@ -20,6 +20,7 @@ model User {
 
   memberships   OrganizationMember[]
   assignedConversations Conversation[] @relation("AssignedAgent")
+  sentInvitations Invitation[] @relation("SentInvitations")
 }
 
 // ─── Organizations ────────────────────────────────────────────────────────────
@@ -38,6 +39,7 @@ model Organization {
   conversations  Conversation[]
   integrations   Integration[]
   billing        Billing?
+  invitations    Invitation[]
 }
 
 model OrganizationMember {
@@ -57,6 +59,33 @@ enum MemberRole {
   OWNER
   ADMIN
   AGENT
+}
+
+// ─── Invitations ─────────────────────────────────────────────────────────────
+
+model Invitation {
+  id             String           @id @default(cuid())
+  organizationId String
+  email          String
+  token          String           @unique
+  role           MemberRole       @default(AGENT)
+  status         InvitationStatus @default(PENDING)
+  invitedById    String
+  expiresAt      DateTime
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy      User             @relation("SentInvitations", fields: [invitedById], references: [id])
+
+  @@index([email, status])
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
 }
 
 // ─── Bots ─────────────────────────────────────────────────────────────────────

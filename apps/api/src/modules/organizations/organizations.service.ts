@@ -5,7 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateOrganizationDto, InviteMemberDto } from './dto/organization.dto';
+import { CreateOrganizationDto } from './dto/organization.dto';
 
 @Injectable()
 export class OrganizationsService {
@@ -46,23 +46,6 @@ export class OrganizationsService {
     if (!org) throw new NotFoundException('Organization not found');
     this.assertMember(org, userId);
     return org;
-  }
-
-  async inviteMember(orgId: string, requestingUserId: string, dto: InviteMemberDto) {
-    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
-
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
-    if (!user) throw new NotFoundException('No user with that email');
-
-    const existing = await this.prisma.organizationMember.findUnique({
-      where: { organizationId_userId: { organizationId: orgId, userId: user.id } },
-    });
-    if (existing) throw new ConflictException('User is already a member');
-
-    return this.prisma.organizationMember.create({
-      data: { organizationId: orgId, userId: user.id, role: 'AGENT' },
-      include: { user: { select: { id: true, name: true, email: true } } },
-    });
   }
 
   async removeMember(orgId: string, requestingUserId: string, targetUserId: string) {

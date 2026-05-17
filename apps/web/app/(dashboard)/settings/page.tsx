@@ -2,14 +2,22 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Building2, Users, User, Mail, AtSign, Shield, Trash2, UserPlus } from 'lucide-react';
-import { orgsApi } from '@/lib/api';
+import { Building2, Users, User, Mail, AtSign, Shield, Trash2, UserPlus, Clock } from 'lucide-react';
+import { orgsApi, invitationsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 interface Member {
   userId: string;
   role: string;
   user: { name: string; email: string };
+}
+
+interface PendingInvite {
+  id: string;
+  email: string;
+  role: string;
+  createdAt: string;
+  expiresAt: string;
 }
 
 interface Org {
@@ -33,6 +41,7 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviting, setInviting] = useState(false);
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [tab, setTab] = useState<Tab>('workspace');
 
   useEffect(() => {
@@ -41,6 +50,9 @@ export default function SettingsPage() {
       if (orgs.length > 0) {
         const full = await orgsApi.get(orgs[0].slug);
         setOrg(full.data);
+        invitationsApi.listByOrg(orgs[0].id)
+          .then((r) => setPendingInvites(r.data))
+          .catch(() => {});
       }
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
@@ -50,13 +62,13 @@ export default function SettingsPage() {
     if (!org) return;
     setInviting(true);
     try {
-      await orgsApi.inviteMember(org.id, inviteEmail);
+      await invitationsApi.create(org.id, inviteEmail);
       toast.success('Invitation sent');
       setInviteEmail('');
-      const full = await orgsApi.get(org.slug);
-      setOrg(full.data);
+      const r = await invitationsApi.listByOrg(org.id);
+      setPendingInvites(r.data);
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to invite member';
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to send invitation';
       toast.error(Array.isArray(msg) ? msg[0] : msg);
     } finally { setInviting(false); }
   };
@@ -227,6 +239,30 @@ export default function SettingsPage() {
                 </button>
               </form>
             </div>
+
+            {/* Pending invitations */}
+            {pendingInvites.length > 0 && (
+              <div className="border-t border-zinc-900 pt-5 mt-2">
+                <p className="text-xs text-zinc-500 font-medium mb-3 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" /> Pending invitations
+                </p>
+                <div className="space-y-2">
+                  {pendingInvites.map((inv) => (
+                    <div key={inv.id} className="flex items-center justify-between py-2 px-3 rounded-xl bg-zinc-900/50">
+                      <div>
+                        <p className="text-sm text-zinc-300 font-light">{inv.email}</p>
+                        <p className="text-xs text-zinc-600 mt-0.5">
+                          Expires {new Date(inv.expiresAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg bg-zinc-800 text-zinc-500 font-medium">
+                        {inv.role}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
