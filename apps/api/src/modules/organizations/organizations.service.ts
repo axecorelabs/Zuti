@@ -140,4 +140,75 @@ export class OrganizationsService {
       throw new ForbiddenException('Insufficient permissions');
     }
   }
+
+  /**
+   * Smart agent routing: find the best available agent for a given org + optional topic.
+   * Scoring: specialization match → least loaded → first available.
+   * Returns null if no agents are available (all offline or all at capacity).
+   */
+  async findBestAgent(orgId: string, topic?: string): Promise<{ userId: string; name: string } | null> {
+    const agents = await this.prisma.organizationMember.findMany({
+      where: { organizationId: orgId, role: 'AGENT', isAvailable: true },
+      include: { user: { select: { id: true, name: true, email: true } } },
+    });
+    if (!agents.length) return null;
+
+    // Count each agent's current open (non-resolved) conversations
+    const withLoad = await Promise.all(
+      agents.map(async (a) => {
+        const load = await this.prisma.conversation.count({
+          where: {
+            organizationId: orgId,
+            assignedAgentId: a.userId,
+            status: { not: 'RESOLVED' as any },
+          },
+        });
+        return { ...a, load };
+      }),
+    );
+
+    // Filter out agents who are at capacity
+    const available = withLoad.filter((a) => a.load < a.maxConcurrentConversations);
+    if (!available.length) return null;
+
+    // If a topic is given, prefer agents who list it as a specialization
+    let pool = available;
+    if (topic) {
+      const topicLower = topic.toLowerCase();
+      const specialists = available.filter((a) =>
+        a.specializations.some(
+          (s) => topicLower.includes(s.toLowerCase()) || s.toLowerCase().includes(topicLower),
+        ),
+      );
+      if (specialists.length) pool = specialists;
+    }
+
+    // Among the pool, pick the least loaded (tie-break: first in list = longest-tenured)
+    const best = pool.sort((a, b) => a.load - b.load)[0];
+    return { userId: best.userId, name: best.user.name ?? best.user.email };
+  }
+
+  /** Update agent profile fields (specializations, availability, capacity) */
+  async updateAgentProfile(
+    orgId: string,
+    requestingUserId: string,
+    targetUserId: string,
+    dto: { specializations?: string[]; isAvailable?: boolean; maxConcurrentConversations?: number },
+  ) {
+    // Agents can update their own profile; OWNER/ADMIN can update any agent
+    if (requestingUserId !== targetUserId) {
+      await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    }
+    return this.prisma.organizationMember.update({
+      where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+      data: {
+        ...(dto.specializations !== undefined && { specializations: dto.specializations }),
+        ...(dto.isAvailable !== undefined && { isAvailable: dto.isAvailable }),
+        ...(dto.maxConcurrentConversations !== undefined && {
+          maxConcurrentConversations: dto.maxConcurrentConversations,
+        }),
+      },
+      include: { user: { select: { id: true, name: true, email: true } } },
+    });
+  }
 }

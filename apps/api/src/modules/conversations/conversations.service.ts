@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
+import { OrganizationsService } from '../organizations/organizations.service';
 
 interface FindAllFilters {
   status?: string;
@@ -22,6 +23,8 @@ export class ConversationsService {
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
     private readonly activity: ActivityService,
+    @Inject(forwardRef(() => OrganizationsService))
+    private readonly orgs: OrganizationsService,
   ) {}
 
   async findAll(organizationId: string, filters: FindAllFilters) {
@@ -74,7 +77,7 @@ export class ConversationsService {
   async update(
     organizationId: string,
     conversationId: string,
-    dto: { status?: string; mode?: string; assignedAgentId?: string },
+    dto: { status?: string; mode?: string; assignedAgentId?: string; escalationTopic?: string },
     actorId: string,
     actorRole?: string,
   ) {
@@ -147,18 +150,52 @@ export class ConversationsService {
 
     // Conversation escalated
     if (dto.status === 'ESCALATED' && conversation.status !== 'ESCALATED') {
+      // Smart-route to best available agent
+      const bestAgent = await this.orgs.findBestAgent(organizationId, dto.escalationTopic);
+      const assignedTo = bestAgent ?? null;
+
+      if (assignedTo) {
+        await this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { assignedAgentId: assignedTo.userId },
+        });
+
+        // Notify the assigned agent personally
+        await this.notifications.createUserNotification(
+          organizationId,
+          assignedTo.userId,
+          'conversation_assigned',
+          'New conversation assigned to you',
+          `A${dto.escalationTopic ? ` ${dto.escalationTopic}` : ''} support conversation has been routed to you.`,
+          { conversationId, topic: dto.escalationTopic },
+        );
+      }
+
+      // Telegram message to customer
+      const agentLabel = assignedTo
+        ? `👤 You've been connected to *${assignedTo.name}*, one of our support agents.`
+        : '👤 Your request has been escalated to our support team. An agent will be with you shortly.';
+      await firstValueFrom(
+        this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+          chat_id: chatId,
+          text: agentLabel,
+          parse_mode: 'Markdown',
+        }),
+      ).catch(() => null);
+
       await Promise.all([
         this.activity.log(
           organizationId, actorId, actorName,
           ActivityAction.CONVERSATION_ESCALATED,
           'conversation', conversationId,
+          { topic: dto.escalationTopic, assignedTo: assignedTo?.userId },
         ),
         this.notifications.createOrgNotification(
           organizationId,
           'conversation_escalated',
           'Conversation escalated',
-          `A conversation was escalated${actorId ? ` by ${actorName}` : ' automatically'}.`,
-          { conversationId, actorId },
+          `A conversation was escalated${dto.escalationTopic ? ` (${dto.escalationTopic})` : ''}${assignedTo ? ` → assigned to ${assignedTo.name}` : ' — no agents available'}.`,
+          { conversationId, actorId, topic: dto.escalationTopic, assignedTo: assignedTo?.userId },
         ),
       ]);
     }

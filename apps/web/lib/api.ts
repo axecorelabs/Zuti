@@ -47,6 +47,11 @@ export const orgsApi = {
   listMembers: (orgId: string) => api.get(`/organizations/${orgId}/members`),
   updateMemberRole: (orgId: string, userId: string, role: string) =>
     api.patch(`/organizations/${orgId}/members/${userId}/role`, { role }),
+  updateAgentProfile: (
+    orgId: string,
+    userId: string,
+    data: { specializations?: string[]; isAvailable?: boolean; maxConcurrentConversations?: number },
+  ) => api.patch(`/organizations/${orgId}/members/${userId}/profile`, data),
 };
 
 // ── Invitations ───────────────────────────────────────────────────────────────

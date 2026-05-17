@@ -51,6 +51,14 @@ model OrganizationMember {
   role           MemberRole @default(AGENT)
   createdAt      DateTime @default(now())
 
+  // ── Agent routing metadata ────────────────────────────────────────────────
+  // Topic tags this agent handles, e.g. ["billing", "technical", "returns"]
+  specializations          String[]  @default([])
+  // Agent is accepting new conversations
+  isAvailable              Boolean   @default(true)
+  // Hard cap on simultaneous open conversations
+  maxConcurrentConversations Int     @default(10)
+
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 

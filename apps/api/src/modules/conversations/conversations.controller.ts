@@ -30,6 +30,11 @@ class UpdateConversationDto {
   @IsOptional()
   @IsString()
   assignedAgentId?: string;
+
+  @ApiPropertyOptional({ description: 'Topic hint for smart agent routing on escalation (e.g. "billing", "technical")' })
+  @IsOptional()
+  @IsString()
+  escalationTopic?: string;
 }
 
 @ApiTags('conversations')

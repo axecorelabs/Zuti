@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { IsString, IsIn } from 'class-validator';
+import { IsString, IsIn, IsArray, IsOptional, IsBoolean, IsInt, Min, Max } from 'class-validator';
 import { OrganizationsService } from './organizations.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -10,6 +10,23 @@ class UpdateMemberRoleDto {
   @IsString()
   @IsIn(['ADMIN', 'AGENT'])
   declare role: string;
+}
+
+class UpdateAgentProfileDto {
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  declare specializations?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  declare isAvailable?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  declare maxConcurrentConversations?: number;
 }
 
 @ApiTags('organizations')
@@ -62,5 +79,16 @@ export class OrganizationsController {
     @CurrentUser() user: { id: string },
   ) {
     return this.organizationsService.removeMember(orgId, user.id, targetUserId);
+  }
+
+  @Patch(':id/members/:userId/profile')
+  @ApiOperation({ summary: 'Update agent routing profile (specializations, availability, capacity)' })
+  updateAgentProfile(
+    @Param('id') orgId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: { id: string },
+    @Body() dto: UpdateAgentProfileDto,
+  ) {
+    return this.organizationsService.updateAgentProfile(orgId, user.id, targetUserId, dto);
   }
 }
