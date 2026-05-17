@@ -5,6 +5,7 @@ import {
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { ApiExcludeController } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { PrismaService } from '../prisma/prisma.service';
 import { Public } from '../../common/decorators/public.decorator';
 import { TELEGRAM_QUEUE } from '../queue/queue.module';
@@ -22,6 +23,7 @@ export class WebhooksController {
 
   @Post(':botId')
   @Public()
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
   @HttpCode(HttpStatus.OK)
   async handleTelegramUpdate(
     @Param('botId') botId: string,
