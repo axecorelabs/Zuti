@@ -23,6 +23,9 @@ class RagService:
         conversation_id: str,
         message: str,
         top_k: int = 5,
+        bot_name: str = "Assistant",
+        org_name: str | None = None,
+        system_prompt: str | None = None,
     ) -> tuple[str, list[dict]]:
         # 1. Try RAG (embed + Qdrant search) — degrade gracefully if unavailable
         sources: list[dict] = []
@@ -57,6 +60,9 @@ class RagService:
             user_message=message,
             context=context,
             conversation_id=conversation_id,
+            bot_name=bot_name,
+            org_name=org_name,
+            system_prompt_override=system_prompt,
         )
 
         return reply, sources

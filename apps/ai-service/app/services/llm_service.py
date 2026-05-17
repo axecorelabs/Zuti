@@ -12,10 +12,23 @@ logger = logging.getLogger(__name__)
 # Default model — change to any model slug on https://openrouter.ai/models
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 
-SYSTEM_PROMPT = """You are a helpful customer service AI assistant.
+BASE_SYSTEM_PROMPT = """You are {bot_name}, a helpful customer service AI assistant for {org_name}.
 Use the provided context to answer questions accurately and concisely.
-If the context doesn't contain relevant information, say so honestly.
-Keep responses friendly and professional."""
+If the context doesn't contain relevant information, answer based on your general knowledge but stay focused on helping the customer.
+Keep responses friendly and professional. Do not mention that you are an AI unless directly asked."""
+
+
+def _build_system_prompt(
+    bot_name: str,
+    org_name: str | None,
+    override: str | None,
+) -> str:
+    if override and override.strip():
+        return override
+    return BASE_SYSTEM_PROMPT.format(
+        bot_name=bot_name,
+        org_name=org_name or "our company",
+    )
 
 
 class LlmService:
@@ -35,16 +48,20 @@ class LlmService:
         context: str = "",
         conversation_id: str = "",
         model: str = DEFAULT_MODEL,
+        bot_name: str = "Assistant",
+        org_name: str | None = None,
+        system_prompt_override: str | None = None,
     ) -> str:
         if not settings.OPENROUTER_API_KEY:
             logger.warning("OPENROUTER_API_KEY not set — returning fallback response")
             return "I'm sorry, I'm not configured to respond yet. Please contact support."
 
-        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
+        messages: list[dict] = [{"role": "system", "content": prompt}]
         if context:
             messages.append({
                 "role": "system",
-                "content": f"Relevant context:\n{context}",
+                "content": f"Relevant context from knowledge base:\n{context}",
             })
         messages.append({"role": "user", "content": user_message})
 

@@ -115,7 +115,13 @@ export class TelegramProcessor {
 
     // If in AI mode, call AI service
     if (conversation.mode === 'AI') {
-      await this.callAiAndRespond(conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text);
+      const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true } });
+      const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
+      const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
+      await this.callAiAndRespond(
+        conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
+        bot?.name ?? 'Assistant', aiConfig.systemPrompt ?? null, org?.name ?? null,
+      );
     }
   }
 
@@ -126,6 +132,9 @@ export class TelegramProcessor {
     telegramToken: string,
     organizationId: string,
     userText: string,
+    botName: string = 'Assistant',
+    systemPrompt: string | null = null,
+    orgName: string | null = null,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
 
@@ -136,6 +145,9 @@ export class TelegramProcessor {
           organization_id: organizationId,
           bot_id: botId,
           message: userText,
+          bot_name: botName,
+          org_name: orgName,
+          system_prompt: systemPrompt,
         }),
       );
 

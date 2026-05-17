@@ -10,6 +10,9 @@ class ChatRequest(BaseModel):
     organization_id: str
     bot_id: str
     message: str
+    bot_name: str = "Assistant"
+    org_name: str | None = None
+    system_prompt: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -26,6 +29,9 @@ async def chat(request: ChatRequest):
             bot_id=request.bot_id,
             conversation_id=request.conversation_id,
             message=request.message,
+            bot_name=request.bot_name,
+            org_name=request.org_name,
+            system_prompt=request.system_prompt,
         )
         return ChatResponse(
             reply=reply,
