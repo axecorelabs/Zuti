@@ -153,6 +153,27 @@ export class TelegramProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
 
+      // Auto-escalate if AI expresses uncertainty
+      const escalationPhrases = [
+        "i don't know", "i am not sure", "i'm not sure", "i cannot help",
+        "i can't help", "please contact support", "speak to a human",
+        "talk to an agent", "reach out to our team", "contact us directly",
+      ];
+      const lowerReply = aiText.toLowerCase();
+      const shouldEscalate = escalationPhrases.some((p) => lowerReply.includes(p));
+
+      if (shouldEscalate) {
+        await this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { status: 'ESCALATED', mode: 'HUMAN' },
+        });
+        this.events.emitConversationUpdate(organizationId, {
+          conversationId,
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+        });
+      }
+
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
         data: {
@@ -171,13 +192,23 @@ export class TelegramProcessor {
         });
       }
 
-      // Send reply to Telegram
+      // Send reply to Telegram (plain text — model is instructed to avoid markdown)
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           chat_id: telegramChatId,
           text: aiText,
         }),
       );
+
+      // If escalated, send a follow-up notice to the user
+      if (shouldEscalate) {
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+            chat_id: telegramChatId,
+            text: 'I am connecting you with a human agent who will follow up shortly.',
+          }),
+        );
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`AI service error for conversation ${conversationId}: ${msg}`);
