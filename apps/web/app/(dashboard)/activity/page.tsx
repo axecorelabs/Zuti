@@ -90,8 +90,8 @@ export default function ActivityPage() {
   }, [orgId]);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-zinc-950 min-h-screen">
-      <div className="max-w-3xl mx-auto px-6 py-8">
+    <div className="flex-1 overflow-y-auto bg-zinc-950 min-h-screen flex items-start justify-center">
+      <div className="w-full max-w-4xl px-6 py-8">
         {/* Header */}
         <div className="flex items-center gap-3 mb-8">
           <div className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center">
