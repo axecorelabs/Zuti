@@ -19,7 +19,6 @@ function VerifyEmailPageContent() {
 
     const run = async () => {
       if (!token) {
-        if (!active) return;
         setState('error');
         setMessage('Verification link is missing or invalid.');
         return;

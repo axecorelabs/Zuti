@@ -185,6 +185,9 @@ export class ConversationsService {
     });
 
     const token = conversation.bot.telegramToken;
+    if (!token) {
+      throw new BadRequestException('Telegram channel is not connected for this bot');
+    }
     const chatId = conversation.telegramChatId;
 
     // Agent takes over from AI
@@ -352,7 +355,7 @@ export class ConversationsService {
     // Send via Telegram
     await firstValueFrom(
       this.http.post(
-        `https://api.telegram.org/bot${conversation.bot.telegramToken}/sendMessage`,
+        `https://api.telegram.org/bot${conversation.bot.telegramToken as string}/sendMessage`,
         { chat_id: conversation.telegramChatId, text: content },
       ),
     ).catch(() => null);

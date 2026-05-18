@@ -36,11 +36,18 @@ export class AuthService {
     });
 
     const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
-    await this.mail.sendVerificationEmail({
-      to: user.email,
-      name: user.name ?? undefined,
-      verifyUrl: `${appUrl}/verify-email?token=${verificationToken}`,
-    });
+    try {
+      await this.mail.sendVerificationEmail({
+        to: user.email,
+        name: user.name ?? undefined,
+        verifyUrl: `${appUrl}/verify-email?token=${verificationToken}`,
+      });
+    } catch (err) {
+      // If email fails, delete the user since registration requires email verification
+      await this.prisma.user.delete({ where: { id: user.id } });
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException(`Failed to send verification email: ${msg}`);
+    }
 
     return {
       message: 'Account created. Please verify your email before signing in.',
@@ -50,14 +57,14 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
-    if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (!user) throw new UnauthorizedException('No account found with that email address');
 
     if (!user.emailVerifiedAt) {
       throw new UnauthorizedException('Please verify your email before signing in');
     }
 
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
-    if (!valid) throw new UnauthorizedException('Invalid credentials');
+    if (!valid) throw new UnauthorizedException('Incorrect password');
 
     const tokens = await this.signTokens(user.id, user.email);
     return {
@@ -86,7 +93,6 @@ export class AuthService {
       where: { id: user.id },
       data: {
         emailVerifiedAt: new Date(),
-        emailVerificationTokenHash: null,
         emailVerificationSentAt: null,
       },
     });
@@ -118,11 +124,17 @@ export class AuthService {
     });
 
     const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
-    await this.mail.sendVerificationEmail({
-      to: user.email,
-      name: user.name ?? undefined,
-      verifyUrl: `${appUrl}/verify-email?token=${verificationToken}`,
-    });
+    try {
+      await this.mail.sendVerificationEmail({
+        to: user.email,
+        name: user.name ?? undefined,
+        verifyUrl: `${appUrl}/verify-email?token=${verificationToken}`,
+      });
+    } catch (err) {
+      // Log the error but don't expose it (for security)
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to send verification email to ${user.email}: ${msg}`);
+    }
 
     return { message: 'If an unverified account exists for this email, a new verification link has been sent.' };
   }

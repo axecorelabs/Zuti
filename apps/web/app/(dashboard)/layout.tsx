@@ -2,18 +2,71 @@
 
 import { useEffect, useState } from 'react';
 import { Menu, Leaf } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Sidebar from '@/components/sidebar';
+import { orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
-  const { user, isLoading, loadFromStorage } = useAuthStore();
+  const pathname = usePathname();
+  const { user, isLoading, loadFromStorage, setOrgRoles } = useAuthStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [roleCheckLoading, setRoleCheckLoading] = useState(true);
 
   useEffect(() => {
     loadFromStorage();
   }, [loadFromStorage]);
+
+  useEffect(() => {
+    if (isLoading || !user) return;
+
+    let active = true;
+
+    const runRoleCheck = async () => {
+      try {
+        const res = await orgsApi.list();
+        const list = res.data as { id: string; members?: { role: string }[] }[];
+
+        if (active && list.length === 0) {
+          router.replace('/onboarding');
+          return;
+        }
+
+        const roles: Record<string, string> = {};
+        list.forEach((org) => {
+          if (org.members?.[0]?.role) {
+            roles[org.id] = org.members[0].role;
+          }
+        });
+
+        setOrgRoles(roles);
+
+        const firstRole = list[0]?.members?.[0]?.role;
+        const restrictedForAgent = ['/bots', '/knowledge'];
+        const blockedForAgent =
+          firstRole === 'AGENT' &&
+          restrictedForAgent.some((route) => pathname === route || pathname.startsWith(`${route}/`));
+
+        if (active && blockedForAgent) {
+          router.replace('/dashboard');
+          return;
+        }
+      } catch {
+        // If role check fails, keep UX safe by allowing only non-restricted pages via API checks.
+      } finally {
+        if (active) {
+          setRoleCheckLoading(false);
+        }
+      }
+    };
+
+    runRoleCheck();
+
+    return () => {
+      active = false;
+    };
+  }, [isLoading, user, pathname, router, setOrgRoles]);
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -21,7 +74,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
   }, [isLoading, user, router]);
 
-  if (isLoading) {
+  if (isLoading || roleCheckLoading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />

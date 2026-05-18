@@ -48,14 +48,23 @@ export class OrganizationsService {
   async findOne(slug: string, userId: string) {
     const org = await this.prisma.organization.findUnique({
       where: { slug },
+      select: { id: true, name: true, slug: true },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const membership = await this.getMembershipOrThrow(org.id, userId);
+
+    if (membership.role === 'AGENT') {
+      return org;
+    }
+
+    return this.prisma.organization.findUnique({
+      where: { slug },
       include: {
         members: { include: { user: { select: { id: true, name: true, email: true } } } },
         _count: { select: { bots: true, conversations: true, knowledgeFiles: true } },
       },
     });
-    if (!org) throw new NotFoundException('Organization not found');
-    this.assertMember(org, userId);
-    return org;
   }
 
   async removeMember(orgId: string, requestingUserId: string, targetUserId: string) {
@@ -90,7 +99,7 @@ export class OrganizationsService {
   }
 
   async listMembers(orgId: string, requestingUserId: string) {
-    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    await this.getMembershipOrThrow(orgId, requestingUserId);
     return this.prisma.organizationMember.findMany({
       where: { organizationId: orgId },
       include: { user: { select: { id: true, name: true, email: true } } },
@@ -127,15 +136,16 @@ export class OrganizationsService {
     return updated;
   }
 
-  private assertMember(org: { members: { userId: string }[] }, userId: string) {
-    const isMember = org.members.some((m) => m.userId === userId);
-    if (!isMember) throw new ForbiddenException('Not a member of this organization');
-  }
-
-  private async assertRole(orgId: string, userId: string, roles: string[]) {
+  private async getMembershipOrThrow(orgId: string, userId: string) {
     const member = await this.prisma.organizationMember.findUnique({
       where: { organizationId_userId: { organizationId: orgId, userId } },
     });
+    if (!member) throw new ForbiddenException('Not a member of this organization');
+    return member;
+  }
+
+  private async assertRole(orgId: string, userId: string, roles: string[]) {
+    const member = await this.getMembershipOrThrow(orgId, userId);
     if (!member || !roles.includes(member.role)) {
       throw new ForbiddenException('Insufficient permissions');
     }

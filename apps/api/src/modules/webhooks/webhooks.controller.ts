@@ -31,7 +31,7 @@ export class WebhooksController {
     @Body() update: any,
   ) {
     const bot = await this.prisma.bot.findFirst({
-      where: { id: botId, isActive: true },
+      where: { id: botId, isActive: true, telegramToken: { not: null } },
     });
 
     if (!bot) {
@@ -58,7 +58,7 @@ export class WebhooksController {
     const job: TelegramMessageJob = {
       botId: bot.id,
       telegramChatId: String(message.chat.id),
-      telegramToken: bot.telegramToken,
+      telegramToken: bot.telegramToken as string,
       organizationId: bot.organizationId,
       message: {
         messageId: message.message_id,

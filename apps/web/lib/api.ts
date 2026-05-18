@@ -20,7 +20,10 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401 && typeof window !== 'undefined') {
+    const requestUrl = String(err?.config?.url ?? '');
+    const isAuthEndpoint = requestUrl.includes('/auth/');
+
+    if (err.response?.status === 401 && typeof window !== 'undefined' && !isAuthEndpoint) {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
       window.location.href = '/login';
@@ -75,8 +78,10 @@ export const botsApi = {
   list: (orgId: string) => api.get(`/organizations/${orgId}/bots`),
   get: (orgId: string, botId: string) =>
     api.get(`/organizations/${orgId}/bots/${botId}`),
-  create: (orgId: string, name: string, telegramToken: string) =>
-    api.post(`/organizations/${orgId}/bots`, { name, telegramToken }),
+  create: (
+    orgId: string,
+    data: { name: string; primaryChannel: 'TELEGRAM' | 'WEB_WIDGET'; telegramToken?: string },
+  ) => api.post(`/organizations/${orgId}/bots`, data),
   update: (orgId: string, botId: string, data: Record<string, unknown>) =>
     api.patch(`/organizations/${orgId}/bots/${botId}`, data),
   delete: (orgId: string, botId: string) =>

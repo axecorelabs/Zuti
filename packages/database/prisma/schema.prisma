@@ -107,8 +107,12 @@ model Bot {
   id             String   @id @default(cuid())
   organizationId String
   name           String
-  telegramToken  String   @unique
+  primaryChannel BotPrimaryChannel @default(TELEGRAM)
+  telegramToken  String?  @unique
   telegramUsername String?
+  webWidgetEnabled Boolean @default(false)
+  webWidgetKey   String?  @unique
+  webWidgetAllowedDomains String[] @default([])
   webhookSet     Boolean  @default(false)
   webhookSecret  String?  // Used to verify incoming Telegram webhook requests
   isActive       Boolean  @default(true)
@@ -119,6 +123,11 @@ model Bot {
 
   organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   conversations  Conversation[]
+}
+
+enum BotPrimaryChannel {
+  TELEGRAM
+  WEB_WIDGET
 }
 
 // ─── Knowledge Base ───────────────────────────────────────────────────────────
@@ -171,9 +180,11 @@ model Conversation {
   id               String             @id @default(cuid())
   organizationId   String
   botId            String
-  telegramChatId   String
+  telegramChatId   String?
   customerName     String?
   customerUsername String?
+  widgetVisitorId  String?
+  widgetVisitorEmail String?
   status           ConversationStatus @default(OPEN)
   mode             ConversationMode   @default(AI)
   assignedAgentId  String?
@@ -191,6 +202,7 @@ model Conversation {
   escalations      Escalation[]
 
   @@index([botId, telegramChatId])
+  @@index([botId, widgetVisitorId])
 }
 
 model Message {

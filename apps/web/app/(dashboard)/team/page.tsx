@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import {
   Users,
   UserPlus,
@@ -58,7 +57,6 @@ const RoleBadge = ({ role }: { role: string }) => {
 };
 
 export default function TeamPage() {
-  const router = useRouter();
   const { user, getRoleForOrg } = useAuthStore();
 
   const [orgId, setOrgId] = useState<string | null>(null);
@@ -83,13 +81,17 @@ export default function TeamPage() {
   const [profileSpecInput, setProfileSpecInput] = useState(''); // comma-separated tags input
   const [profileMaxInput, setProfileMaxInput] = useState(10);
 
-  const loadData = useCallback(async (oid: string) => {
+  const loadData = useCallback(async (oid: string, role: string | null) => {
     try {
-      const [membersRes, invitesRes] = await Promise.all([
-        orgsApi.listMembers(oid),
-        invitationsApi.listByOrg(oid),
-      ]);
+      const membersRes = await orgsApi.listMembers(oid);
       setMembers(membersRes.data);
+
+      if (role === 'AGENT') {
+        setInvites([]);
+        return;
+      }
+
+      const invitesRes = await invitationsApi.listByOrg(oid);
       setInvites(invitesRes.data);
     } catch {
       toast.error('Failed to load team data');
@@ -104,16 +106,11 @@ export default function TeamPage() {
       if (!list.length) return;
       const first = list[0];
       setOrgId(first.id);
-      const role = first.members?.[0]?.role ?? getRoleForOrg(first.id);
+      const role = first.members?.[0]?.role ?? getRoleForOrg(first.id) ?? null;
       setMyRole(role ?? null);
-      if (role === 'AGENT') {
-        // Agents can't manage team
-        router.replace('/inbox');
-        return;
-      }
-      loadData(first.id);
+      loadData(first.id, role);
     }).catch(() => setLoading(false));
-  }, [loadData, getRoleForOrg, router]);
+  }, [loadData, getRoleForOrg]);
 
   const handleInvite = async () => {
     if (!orgId || !inviteEmail.trim()) return;
@@ -122,7 +119,7 @@ export default function TeamPage() {
       await invitationsApi.create(orgId, inviteEmail.trim(), inviteRole);
       toast.success(`Invitation sent to ${inviteEmail.trim()}`);
       setInviteEmail('');
-      await loadData(orgId);
+      await loadData(orgId, myRole);
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to send invite';
       toast.error(Array.isArray(msg) ? msg[0] : msg);
@@ -232,10 +229,15 @@ export default function TeamPage() {
         {/* Header */}
         <div>
           <h1 className="text-xl font-semibold text-white">Team</h1>
-          <p className="text-sm text-zinc-500 font-light mt-1">Manage members and invitations for this workspace.</p>
+          <p className="text-sm text-zinc-500 font-light mt-1">
+            {myRole === 'AGENT'
+              ? 'Browse your workspace roster and maintain your own agent profile.'
+              : 'Manage members and invitations for this workspace.'}
+          </p>
         </div>
 
         {/* Invite form */}
+        {myRole !== 'AGENT' && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
           <div className="flex items-center gap-2 mb-4">
             <UserPlus className="w-4 h-4 text-blue-400" />
@@ -268,6 +270,7 @@ export default function TeamPage() {
             </button>
           </div>
         </div>
+        )}
 
         {/* Members table */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
@@ -349,7 +352,7 @@ export default function TeamPage() {
                         </div>
                       )}
                       {/* Remove */}
-                      {!isOwner && !isMe && (
+                      {!isOwner && !isMe && (myRole === 'OWNER' || myRole === 'ADMIN') && (
                         <button
                           onClick={() => handleRemove(m.userId, m.user.name)}
                           disabled={busy}
@@ -412,6 +415,7 @@ export default function TeamPage() {
         </div>
 
         {/* Pending invitations */}
+        {myRole !== 'AGENT' && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
           <div className="px-5 py-4 border-b border-zinc-800 flex items-center gap-2">
             <Mail className="w-4 h-4 text-zinc-400" />
@@ -446,6 +450,7 @@ export default function TeamPage() {
             </div>
           )}
         </div>
+        )}
 
       </div>
     </div>

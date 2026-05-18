@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import toast from 'react-hot-toast';
 import { Building2, Users, User, Mail, AtSign, Shield } from 'lucide-react';
 import { orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
@@ -24,7 +23,7 @@ type Tab = 'workspace' | 'account';
 const ROLE_COLORS: Record<string, string> = {
   OWNER: 'bg-orange-500/15 text-orange-400',
   ADMIN: 'bg-blue-500/15 text-blue-400',
-  MEMBER: 'bg-zinc-800 text-zinc-500',
+  AGENT: 'bg-zinc-800 text-zinc-400',
 };
 
 export default function SettingsPage() {
@@ -35,10 +34,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     orgsApi.list().then(async (res) => {
-      const orgs = res.data;
+      const orgs = res.data as Org[];
       if (orgs.length > 0) {
-        const full = await orgsApi.get(orgs[0].slug);
-        setOrg(full.data);
+        const first = orgs[0];
+        const membersRes = await orgsApi.listMembers(first.id).catch(() => ({ data: [] }));
+        setOrg({ ...first, members: membersRes.data });
       }
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
@@ -162,9 +162,11 @@ export default function SettingsPage() {
               <Shield className="w-4 h-4 text-zinc-600 shrink-0" />
               <div>
                 <p className="text-xs text-zinc-600 font-normal">Role</p>
-                <p className="text-sm text-zinc-200 font-light mt-0.5">
-                  {org?.members?.find((m) => m.userId === user?.id)?.role ?? '—'}
-                </p>
+                <div className="mt-1.5">
+                  <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ${ROLE_COLORS[org?.members?.find((m) => m.userId === user?.id)?.role ?? 'AGENT'] ?? ROLE_COLORS.AGENT}`}>
+                    {org?.members?.find((m) => m.userId === user?.id)?.role ?? '—'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

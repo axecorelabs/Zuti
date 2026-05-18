@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, activityApi } from '@/lib/api';
 import { Activity, UserPlus, UserMinus, ShieldCheck, MessageSquare, ArrowUpRight, Send } from 'lucide-react';
@@ -59,25 +58,22 @@ function getInitials(name: string) {
 }
 
 export default function ActivityPage() {
-  const router = useRouter();
   const { getRoleForOrg } = useAuthStore();
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [orgId, setOrgId] = useState<string | null>(null);
+  const [myRole, setMyRole] = useState<string | null>(null);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
       const list = res.data as { id: string; members?: { role: string }[] }[];
       if (!list.length) return;
       const first = list[0];
-      const role = first.members?.[0]?.role ?? getRoleForOrg(first.id);
-      if (role === 'AGENT') {
-        router.replace('/inbox');
-        return;
-      }
+      const role = first.members?.[0]?.role ?? getRoleForOrg(first.id) ?? null;
+      setMyRole(role);
       setOrgId(first.id);
     }).catch(() => setLoading(false));
-  }, [getRoleForOrg, router]);
+  }, [getRoleForOrg]);
 
   useEffect(() => {
     if (!orgId) return;
@@ -99,7 +95,9 @@ export default function ActivityPage() {
           </div>
           <div>
             <h1 className="text-xl font-semibold text-white">Activity</h1>
-            <p className="text-xs text-zinc-500 font-light">Audit trail — all workspace events</p>
+            <p className="text-xs text-zinc-500 font-light">
+              {myRole === 'AGENT' ? 'Your activity and account-related events' : 'Audit trail — all workspace events'}
+            </p>
           </div>
         </div>
 

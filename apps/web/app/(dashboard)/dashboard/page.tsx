@@ -3,12 +3,21 @@
 import { useEffect, useState } from 'react';
 import { MessageSquare, Bot, Users, AlertCircle, BookOpen, ArrowRight } from 'lucide-react';
 import { orgsApi, conversationsApi, botsApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   Cell, PieChart, Pie,
 } from 'recharts';
 
 interface Org { id: string; name: string; slug: string; }
+
+type MemberRole = 'OWNER' | 'ADMIN' | 'AGENT';
+
+interface Member {
+  userId: string;
+  role: MemberRole;
+  user: { id: string; name: string; email: string };
+}
 
 interface Conv {
   id: string;
@@ -60,39 +69,45 @@ const CustomTooltip = ({ active, payload }: any) => {
 };
 
 export default function DashboardPage() {
+  const { getRoleForOrg } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [convs, setConvs] = useState<Conv[]>([]);
+  const [members, setMembers] = useState<Member[]>([]);
+  const [myRole, setMyRole] = useState<MemberRole | null>(null);
   const [stats, setStats] = useState({ total: 0, open: 0, escalated: 0, resolved: 0, bots: 0, members: 0 });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     orgsApi.list().then(async (res) => {
-      const orgs: Org[] = res.data;
+      const orgs: (Org & { members?: { role: MemberRole }[] })[] = res.data;
       if (!orgs.length) return;
       const first = orgs[0];
       setOrg(first);
+      const role = (first.members?.[0]?.role ?? getRoleForOrg(first.id) ?? null) as MemberRole | null;
+      setMyRole(role);
 
-      const [convRes, botRes, orgRes] = await Promise.allSettled([
+      const [convRes, membersRes, botRes] = await Promise.allSettled([
         conversationsApi.list(first.id),
-        botsApi.list(first.id),
-        orgsApi.get(first.slug),
+        orgsApi.listMembers(first.id),
+        role === 'AGENT' ? Promise.resolve({ data: [] }) : botsApi.list(first.id),
       ]);
 
       const conversations: Conv[] = convRes.status === 'fulfilled' ? convRes.value.data : [];
+      const teamMembers: Member[] = membersRes.status === 'fulfilled' ? membersRes.value.data : [];
       const bots = botRes.status === 'fulfilled' ? botRes.value.data : [];
-      const orgData = orgRes.status === 'fulfilled' ? orgRes.value.data : null;
 
       setConvs(conversations);
+      setMembers(teamMembers);
       setStats({
         total: conversations.length,
         open: conversations.filter((c) => c.status === 'OPEN').length,
         escalated: conversations.filter((c) => c.status === 'ESCALATED').length,
         resolved: conversations.filter((c) => c.status === 'RESOLVED').length,
-        bots: bots.length,
-        members: orgData?.members?.length ?? 0,
+        bots: role === 'AGENT' ? 0 : bots.length,
+        members: teamMembers.length,
       });
     }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  }, [getRoleForOrg]);
 
   const volumeData = buildVolumeData(convs);
 
@@ -107,12 +122,31 @@ export default function DashboardPage() {
     .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
     .slice(0, 5);
 
-  const statCards = [
-    { label: 'Total conversations', value: stats.total, icon: MessageSquare, accent: 'bg-blue-600/15 border-blue-600/20 text-blue-400' },
-    { label: 'Open', value: stats.open, icon: AlertCircle, accent: 'bg-orange-500/15 border-orange-500/20 text-orange-400' },
-    { label: 'Active bots', value: stats.bots, icon: Bot, accent: 'bg-zinc-800 border-zinc-700 text-zinc-400' },
-    { label: 'Team members', value: stats.members, icon: Users, accent: 'bg-zinc-800 border-zinc-700 text-zinc-400' },
-  ];
+  const statCards = myRole === 'AGENT'
+    ? [
+        { label: 'Visible conversations', value: stats.total, icon: MessageSquare, accent: 'bg-blue-600/15 border-blue-600/20 text-blue-400' },
+        { label: 'Open', value: stats.open, icon: AlertCircle, accent: 'bg-orange-500/15 border-orange-500/20 text-orange-400' },
+        { label: 'Escalated', value: stats.escalated, icon: Users, accent: 'bg-red-500/15 border-red-500/20 text-red-400' },
+        { label: 'Resolved', value: stats.resolved, icon: Bot, accent: 'bg-emerald-500/15 border-emerald-500/20 text-emerald-400' },
+      ]
+    : [
+        { label: 'Total conversations', value: stats.total, icon: MessageSquare, accent: 'bg-blue-600/15 border-blue-600/20 text-blue-400' },
+        { label: 'Open', value: stats.open, icon: AlertCircle, accent: 'bg-orange-500/15 border-orange-500/20 text-orange-400' },
+        { label: 'Active bots', value: stats.bots, icon: Bot, accent: 'bg-zinc-800 border-zinc-700 text-zinc-400' },
+        { label: 'Team members', value: stats.members, icon: Users, accent: 'bg-zinc-800 border-zinc-700 text-zinc-400' },
+      ];
+
+  const quickActions = myRole === 'AGENT'
+    ? [
+        { href: '/inbox', icon: MessageSquare, label: 'Open inbox', sub: 'Handle visible conversations' },
+        { href: '/team', icon: Users, label: 'View team', sub: 'See your workspace roster' },
+        { href: '/activity', icon: AlertCircle, label: 'Your activity', sub: 'Review your recent actions' },
+      ]
+    : [
+        { href: '/bots', icon: Bot, label: 'Add a bot', sub: 'Connect Telegram' },
+        { href: '/inbox', icon: MessageSquare, label: 'Open inbox', sub: 'View messages' },
+        { href: '/knowledge', icon: BookOpen, label: 'Add knowledge', sub: 'Train your AI' },
+      ];
 
   return (
     <div className="p-4 md:p-8">
@@ -123,7 +157,11 @@ export default function DashboardPage() {
             ? <span className="inline-block w-40 h-7 bg-zinc-900 animate-pulse rounded-lg" />
             : (org?.name ?? 'Dashboard')}
         </h1>
-        <p className="mt-1 text-sm text-zinc-500 font-light">Overview of your workspace activity.</p>
+        <p className="mt-1 text-sm text-zinc-500 font-light">
+          {myRole === 'AGENT'
+            ? 'A personal overview of the conversations and activity visible to you.'
+            : 'Overview of your workspace activity.'}
+        </p>
       </div>
 
       {/* Stat cards */}
@@ -150,7 +188,9 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-sm font-normal text-white">Conversation volume</h2>
-              <p className="text-xs text-zinc-600 font-light mt-0.5">Last 7 days</p>
+              <p className="text-xs text-zinc-600 font-light mt-0.5">
+                {myRole === 'AGENT' ? 'Your visible conversations in the last 7 days' : 'Last 7 days'}
+              </p>
             </div>
           </div>
           {loading ? (
@@ -183,7 +223,9 @@ export default function DashboardPage() {
         <div className="card p-6">
           <div className="mb-6">
             <h2 className="text-sm font-normal text-white">Status breakdown</h2>
-            <p className="text-xs text-zinc-600 font-light mt-0.5">All time</p>
+            <p className="text-xs text-zinc-600 font-light mt-0.5">
+              {myRole === 'AGENT' ? 'Only conversations visible to you' : 'All time'}
+            </p>
           </div>
           {loading ? (
             <div className="h-40 bg-zinc-900 animate-pulse rounded-xl" />
@@ -230,7 +272,9 @@ export default function DashboardPage() {
         {/* Recent conversations */}
         <div className="card p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-5">
-            <h2 className="text-sm font-normal text-white">Recent conversations</h2>
+            <h2 className="text-sm font-normal text-white">
+              {myRole === 'AGENT' ? 'Your recent conversations' : 'Recent conversations'}
+            </h2>
               <a href="/inbox" className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 transition-colors">
               View all <ArrowRight className="w-3 h-3" />
             </a>
@@ -280,11 +324,7 @@ export default function DashboardPage() {
         <div className="card p-6">
           <h2 className="text-sm font-normal text-white mb-5">Quick actions</h2>
           <div className="space-y-2">
-            {[
-              { href: '/bots', icon: Bot, label: 'Add a bot', sub: 'Connect Telegram' },
-              { href: '/inbox', icon: MessageSquare, label: 'Open inbox', sub: 'View messages' },
-              { href: '/knowledge', icon: BookOpen, label: 'Add knowledge', sub: 'Train your AI' },
-            ].map(({ href, icon: Icon, label, sub }) => (
+            {quickActions.map(({ href, icon: Icon, label, sub }) => (
               <a
                 key={href}
                 href={href}

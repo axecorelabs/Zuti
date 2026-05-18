@@ -8,10 +8,20 @@ export class CreateBotDto {
   @MaxLength(100)
   declare name: string;
 
-  @ApiProperty({ example: '123456:ABC-DEF...' })
+  @ApiPropertyOptional({
+    description: 'Primary channel for this bot',
+    enum: ['TELEGRAM', 'WEB_WIDGET'],
+    example: 'WEB_WIDGET',
+  })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  declare telegramToken: string;
+  @IsIn(['TELEGRAM', 'WEB_WIDGET'])
+  primaryChannel?: 'TELEGRAM' | 'WEB_WIDGET';
+
+  @ApiPropertyOptional({ example: '123456:ABC-DEF...' })
+  @IsOptional()
+  @IsString()
+  telegramToken?: string;
 }
 
 export class UpdateBotDto {
@@ -30,6 +40,21 @@ export class UpdateBotDto {
   @IsOptional()
   @IsObject()
   aiConfig?: Record<string, unknown>;
+
+  @ApiPropertyOptional({ description: 'Enable website widget channel for this bot' })
+  @IsOptional()
+  @IsBoolean()
+  webWidgetEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Allowed website domains for embed usage (without protocol)',
+    example: ['example.com', 'app.example.com'],
+    isArray: true,
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  webWidgetAllowedDomains?: string[];
 
   @ApiPropertyOptional({
     description: 'Roles the AI may auto-assign escalated conversations to',

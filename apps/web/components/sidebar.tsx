@@ -62,13 +62,13 @@ export interface AppNotification {
 }
 
 const navItems = [
-  { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: false },
+  { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
   { label: 'Bots', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
-  { label: 'Team', href: '/team', icon: UserRound, agentVisible: false },
-  { label: 'Activity', href: '/activity', icon: Activity, agentVisible: false },
-  { label: 'Settings', href: '/settings', icon: Settings, agentVisible: false },
+  { label: 'Team', href: '/team', icon: UserRound, agentVisible: true },
+  { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },
+  { label: 'Settings', href: '/settings', icon: Settings, agentVisible: true },
 ];
 
 export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) {
@@ -84,6 +84,7 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
 
   const activeOrgRole = activeOrg ? getRoleForOrg(activeOrg.id) : undefined;
   const isAgent = activeOrgRole === 'AGENT';
+  const roleResolved = !activeOrg || activeOrgRole !== undefined;
 
   const fetchOrgs = useCallback(() => {
     orgsApi
@@ -383,7 +384,7 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
           {navItems
-            .filter((item) => !isAgent || item.agentVisible)
+            .filter((item) => item.agentVisible || (roleResolved && !isAgent))
             .map(({ label, href, icon: Icon }) => {
             const isActive = pathname === href || (href !== '/dashboard' && pathname.startsWith(href));
             return (

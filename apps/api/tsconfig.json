@@ -18,8 +18,13 @@
     "forceConsistentCasingInFileNames": false,
     "noFallthroughCasesInSwitch": false,
     "paths": {
-      "@zuti/types": ["../../packages/types/src"],
-      "@zuti/database": ["../../packages/database/src"]
-    }
+      "@zuti/types": [
+        "../../packages/types/src"
+      ],
+      "@zuti/database": [
+        "../../packages/database/src"
+      ]
+    },
+    "jsx": "react-jsx"
   }
 }

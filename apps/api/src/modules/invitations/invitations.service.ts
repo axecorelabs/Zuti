@@ -61,12 +61,19 @@ export class InvitationsService {
     });
 
     const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
-    await this.mail.sendInvitationEmail({
-      to: dto.email,
-      orgName: org.name,
-      inviterName: requester?.name ?? requester?.email ?? 'A team member',
-      inviteUrl: `${appUrl}/invitations/${token}`,
-    });
+    try {
+      await this.mail.sendInvitationEmail({
+        to: dto.email,
+        orgName: org.name,
+        inviterName: requester?.name ?? requester?.email ?? 'A team member',
+        inviteUrl: `${appUrl}/invitations/${token}`,
+      });
+    } catch (err) {
+      // If email fails, delete the invitation since the invitee won't receive it
+      await this.prisma.invitation.delete({ where: { id: invitation.id } });
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new BadRequestException(`Failed to send invitation email: ${msg}`);
+    }
 
     // Activity log
     await this.activity.log(

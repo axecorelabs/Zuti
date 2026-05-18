@@ -48,4 +48,18 @@ export class ActivityService {
       take: limit,
     });
   }
+
+  async listForMember(orgId: string, userId: string, limit = 200) {
+    return this.prisma.activityLog.findMany({
+      where: {
+        orgId,
+        OR: [
+          { actorId: userId },
+          { targetType: 'member', targetId: userId },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+  }
 }

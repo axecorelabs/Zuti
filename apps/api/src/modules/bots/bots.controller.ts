@@ -19,7 +19,7 @@ export class BotsController {
 
   @Post()
   @RequireRole('OWNER', 'ADMIN')
-  @ApiOperation({ summary: 'Register a new Telegram bot' })
+  @ApiOperation({ summary: 'Create a bot and choose its primary channel (Telegram or Website Widget)' })
   create(
     @Param('id') orgId: string,
     @Body() dto: CreateBotDto,

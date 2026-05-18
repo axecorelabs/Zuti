@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
+
 import { ArrowRight, MessageSquareText, ShieldCheck, Sparkles, Leaf } from 'lucide-react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
@@ -125,8 +126,21 @@ export default function Home() {
     return () => context.revert();
   }, []);
 
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = '/widget.js';
+    script.async = true;
+    script.setAttribute('data-zuti-widget-key', 'zwk_b69a33afd3ad2ac2282e0ea9d065884ecc1e');
+    document.body.appendChild(script);
+    return () => {
+      document.body.removeChild(script);
+      delete (window as any).__zutiWidgetInitialized;
+    };
+  }, []);
+
   return (
     <div className="min-h-screen bg-black text-white overflow-x-hidden">
+
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.08),transparent_24%),radial-gradient(circle_at_20%_12%,rgba(191,219,254,0.10),transparent_26%),radial-gradient(circle_at_80%_18%,rgba(251,207,232,0.08),transparent_22%),radial-gradient(circle_at_50%_70%,rgba(255,255,255,0.04),transparent_18%)]" />
 
       <header className="fixed inset-x-0 top-0 z-30 px-4 sm:px-6 md:px-10 lg:px-16 pt-4 sm:pt-6 pb-3 sm:pb-4 backdrop-blur-lg bg-black/70">

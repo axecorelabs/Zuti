@@ -31,7 +31,16 @@ function LoginPageContent() {
       const res = await authApi.login(email, password);
       const { user, accessToken, refreshToken } = res.data;
       setAuth(user, accessToken, refreshToken);
-      router.push('/dashboard');
+
+      // If the user has no workspace yet, send them to onboarding
+      try {
+        const orgsRes = await (await import('@/lib/api')).orgsApi.list();
+        const orgs = orgsRes.data as { id: string }[];
+        router.push(orgs.length === 0 ? '/onboarding' : '/dashboard');
+      } catch {
+        router.push('/dashboard');
+      }
+
       setShowResendVerification(false);
     } catch (err: unknown) {
       const msg =
@@ -55,8 +64,8 @@ function LoginPageContent() {
 
     setResendingVerification(true);
     try {
-      const res = await authApi.resendVerification(email);
-      toast.success(res.data?.message ?? 'Verification email sent.');
+      await authApi.resendVerification(email);
+      toast.success('If your account is unverified, a verification link has been sent. Check inbox and spam.');
     } catch {
       toast.error('Could not resend verification email. Please try again.');
     } finally {
