@@ -3,7 +3,9 @@ import { Inter, Outfit, Space_Grotesk } from 'next/font/google';
 import { Toaster } from 'react-hot-toast';
 import './globals.css';
 
-const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL ?? 'http://localhost:3000';
+const configuredUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL;
+const vercelUrl = process.env.VERCEL_URL;
+const appUrl = (configuredUrl ?? (vercelUrl ? `https://${vercelUrl}` : 'http://localhost:3000')).replace(/\/$/, '');
 
 const inter = Inter({
   subsets: ['latin'],
@@ -41,13 +43,13 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: 'website',
-    url: '/',
+    url: appUrl,
     title: 'Zuti — AI Customer Service',
     description: 'AI-powered Telegram customer service platform',
     siteName: 'Zuti',
     images: [
       {
-        url: '/opengraph-image.png',
+        url: `${appUrl}/opengraph-image.png`,
         width: 1200,
         height: 630,
         alt: 'Zuti',
@@ -58,7 +60,7 @@ export const metadata: Metadata = {
     card: 'summary_large_image',
     title: 'Zuti — AI Customer Service',
     description: 'AI-powered Telegram customer service platform',
-    images: ['/twitter-image.png'],
+    images: [`${appUrl}/twitter-image.png`],
   },
 };
 
