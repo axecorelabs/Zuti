@@ -134,6 +134,39 @@
   disclaimer.innerHTML = '💡 AI responses can occasionally be inaccurate. Please verify important details.';
   disclaimer.style.display = 'none'; // Will show after first bot message
 
+  // Lightweight markdown → safe HTML for bot bubbles only
+  function mdToHtml(text) {
+    var esc = function(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    };
+    // Fenced code blocks
+    text = text.replace(/```[\w]*\n?([\s\S]*?)```/g, function(_,c){ return '<pre style="background:#111;border:1px solid #333;border-radius:6px;padding:8px;overflow-x:auto;font-size:12px;margin:4px 0"><code>' + esc(c.trim()) + '</code></pre>'; });
+    // Inline code
+    text = text.replace(/`([^`]+)`/g, function(_,c){ return '<code style="background:#111;border:1px solid #333;border-radius:3px;padding:1px 4px;font-size:12px">' + esc(c) + '</code>'; });
+    // Headings
+    text = text.replace(/^#{1,6}\s+(.+)/gm, function(_,c){ return '<strong>' + esc(c) + '</strong>'; });
+    // Bold+italic
+    text = text.replace(/\*\*\*(.+?)\*\*\*/g, function(_,c){ return '<strong><em>' + esc(c) + '</em></strong>'; });
+    // Bold
+    text = text.replace(/\*\*(.+?)\*\*/g, function(_,c){ return '<strong>' + esc(c) + '</strong>'; });
+    text = text.replace(/__(.+?)__/g, function(_,c){ return '<strong>' + esc(c) + '</strong>'; });
+    // Italic
+    text = text.replace(/\*(.+?)\*/g, function(_,c){ return '<em>' + esc(c) + '</em>'; });
+    text = text.replace(/_(.+?)_/g, function(_,c){ return '<em>' + esc(c) + '</em>'; });
+    // Strikethrough
+    text = text.replace(/~~(.+?)~~/g, function(_,c){ return '<s>' + esc(c) + '</s>'; });
+    // Links
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(_,label,url){ return '<a href="' + url + '" target="_blank" rel="noopener" style="color:#60a5fa">' + esc(label) + '</a>'; });
+    // Blockquotes
+    text = text.replace(/^>\s?(.*)/gm, function(_,c){ return '<blockquote style="border-left:3px solid #3f3f46;margin:4px 0;padding-left:8px;color:#a1a1aa">' + c + '</blockquote>'; });
+    // Unordered lists
+    text = text.replace(/^[-*+]\s+(.*)/gm, function(_,c){ return '\u2022 ' + c; });
+    // Plain text lines — wrap in paragraphs, collapse excess blank lines
+    text = text.replace(/\n{3,}/g, '\n\n');
+    text = text.replace(/\n/g, '<br>');
+    return text;
+  }
+
   function addMessage(text, who) {
     var row = document.createElement('div');
     row.style.display = 'flex';
@@ -141,9 +174,13 @@
     row.style.animation = 'slideIn 0.3s ease-out';
 
     var bubble = document.createElement('div');
-    bubble.textContent = text;
+    if (who === 'user') {
+      bubble.textContent = text; // plain text — safe
+    } else {
+      bubble.innerHTML = mdToHtml(text); // rendered markdown for bot
+    }
     bubble.style.maxWidth = '85%';
-    bubble.style.whiteSpace = 'pre-wrap';
+    bubble.style.whiteSpace = who === 'user' ? 'pre-wrap' : 'normal';
     bubble.style.wordBreak = 'break-word';
     bubble.style.padding = '10px 12px';
     bubble.style.borderRadius = '12px';
