@@ -64,4 +64,22 @@ export class BotsController {
   setWebhook(@Param('id') orgId: string, @Param('botId') botId: string) {
     return this.botsService.setWebhook(orgId, botId);
   }
+
+  @Post(':botId/email/enable')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Enable email channel — generates {localPart}@{orgSlug}.bords.app' })
+  enableEmail(
+    @Param('id') orgId: string,
+    @Param('botId') botId: string,
+    @Body() dto: { localPart: string },
+  ) {
+    return this.botsService.enableEmail(orgId, botId, dto.localPart);
+  }
+
+  @Post(':botId/email/disable')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Disable email channel' })
+  disableEmail(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.disableEmail(orgId, botId);
+  }
 }

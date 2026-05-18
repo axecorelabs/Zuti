@@ -3,6 +3,7 @@ import { BullModule } from '@nestjs/bull';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 
 export const TELEGRAM_QUEUE = 'telegram-messages';
+export const EMAIL_QUEUE = 'email-messages';
 
 @Global()
 @Module({
@@ -15,6 +16,7 @@ export const TELEGRAM_QUEUE = 'telegram-messages';
       }),
     }),
     BullModule.registerQueue({ name: TELEGRAM_QUEUE }),
+    BullModule.registerQueue({ name: EMAIL_QUEUE }),
   ],
   exports: [BullModule],
 })

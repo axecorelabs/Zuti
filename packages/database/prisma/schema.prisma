@@ -118,6 +118,16 @@ model Bot {
   isActive       Boolean  @default(true)
   aiConfig       Json     @default("{}")
   routeToRoles   String[] @default(["AGENT"]) // roles the AI may auto-assign escalations to
+
+  // ── Email channel ─────────────────────────────────────────────────────────
+  // Option B: Zuti-hosted address (auto-generated, zero user DNS setup)
+  emailEnabled          Boolean  @default(false)
+  emailAddress          String?  @unique  // e.g. bot-{widgetKey}@mail.zuti.bords.app
+  // Option A: custom domain (user configures MX record, added later)
+  customEmailDomain     String?            // e.g. support.their-company.com
+  customEmailAddress    String?            // e.g. support@their-company.com
+  customEmailVerified   Boolean  @default(false)
+
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -128,6 +138,7 @@ model Bot {
 enum BotPrimaryChannel {
   TELEGRAM
   WEB_WIDGET
+  EMAIL
 }
 
 // ─── Knowledge Base ───────────────────────────────────────────────────────────
@@ -180,11 +191,16 @@ model Conversation {
   id               String             @id @default(cuid())
   organizationId   String
   botId            String
+  channel          ConversationChannel @default(WIDGET)
   telegramChatId   String?
   customerName     String?
   customerUsername String?
   widgetVisitorId  String?
   widgetVisitorEmail String?
+  // Email channel fields
+  customerEmail    String?   // sender address (email channel)
+  emailThreadId    String?   // original Message-ID for In-Reply-To threading
+  emailSubject     String?   // subject line
   status           ConversationStatus @default(OPEN)
   mode             ConversationMode   @default(AI)
   assignedAgentId  String?
@@ -203,6 +219,13 @@ model Conversation {
 
   @@index([botId, telegramChatId])
   @@index([botId, widgetVisitorId])
+  @@index([botId, customerEmail])
+}
+
+enum ConversationChannel {
+  WIDGET
+  TELEGRAM
+  EMAIL
 }
 
 model Message {

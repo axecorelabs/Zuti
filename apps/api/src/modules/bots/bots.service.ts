@@ -105,6 +105,51 @@ export class BotsService {
     await this.prisma.bot.delete({ where: { id: botId } });
   }
 
+  // ── Email channel ──────────────────────────────────────────────────────────
+
+  async enableEmail(organizationId: string, botId: string, localPart: string) {
+    const bot = await this.findOne(organizationId, botId);
+
+    // Validate localPart: lowercase letters, numbers, hyphens only
+    if (!/^[a-z0-9-]{1,32}$/.test(localPart)) {
+      throw new BadRequestException(
+        'Email local part must be 1–32 characters: lowercase letters, numbers, hyphens only',
+      );
+    }
+
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { slug: true },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const emailAddress = `${localPart}@${org.slug}.bords.app`;
+
+    // Check uniqueness
+    const conflict = await this.prisma.bot.findFirst({
+      where: { emailAddress, NOT: { id: botId } },
+    });
+    if (conflict) {
+      throw new BadRequestException(`The address ${emailAddress} is already in use`);
+    }
+
+    const updated = await this.prisma.bot.update({
+      where: { id: botId },
+      data: { emailEnabled: true, emailAddress },
+    });
+
+    return { emailAddress: updated.emailAddress };
+  }
+
+  async disableEmail(organizationId: string, botId: string) {
+    await this.findOne(organizationId, botId);
+    await this.prisma.bot.update({
+      where: { id: botId },
+      data: { emailEnabled: false },
+    });
+    return { ok: true };
+  }
+
   async setWebhook(organizationId: string, botId: string) {
     const bot = await this.findOne(organizationId, botId);
     if (!bot.telegramToken) {

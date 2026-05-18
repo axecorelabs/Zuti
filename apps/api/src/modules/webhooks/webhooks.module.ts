@@ -3,14 +3,16 @@ import { HttpModule } from '@nestjs/axios';
 import { BullModule } from '@nestjs/bull';
 import { WebhooksController } from './webhooks.controller';
 import { TelegramProcessor } from '../queue/telegram.processor';
-import { TELEGRAM_QUEUE } from '../queue/queue.module';
+import { EmailProcessor } from '../queue/email.processor';
+import { TELEGRAM_QUEUE, EMAIL_QUEUE } from '../queue/queue.module';
 
 @Module({
   imports: [
     HttpModule,
     BullModule.registerQueue({ name: TELEGRAM_QUEUE }),
+    BullModule.registerQueue({ name: EMAIL_QUEUE }),
   ],
   controllers: [WebhooksController],
-  providers: [TelegramProcessor],
+  providers: [TelegramProcessor, EmailProcessor],
 })
 export class WebhooksModule {}
