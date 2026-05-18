@@ -10,9 +10,12 @@ import { botsApi, conversationsApi, orgsApi } from '@/lib/api';
 
 interface Conversation {
   id: string;
+  channel?: string | null;
   telegramChatId: string | null;
   customerName?: string | null;
   customerUsername?: string | null;
+  customerEmail?: string | null;
+  emailSubject?: string | null;
   status: 'OPEN' | 'PENDING' | 'RESOLVED' | 'ESCALATED';
   mode: 'AI' | 'HUMAN';
   assignedAgentId?: string | null;
@@ -322,20 +325,33 @@ export default function InboxPage() {
   const CustomerPanelContent = () => (
     <>
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
-        <h3 className="text-xs font-semibold text-zinc-300 mb-2">{selected?.telegramChatId ? 'Telegram user' : 'Widget visitor'}</h3>
+        <h3 className="text-xs font-semibold text-zinc-300 mb-2">
+          {selected?.channel === 'EMAIL' ? 'Email customer' : selected?.telegramChatId ? 'Telegram user' : 'Widget visitor'}
+        </h3>
         <div className="space-y-1.5 text-xs">
           <div className="flex items-center justify-between gap-2">
             <span className="text-zinc-500">Name</span>
-            <span className="text-zinc-200 truncate max-w-[190px] text-right">{selected?.customerName || (selected?.telegramChatId ? 'Unknown' : 'Anonymous')}</span>
+            <span className="text-zinc-200 truncate max-w-[190px] text-right">
+              {selected?.customerName || (selected?.channel === 'EMAIL' ? '—' : selected?.telegramChatId ? 'Unknown' : 'Anonymous')}
+            </span>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-zinc-500">Username</span>
-            <span className="text-zinc-200 truncate max-w-[190px] text-right">{selected?.customerUsername ? `@${selected.customerUsername}` : '—'}</span>
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-zinc-500">Chat ID</span>
-            <span className="text-zinc-200 font-mono truncate max-w-[190px] text-right">{selected?.telegramChatId}</span>
-          </div>
+          {selected?.channel === 'EMAIL' ? (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-zinc-500">Email</span>
+              <span className="text-zinc-200 font-mono truncate max-w-[190px] text-right">{selected?.customerEmail || '—'}</span>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-500">Username</span>
+                <span className="text-zinc-200 truncate max-w-[190px] text-right">{selected?.customerUsername ? `@${selected.customerUsername}` : '—'}</span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-zinc-500">Chat ID</span>
+                <span className="text-zinc-200 font-mono truncate max-w-[190px] text-right">{selected?.telegramChatId || '—'}</span>
+              </div>
+            </>
+          )}
         </div>
       </section>
 
@@ -481,7 +497,9 @@ export default function InboxPage() {
                 const lastMsg = conv.messages?.[conv.messages.length - 1];
                 const isActive = selected?.id === conv.id;
                 const cfg = STATUS_CONFIG[conv.status] ?? STATUS_CONFIG.OPEN;
-                const displayName = conv.customerName || (conv.telegramChatId ? `User ···${conv.telegramChatId.slice(-4)}` : 'Anonymous');
+                const displayName = conv.customerName
+                  || (conv.channel === 'EMAIL' ? conv.customerEmail : conv.telegramChatId ? `User ···${conv.telegramChatId.slice(-4)}` : null)
+                  || 'Anonymous';
                 return (
                   <button
                     key={conv.id}
@@ -518,6 +536,9 @@ export default function InboxPage() {
                           }`}>
                             {conv.mode === 'AI' ? 'AI' : 'Human'}
                           </span>
+                          {conv.channel === 'EMAIL' && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800 text-zinc-400">email</span>
+                          )}
                           {conv.bot?.name && (
                             <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800/80 text-zinc-500 max-w-[90px] truncate">
                               {conv.bot.name}
@@ -556,11 +577,11 @@ export default function InboxPage() {
                   <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${
                     selected.status === 'ESCALATED' ? 'bg-red-500/20 text-red-400' : 'bg-zinc-800 text-zinc-400'
                   }`}>
-                    {nameInitials(selected.customerName || (selected.telegramChatId ? `U${selected.telegramChatId.slice(-4)}` : 'Anonymous'))}
+                    {nameInitials(selected.customerName || (selected.channel === 'EMAIL' ? selected.customerEmail : selected.telegramChatId ? `U${selected.telegramChatId.slice(-4)}` : null) || 'Anonymous')}
                   </div>
                   <div className="min-w-0">
                     <h2 className="font-semibold text-sm text-white tracking-tight truncate">
-                      {selected.customerName || (selected.telegramChatId ? `User ···${selected.telegramChatId.slice(-4)}` : 'Anonymous')}
+                      {selected.customerName || (selected.channel === 'EMAIL' ? selected.customerEmail : selected.telegramChatId ? `User ···${selected.telegramChatId.slice(-4)}` : 'Anonymous') || 'Anonymous'}
                     </h2>
                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       <span className="text-xs text-zinc-600 font-light">via {selected.bot?.name}</span>

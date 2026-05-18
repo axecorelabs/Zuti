@@ -1,4 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,6 +23,7 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
+    private readonly config: ConfigService,
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
     private readonly activity: ActivityService,
@@ -98,11 +100,17 @@ export class ConversationsService {
 
     if (!conversation) throw new NotFoundException('Conversation not found');
 
+    const prevCustomerWhere = conversation.telegramChatId
+      ? { telegramChatId: conversation.telegramChatId }
+      : conversation.customerEmail
+        ? { customerEmail: conversation.customerEmail }
+        : null;
+
     const [previousConversations, escalationHistory] = await Promise.all([
-      this.prisma.conversation.findMany({
+      prevCustomerWhere ? this.prisma.conversation.findMany({
         where: {
           organizationId,
-          telegramChatId: conversation.telegramChatId,
+          ...prevCustomerWhere,
           NOT: { id: conversation.id },
         },
         include: {
@@ -112,7 +120,7 @@ export class ConversationsService {
         },
         orderBy: { lastMessageAt: 'desc' },
         take: 10,
-      }),
+      }) : Promise.resolve([]),
       this.prisma.activityLog.findMany({
         where: {
           orgId: organizationId,
@@ -185,19 +193,18 @@ export class ConversationsService {
     });
 
     const token = conversation.bot.telegramToken;
-    if (!token) {
-      throw new BadRequestException('Telegram channel is not connected for this bot');
-    }
     const chatId = conversation.telegramChatId;
 
     // Agent takes over from AI
     if (dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN') {
-      await firstValueFrom(
-        this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-          chat_id: chatId,
-          text: '👤 You have been connected to a support agent. We will be with you shortly.',
-        }),
-      ).catch(() => null);
+      if (token && chatId) {
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+            chat_id: chatId,
+            text: '👤 You have been connected to a support agent. We will be with you shortly.',
+          }),
+        ).catch(() => null);
+      }
 
       await Promise.all([
         this.activity.log(
@@ -256,12 +263,14 @@ export class ConversationsService {
       const agentLabel = assignedTo
         ? `You've been connected to ${assignedTo.name}, one of our support agents.`
         : 'Your request has been escalated to our support team. An agent will be with you shortly.';
-      await firstValueFrom(
-        this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-          chat_id: chatId,
-          text: agentLabel,
-        }),
-      ).catch(() => null);
+      if (token && chatId) {
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+            chat_id: chatId,
+            text: agentLabel,
+          }),
+        ).catch(() => null);
+      }
 
       await Promise.all([
         this.activity.log(
@@ -287,12 +296,14 @@ export class ConversationsService {
         data: { resolvedAt: new Date() },
       });
 
-      await firstValueFrom(
-        this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
-          chat_id: chatId,
-          text: '✅ Your support request has been resolved. Feel free to message us again if you need further help.',
-        }),
-      ).catch(() => null);
+      if (token && chatId) {
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+            chat_id: chatId,
+            text: '✅ Your support request has been resolved. Feel free to message us again if you need further help.',
+          }),
+        ).catch(() => null);
+      }
 
       await this.activity.log(
         organizationId, actorId, actorName,
@@ -352,13 +363,42 @@ export class ConversationsService {
       },
     });
 
-    // Send via Telegram
-    await firstValueFrom(
-      this.http.post(
-        `https://api.telegram.org/bot${conversation.bot.telegramToken as string}/sendMessage`,
-        { chat_id: conversation.telegramChatId, text: content },
-      ),
-    ).catch(() => null);
+    if (conversation.channel === 'EMAIL') {
+      // Send reply via ZeptoMail
+      const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+      const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+      if (apiKey && conversation.bot.emailAddress && conversation.customerEmail) {
+        const mimeHeaders: Record<string, string> = conversation.emailThreadId
+          ? { 'In-Reply-To': `<${conversation.emailThreadId}>`, References: `<${conversation.emailThreadId}>` }
+          : {};
+        await firstValueFrom(
+          this.http.post(
+            'https://api.zeptomail.com/v1.1/email',
+            {
+              from: { address: conversation.bot.emailAddress, name: fromName },
+              to: [{ email_address: { address: conversation.customerEmail } }],
+              subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+              textbody: content,
+              ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
+            },
+            {
+              headers: {
+                Authorization: `Zoho-enczapikey ${apiKey}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          ),
+        ).catch(() => null);
+      }
+    } else if (conversation.bot.telegramToken && conversation.telegramChatId) {
+      // Send via Telegram
+      await firstValueFrom(
+        this.http.post(
+          `https://api.telegram.org/bot${conversation.bot.telegramToken}/sendMessage`,
+          { chat_id: conversation.telegramChatId, text: content },
+        ),
+      ).catch(() => null);
+    }
 
     // Update lastMessageAt
     await this.prisma.conversation.update({

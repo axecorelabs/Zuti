@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe } from 'lucide-react';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
 
@@ -14,6 +14,8 @@ interface BotRecord {
   webWidgetEnabled: boolean;
   webWidgetKey: string | null;
   webWidgetAllowedDomains: string[];
+  emailEnabled: boolean;
+  emailAddress: string | null;
   isActive: boolean;
   webhookSet: boolean;
   createdAt: string;
@@ -47,8 +49,10 @@ export default function BotsPage() {
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'routing' | 'widget'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'routing' | 'widget' | 'email'>('ai');
   const [saving, setSaving] = useState(false);
+  const [emailLocalPart, setEmailLocalPart] = useState('');
+  const [emailSaving, setEmailSaving] = useState(false);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -299,6 +303,7 @@ onBeforeUnmount(() => {
     setEditWidgetEnabled(Boolean(bot.webWidgetEnabled));
     setEditWidgetDomains((bot.webWidgetAllowedDomains ?? []).join('\n'));
     setWidgetSnippetType('html');
+    setEmailLocalPart(bot.emailAddress ? bot.emailAddress.split('@')[0] : '');
     setSettingsTab('ai');
   };
 
@@ -332,6 +337,33 @@ onBeforeUnmount(() => {
     } catch { toast.error('Failed to save settings'); } finally { setSaving(false); }
   };
 
+  const handleEnableEmail = async () => {
+    if (!orgId || !settingsBot || !emailLocalPart.trim()) return;
+    setEmailSaving(true);
+    try {
+      const res = await botsApi.enableEmail(orgId, settingsBot.id, emailLocalPart.trim().toLowerCase());
+      const updated = { ...settingsBot, emailEnabled: true, emailAddress: res.data.emailAddress };
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? updated : b)));
+      setSettingsBot(updated);
+      toast.success(`Email channel enabled: ${res.data.emailAddress}`);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to enable email';
+      toast.error(Array.isArray(msg) ? msg[0] : msg);
+    } finally { setEmailSaving(false); }
+  };
+
+  const handleDisableEmail = async () => {
+    if (!orgId || !settingsBot || !confirm('Disable email channel? Emails to this address will no longer be processed.')) return;
+    setEmailSaving(true);
+    try {
+      await botsApi.disableEmail(orgId, settingsBot.id);
+      const updated = { ...settingsBot, emailEnabled: false };
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? updated : b)));
+      setSettingsBot(updated);
+      toast.success('Email channel disabled');
+    } catch { toast.error('Failed to disable email'); } finally { setEmailSaving(false); }
+  };
+
   const handleSetWebhookInSettings = async (bot: BotRecord) => {
     if (!orgId) return;
     try {
@@ -360,7 +392,7 @@ onBeforeUnmount(() => {
           <span className="text-sm text-white font-medium">{settingsBot.name}</span>
           <ChevronRight className="w-3 h-3 text-zinc-700" />
           <span className="text-sm text-zinc-500">
-            {settingsTab === 'ai' ? 'AI Settings' : settingsTab === 'routing' ? 'Escalation Routing' : 'Website Widget'}
+            {settingsTab === 'ai' ? 'AI Settings' : settingsTab === 'routing' ? 'Escalation Routing' : settingsTab === 'email' ? 'Email Channel' : 'Website Widget'}
           </span>
         </div>
 
@@ -370,6 +402,7 @@ onBeforeUnmount(() => {
               { key: 'ai', label: 'AI' },
               { key: 'routing', label: 'Routing' },
               { key: 'widget', label: 'Widget' },
+              { key: 'email', label: 'Email' },
             ] as const).map((tab) => (
               <button
                 key={tab.key}
@@ -587,6 +620,80 @@ onBeforeUnmount(() => {
             </div>
             )}
 
+            {/* Email Channel */}
+            {settingsTab === 'email' && (
+            <div className="card p-6 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+                  <Mail className="w-4 h-4 text-zinc-400" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Email Channel</h2>
+                  <p className="text-xs text-zinc-500 font-light">Give this bot its own email address to receive and reply to customer emails.</p>
+                </div>
+              </div>
+
+              {settingsBot.emailEnabled && settingsBot.emailAddress ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+                    <p className="text-[11px] text-zinc-500 mb-1">Bot email address</p>
+                    <div className="flex items-center gap-2">
+                      <code className="text-sm text-blue-300 font-mono flex-1">{settingsBot.emailAddress}</code>
+                      <button
+                        type="button"
+                        onClick={() => copyText(settingsBot.emailAddress!, `email-${settingsBot.id}`)}
+                        className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-white transition-colors"
+                      >
+                        {copiedId === `email-${settingsBot.id}` ? <Check className="w-3.5 h-3.5 text-blue-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 space-y-1.5">
+                    <p className="text-[11px] text-zinc-400 font-medium">How it works</p>
+                    <p className="text-[11px] text-zinc-600 font-light">Customers email this address → your AI bot replies automatically. Agents can take over from the Inbox.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDisableEmail}
+                    disabled={emailSaving}
+                    className="w-full py-2.5 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/10 transition-colors text-xs font-medium disabled:opacity-50"
+                  >
+                    {emailSaving ? 'Disabling…' : 'Disable email channel'}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Local part (before the @)</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        value={emailLocalPart}
+                        onChange={(e) => setEmailLocalPart(e.target.value.toLowerCase().replace(/[^a-z0-9._-]/g, ''))}
+                        placeholder="support"
+                        className="flex-1 h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                      />
+                      <span className="text-sm text-zinc-600 font-mono shrink-0">@….bords.app</span>
+                    </div>
+                    {emailLocalPart && (
+                      <p className="text-[11px] text-zinc-500 mt-1.5 font-mono">{emailLocalPart}@[org-slug].bords.app</p>
+                    )}
+                    <p className="text-[11px] text-zinc-600 mt-1.5 font-light">Lowercase letters, numbers, dots, hyphens only.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleEnableEmail}
+                    disabled={!emailLocalPart.trim() || emailSaving}
+                    className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
+                  >
+                    {emailSaving ? 'Enabling…' : 'Enable email channel'}
+                  </button>
+                </div>
+              )}
+            </div>
+            )}
+
             {/* Save / back */}
             <div className="flex gap-3">
               <button
@@ -678,6 +785,20 @@ onBeforeUnmount(() => {
                     <span className="px-2 py-0.5 rounded-lg font-medium text-[11px] bg-zinc-800 text-zinc-400">
                       {(settingsBot.webWidgetAllowedDomains ?? []).length}
                     </span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Email</span>
+                  <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
+                    settingsBot.emailEnabled ? 'bg-blue-500/15 text-blue-400' : 'bg-zinc-800 text-zinc-500'
+                  }`}>
+                    {settingsBot.emailEnabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+                {settingsBot.emailEnabled && settingsBot.emailAddress && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-zinc-500 shrink-0">Address</span>
+                    <span className="text-zinc-400 font-mono text-[10px] truncate max-w-[160px] text-right">{settingsBot.emailAddress}</span>
                   </div>
                 )}
               </div>

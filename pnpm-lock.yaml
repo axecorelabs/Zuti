@@ -26,9 +26,6 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.583.0
         version: 3.1046.0
-      '@getbrevo/brevo':
-        specifier: ^5.0.4
-        version: 5.0.4
       '@nestjs/axios':
         specifier: ^4.0.1
         version: 4.0.1(@nestjs/common@10.4.22(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2))(axios@1.16.1)(rxjs@7.8.2)
@@ -1027,10 +1024,6 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
-
-  '@getbrevo/brevo@5.0.4':
-    resolution: {integrity: sha512-wN4mHE6O0Pb/d/Dh3E4MAm2zCHbLLUcFF8/wgwTeMPy9KzHBYLu7S/nsJbzd0AWL09MHn8vwue8ULL9YOzluOQ==}
-    engines: {node: '>=18.0.0'}
 
   '@humanwhocodes/config-array@0.13.0':
     resolution: {integrity: sha512-DZLEEqFWQFiyK6h5YIeynKx7JlvCYWL0cImfSRXZ9l4Sg2efkFGTuFf6vzXjK1cq6IYkU+Eg/JizXw+TD2vRNw==}
@@ -6976,8 +6969,6 @@ snapshots:
       react-dom: 18.3.1(react@18.3.1)
 
   '@floating-ui/utils@0.2.11': {}
-
-  '@getbrevo/brevo@5.0.4': {}
 
   '@humanwhocodes/config-array@0.13.0':
     dependencies:

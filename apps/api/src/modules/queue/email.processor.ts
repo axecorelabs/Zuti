@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { Job } from 'bull';
 import { firstValueFrom } from 'rxjs';
-import { BrevoClient } from '@getbrevo/brevo';
+
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { EMAIL_QUEUE } from './queue.module';
@@ -257,20 +257,36 @@ export class EmailProcessor {
     text: string,
     inReplyTo: string | null,
   ) {
-    const apiKey = this.config.get<string>('BREVO_API_KEY');
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
     if (!apiKey) {
-      this.logger.warn('BREVO_API_KEY not set — skipping email send');
+      this.logger.warn('ZEPTOMAIL_API_KEY not set — skipping email send');
       return;
     }
-    const brevo = new BrevoClient({ apiKey });
-    await brevo.transactionalEmails.sendTransacEmail({
-      sender: { email: from },
-      to: [{ email: to }],
-      subject,
-      textContent: text,
-      headers: inReplyTo
-        ? { 'In-Reply-To': `<${inReplyTo}>`, References: `<${inReplyTo}>` }
-        : undefined,
-    });
+    const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+
+    const mimeHeaders: Record<string, string> = {};
+    if (inReplyTo) {
+      mimeHeaders['In-Reply-To'] = `<${inReplyTo}>`;
+      mimeHeaders['References'] = `<${inReplyTo}>`;
+    }
+
+    await firstValueFrom(
+      this.http.post(
+        'https://api.zeptomail.com/v1.1/email',
+        {
+          from: { address: from, name: fromName },
+          to: [{ email_address: { address: to } }],
+          subject,
+          textbody: text,
+          ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
+        },
+        {
+          headers: {
+            Authorization: `Zoho-enczapikey ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      ),
+    );
   }
 }

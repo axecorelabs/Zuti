@@ -88,6 +88,10 @@ export const botsApi = {
     api.delete(`/organizations/${orgId}/bots/${botId}`),
   setWebhook: (orgId: string, botId: string) =>
     api.post(`/organizations/${orgId}/bots/${botId}/webhook`),
+  enableEmail: (orgId: string, botId: string, localPart: string) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/email/enable`, { localPart }),
+  disableEmail: (orgId: string, botId: string) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/email/disable`),
 };
 
 // ── Conversations ─────────────────────────────────────────────────────────────

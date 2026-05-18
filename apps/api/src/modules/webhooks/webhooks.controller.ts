@@ -1,9 +1,10 @@
 import {
   Controller, Post, Param, Body, Headers,
-  Logger, HttpCode, HttpStatus,
+  Logger, HttpCode, HttpStatus, UseInterceptors,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
+import { AnyFilesInterceptor } from '@nestjs/platform-express';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { PrismaService } from '../prisma/prisma.service';
@@ -80,28 +81,38 @@ export class WebhooksController {
     return { ok: true };
   }
 
-  // ── Email (Brevo Inbound Parsing) ─────────────────────────────────────────
-  // Brevo POSTs JSON to this single endpoint.
-  // The bot is identified by the `To[0].Address` field.
+  // ── Email (SendGrid Inbound Parse) ────────────────────────────────────────
+  // SendGrid POSTs multipart/form-data to this single endpoint.
+  // The bot is identified by the `to` address (Zuti-hosted OR custom domain).
 
   @Post('email')
   @Public()
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
+  @UseInterceptors(AnyFilesInterceptor())
   @HttpCode(HttpStatus.OK)
-  async handleEmailInbound(@Body() body: Record<string, any>) {
-    // Brevo sends JSON: { From: { Name, Address }, To: [{ Address }], Subject, TextBody, HtmlBody, MessageId, InReplyTo }
-    const fromEmail: string = (body?.From?.Address ?? '').toLowerCase().trim();
-    const fromName: string = body?.From?.Name ?? '';
-    const toAddress: string = (body?.To?.[0]?.Address ?? '').toLowerCase().trim();
-    const subject: string = body?.Subject ?? '(no subject)';
-    const bodyText: string = body?.TextBody ?? body?.HtmlBody?.replace(/<[^>]+>/g, ' ').trim() ?? '';
+  async handleEmailInbound(@Body() body: Record<string, string>) {
+    let toAddress: string = body.to ?? '';
+    let fromEmail: string = body.from ?? '';
 
-    // Strip angle brackets from MessageId/InReplyTo if present
-    const rawMessageId: string = body?.MessageId ?? '';
-    const messageId = rawMessageId.replace(/^<|>$/g, '') || `${Date.now()}@brevo`;
+    // `from` may be "Name <email@example.com>" — extract just the email
+    const emailMatch = fromEmail.match(/<([^>]+)>/);
+    if (emailMatch) fromEmail = emailMatch[1];
+    const fromName = body.from?.replace(/<[^>]+>/, '').trim().replace(/"/g, '') ?? '';
 
-    const rawInReplyTo: string = body?.InReplyTo ?? '';
-    const inReplyTo = rawInReplyTo.replace(/^<|>$/g, '') || undefined;
+    // `to` may also contain display name
+    const toMatch = toAddress.match(/<([^>]+)>/);
+    if (toMatch) toAddress = toMatch[1];
+    toAddress = toAddress.toLowerCase().trim();
+
+    // Extract Message-ID and In-Reply-To from raw headers string
+    const headers: string = body.headers ?? '';
+    const msgIdMatch = headers.match(/^Message-ID:\s*<([^>]+)>/im);
+    const inReplyToMatch = headers.match(/^In-Reply-To:\s*<([^>]+)>/im);
+    const messageId = msgIdMatch ? msgIdMatch[1] : `${Date.now()}@zuti`;
+    const inReplyTo = inReplyToMatch ? inReplyToMatch[1] : undefined;
+
+    const subject = body.subject ?? '(no subject)';
+    const bodyText = body.text ?? body.html?.replace(/<[^>]+>/g, ' ').trim() ?? '';
 
     if (!toAddress || !fromEmail || !bodyText.trim()) return { ok: true };
 
