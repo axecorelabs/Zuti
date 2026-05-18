@@ -10,13 +10,13 @@ export class CreateBotDto {
 
   @ApiPropertyOptional({
     description: 'Primary channel for this bot',
-    enum: ['TELEGRAM', 'WEB_WIDGET'],
+    enum: ['TELEGRAM', 'WEB_WIDGET', 'EMAIL'],
     example: 'WEB_WIDGET',
   })
   @IsOptional()
   @IsString()
-  @IsIn(['TELEGRAM', 'WEB_WIDGET'])
-  primaryChannel?: 'TELEGRAM' | 'WEB_WIDGET';
+  @IsIn(['TELEGRAM', 'WEB_WIDGET', 'EMAIL'])
+  primaryChannel?: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
 
   @ApiPropertyOptional({ example: '123456:ABC-DEF...' })
   @IsOptional()

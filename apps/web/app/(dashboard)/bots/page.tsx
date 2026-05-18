@@ -8,7 +8,7 @@ import { botsApi, orgsApi } from '@/lib/api';
 interface BotRecord {
   id: string;
   name: string;
-  primaryChannel: 'TELEGRAM' | 'WEB_WIDGET';
+  primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
   telegramToken: string | null;
   telegramUsername: string | null;
   webWidgetEnabled: boolean;
@@ -40,7 +40,7 @@ export default function BotsPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [createName, setCreateName] = useState('');
-  const [createPrimaryChannel, setCreatePrimaryChannel] = useState<'TELEGRAM' | 'WEB_WIDGET'>('TELEGRAM');
+  const [createPrimaryChannel, setCreatePrimaryChannel] = useState<'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL'>('TELEGRAM');
   const [createTelegramToken, setCreateTelegramToken] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
@@ -49,10 +49,12 @@ export default function BotsPage() {
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'routing' | 'widget' | 'email'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'routing' | 'widget' | 'email' | 'telegram'>('ai');
   const [saving, setSaving] = useState(false);
   const [emailLocalPart, setEmailLocalPart] = useState('');
   const [emailSaving, setEmailSaving] = useState(false);
+  const [editTelegramToken, setEditTelegramToken] = useState('');
+  const [telegramSaving, setTelegramSaving] = useState(false);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -304,6 +306,7 @@ onBeforeUnmount(() => {
     setEditWidgetDomains((bot.webWidgetAllowedDomains ?? []).join('\n'));
     setWidgetSnippetType('html');
     setEmailLocalPart(bot.emailAddress ? bot.emailAddress.split('@')[0] : '');
+    setEditTelegramToken('');
     setSettingsTab('ai');
   };
 
@@ -364,6 +367,34 @@ onBeforeUnmount(() => {
     } catch { toast.error('Failed to disable email'); } finally { setEmailSaving(false); }
   };
 
+  const handleConnectTelegram = async () => {
+    if (!orgId || !settingsBot || !editTelegramToken.trim()) return;
+    setTelegramSaving(true);
+    try {
+      const res = await botsApi.connectTelegram(orgId, settingsBot.id, editTelegramToken.trim());
+      const updated = { ...settingsBot, telegramToken: res.data.telegramToken, telegramUsername: res.data.telegramUsername, webhookSet: false };
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? updated : b)));
+      setSettingsBot(updated);
+      setEditTelegramToken('');
+      toast.success(`Telegram connected: @${res.data.telegramUsername}`);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to connect Telegram';
+      toast.error(Array.isArray(msg) ? msg[0] : msg);
+    } finally { setTelegramSaving(false); }
+  };
+
+  const handleDisconnectTelegram = async () => {
+    if (!orgId || !settingsBot || !confirm('Disconnect Telegram? This bot will stop receiving Telegram messages.')) return;
+    setTelegramSaving(true);
+    try {
+      await botsApi.disconnectTelegram(orgId, settingsBot.id);
+      const updated = { ...settingsBot, telegramToken: null, telegramUsername: null, webhookSet: false };
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? updated : b)));
+      setSettingsBot(updated);
+      toast.success('Telegram disconnected');
+    } catch { toast.error('Failed to disconnect Telegram'); } finally { setTelegramSaving(false); }
+  };
+
   const handleSetWebhookInSettings = async (bot: BotRecord) => {
     if (!orgId) return;
     try {
@@ -392,7 +423,7 @@ onBeforeUnmount(() => {
           <span className="text-sm text-white font-medium">{settingsBot.name}</span>
           <ChevronRight className="w-3 h-3 text-zinc-700" />
           <span className="text-sm text-zinc-500">
-            {settingsTab === 'ai' ? 'AI Settings' : settingsTab === 'routing' ? 'Escalation Routing' : settingsTab === 'email' ? 'Email Channel' : 'Website Widget'}
+            {settingsTab === 'ai' ? 'AI Settings' : settingsTab === 'routing' ? 'Escalation Routing' : settingsTab === 'email' ? 'Email Channel' : settingsTab === 'telegram' ? 'Telegram Channel' : 'Website Widget'}
           </span>
         </div>
 
@@ -403,6 +434,7 @@ onBeforeUnmount(() => {
               { key: 'routing', label: 'Routing' },
               { key: 'widget', label: 'Widget' },
               { key: 'email', label: 'Email' },
+              { key: 'telegram', label: 'Telegram' },
             ] as const).map((tab) => (
               <button
                 key={tab.key}
@@ -694,6 +726,90 @@ onBeforeUnmount(() => {
             </div>
             )}
 
+            {/* Telegram Channel */}
+            {settingsTab === 'telegram' && (
+            <div className="card p-6 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+                  <Bot className="w-4 h-4 text-zinc-400" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Telegram Channel</h2>
+                  <p className="text-xs text-zinc-500 font-light">Connect a Telegram bot to receive and reply to messages on Telegram.</p>
+                </div>
+              </div>
+
+              {settingsBot.telegramToken ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-zinc-500">Username</span>
+                      <span className="text-sm text-blue-300 font-mono">@{settingsBot.telegramUsername ?? '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-zinc-500">Webhook</span>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-lg font-medium ${
+                        settingsBot.webhookSet ? 'bg-zinc-800 text-zinc-400' : 'bg-orange-500/15 text-orange-400'
+                      }`}>
+                        {settingsBot.webhookSet ? 'Ready' : 'Not set'}
+                      </span>
+                    </div>
+                  </div>
+                  {!settingsBot.webhookSet && (
+                    <button
+                      type="button"
+                      onClick={() => handleSetWebhookInSettings(settingsBot)}
+                      className="w-full py-2.5 rounded-xl border border-orange-500/20 bg-orange-500/8 text-orange-400 hover:bg-orange-500/12 transition-colors text-xs font-medium flex items-center justify-center gap-2"
+                    >
+                      <Webhook className="w-3.5 h-3.5" />
+                      Set webhook
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => copyToken(settingsBot.telegramToken as string, `tg-${settingsBot.id}`)}
+                    className="w-full py-2.5 rounded-xl border border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-xs font-medium flex items-center justify-center gap-2"
+                  >
+                    {copiedId === `tg-${settingsBot.id}` ? <Check className="w-3.5 h-3.5 text-blue-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    Copy token
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectTelegram}
+                    disabled={telegramSaving}
+                    className="w-full py-2.5 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/10 transition-colors text-xs font-medium disabled:opacity-50"
+                  >
+                    {telegramSaving ? 'Disconnecting…' : 'Disconnect Telegram'}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Bot token</label>
+                    <input
+                      type="text"
+                      value={editTelegramToken}
+                      onChange={(e) => setEditTelegramToken(e.target.value)}
+                      placeholder="123456789:AAFxxxxxx…"
+                      className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                    />
+                    <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="mt-1.5 inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-blue-400 transition-colors">
+                      Get token from @BotFather <ExternalLink className="w-2.5 h-2.5" />
+                    </a>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleConnectTelegram}
+                    disabled={!editTelegramToken.trim() || telegramSaving}
+                    className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
+                  >
+                    {telegramSaving ? 'Connecting…' : 'Connect Telegram'}
+                  </button>
+                </div>
+              )}
+            </div>
+            )}
+
             {/* Save / back */}
             <div className="flex gap-3">
               <button
@@ -729,7 +845,7 @@ onBeforeUnmount(() => {
                     <p className="text-xs text-zinc-500 truncate">@{settingsBot.telegramUsername}</p>
                   )}
                   <p className="text-xs text-zinc-600 mt-0.5">
-                    {settingsBot.primaryChannel === 'TELEGRAM' ? 'Telegram' : 'Website Widget'} primary
+                    {settingsBot.primaryChannel === 'TELEGRAM' ? 'Telegram' : settingsBot.primaryChannel === 'EMAIL' ? 'Email' : 'Website Widget'} primary
                   </p>
                 </div>
               </div>
@@ -801,6 +917,14 @@ onBeforeUnmount(() => {
                     <span className="text-zinc-400 font-mono text-[10px] truncate max-w-[160px] text-right">{settingsBot.emailAddress}</span>
                   </div>
                 )}
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">Telegram</span>
+                  <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
+                    settingsBot.telegramToken ? 'bg-blue-500/15 text-blue-400' : 'bg-zinc-800 text-zinc-500'
+                  }`}>
+                    {settingsBot.telegramToken ? 'Connected' : 'Not connected'}
+                  </span>
+                </div>
               </div>
 
               <div className="mt-4 pt-4 border-t border-zinc-800/60 space-y-1.5">
@@ -894,7 +1018,7 @@ onBeforeUnmount(() => {
             <form onSubmit={handleCreate} className="space-y-4">
               <div>
                 <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Primary channel</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={() => setCreatePrimaryChannel('TELEGRAM')}
@@ -915,7 +1039,18 @@ onBeforeUnmount(() => {
                         : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
                     }`}
                   >
-                    <Globe className="w-4 h-4" /> Website Widget
+                    <Globe className="w-4 h-4" /> Widget
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCreatePrimaryChannel('EMAIL')}
+                    className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                      createPrimaryChannel === 'EMAIL'
+                        ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                        : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                    }`}
+                  >
+                    <Mail className="w-4 h-4" /> Email
                   </button>
                 </div>
               </div>
@@ -931,9 +1066,13 @@ onBeforeUnmount(() => {
                     Get token from @BotFather <ExternalLink className="w-2.5 h-2.5" />
                   </a>
                 </div>
+              ) : createPrimaryChannel === 'WEB_WIDGET' ? (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
+                  Website widget channel will be enabled immediately. Embed code and domain allowlist are configured in settings.
+                </div>
               ) : (
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
-                  Website widget channel will be enabled immediately. Embed code and domain allowlist will be added in the next step.
+                  Bot will be created with no channels active. Go to Settings → Email to assign an email address, or Settings → Telegram to connect a Telegram bot.
                 </div>
               )}
               <div className="flex gap-3 pt-1">

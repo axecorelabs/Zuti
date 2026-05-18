@@ -105,6 +105,47 @@ export class BotsService {
     await this.prisma.bot.delete({ where: { id: botId } });
   }
 
+  // ── Telegram channel ──────────────────────────────────────────────────────
+
+  async connectTelegram(organizationId: string, botId: string, token: string) {
+    await this.findOne(organizationId, botId);
+    const trimmedToken = token.trim();
+
+    const botInfo = await this.getTelegramBotInfo(trimmedToken);
+
+    const existing = await this.prisma.bot.findUnique({ where: { telegramToken: trimmedToken } });
+    if (existing && existing.id !== botId) {
+      throw new BadRequestException('This Telegram bot token is already registered');
+    }
+
+    return this.prisma.bot.update({
+      where: { id: botId },
+      data: {
+        telegramToken: trimmedToken,
+        telegramUsername: botInfo.username,
+        webhookSet: false,
+      },
+    });
+  }
+
+  async disconnectTelegram(organizationId: string, botId: string) {
+    const bot = await this.findOne(organizationId, botId);
+    if (!bot.telegramToken) throw new BadRequestException('Telegram is not connected');
+
+    if (bot.webhookSet) {
+      await this.deleteWebhook(bot.telegramToken).catch(() => null);
+    }
+
+    return this.prisma.bot.update({
+      where: { id: botId },
+      data: {
+        telegramToken: null,
+        telegramUsername: null,
+        webhookSet: false,
+      },
+    });
+  }
+
   // ── Email channel ──────────────────────────────────────────────────────────
 
   async enableEmail(organizationId: string, botId: string, localPart: string) {
@@ -138,16 +179,61 @@ export class BotsService {
       data: { emailEnabled: true, emailAddress },
     });
 
+    // Register SendGrid Inbound Parse rule for this org subdomain
+    await this.registerSendGridParseRule(`${org.slug}.bords.app`).catch((err) =>
+      this.logger.warn(`SendGrid parse rule registration failed: ${err?.message}`),
+    );
+
     return { emailAddress: updated.emailAddress };
   }
 
   async disableEmail(organizationId: string, botId: string) {
-    await this.findOne(organizationId, botId);
+    const bot = await this.findOne(organizationId, botId);
+    const emailAddress = bot.emailAddress;
+
     await this.prisma.bot.update({
       where: { id: botId },
       data: { emailEnabled: false },
     });
+
+    // Remove SendGrid Inbound Parse rule only if no other active email bots exist for this org subdomain
+    if (emailAddress) {
+      const domain = emailAddress.split('@')[1];
+      const otherEmailBots = await this.prisma.bot.count({
+        where: { organizationId, emailEnabled: true, id: { not: botId } },
+      });
+      if (otherEmailBots === 0) {
+        await this.deleteSendGridParseRule(domain).catch((err) =>
+          this.logger.warn(`SendGrid parse rule deletion failed: ${err?.message}`),
+        );
+      }
+    }
+
     return { ok: true };
+  }
+
+  private async registerSendGridParseRule(hostname: string): Promise<void> {
+    const apiKey = this.config.get<string>('SENDGRID_API_KEY');
+    if (!apiKey) return;
+    const webhookUrl = `${this.config.get<string>('WEBHOOK_BASE_URL')}/api/webhooks/email`;
+    await firstValueFrom(
+      this.http.post(
+        'https://api.sendgrid.com/v3/user/webhooks/parse/settings',
+        { hostname, url: webhookUrl, spam_check: false, send_raw: false },
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      ),
+    );
+  }
+
+  private async deleteSendGridParseRule(hostname: string): Promise<void> {
+    const apiKey = this.config.get<string>('SENDGRID_API_KEY');
+    if (!apiKey) return;
+    await firstValueFrom(
+      this.http.delete(
+        `https://api.sendgrid.com/v3/user/webhooks/parse/settings/${hostname}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      ),
+    );
   }
 
   async setWebhook(organizationId: string, botId: string) {

@@ -82,4 +82,22 @@ export class BotsController {
   disableEmail(@Param('id') orgId: string, @Param('botId') botId: string) {
     return this.botsService.disableEmail(orgId, botId);
   }
+
+  @Post(':botId/telegram/connect')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Connect a Telegram bot token to this bot' })
+  connectTelegram(
+    @Param('id') orgId: string,
+    @Param('botId') botId: string,
+    @Body() dto: { token: string },
+  ) {
+    return this.botsService.connectTelegram(orgId, botId, dto.token);
+  }
+
+  @Post(':botId/telegram/disconnect')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Disconnect Telegram from this bot' })
+  disconnectTelegram(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.disconnectTelegram(orgId, botId);
+  }
 }

@@ -80,7 +80,7 @@ export const botsApi = {
     api.get(`/organizations/${orgId}/bots/${botId}`),
   create: (
     orgId: string,
-    data: { name: string; primaryChannel: 'TELEGRAM' | 'WEB_WIDGET'; telegramToken?: string },
+    data: { name: string; primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL'; telegramToken?: string },
   ) => api.post(`/organizations/${orgId}/bots`, data),
   update: (orgId: string, botId: string, data: Record<string, unknown>) =>
     api.patch(`/organizations/${orgId}/bots/${botId}`, data),
@@ -92,6 +92,10 @@ export const botsApi = {
     api.post(`/organizations/${orgId}/bots/${botId}/email/enable`, { localPart }),
   disableEmail: (orgId: string, botId: string) =>
     api.post(`/organizations/${orgId}/bots/${botId}/email/disable`),
+  connectTelegram: (orgId: string, botId: string, token: string) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/telegram/connect`, { token }),
+  disconnectTelegram: (orgId: string, botId: string) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/telegram/disconnect`),
 };
 
 // ── Conversations ─────────────────────────────────────────────────────────────
