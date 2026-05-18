@@ -8,27 +8,50 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { EventsGateway } from '../events/events.gateway';
 
-/** Strip common markdown so Telegram receives clean plain text. */
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/\*\*\*(.+?)\*\*\*/g, '$1')   // bold+italic
-    .replace(/\*\*(.+?)\*\*/g, '$1')       // bold
-    .replace(/\*(.+?)\*/g, '$1')           // italic
-    .replace(/__(.+?)__/g, '$1')           // bold (underscore)
-    .replace(/_(.+?)_/g, '$1')             // italic (underscore)
-    .replace(/~~(.+?)~~/g, '$1')           // strikethrough
-    .replace(/`{3}[\s\S]*?`{3}/g, (m) =>  // fenced code blocks → keep content
-      m.replace(/`{3}\w*\n?/g, '').replace(/`{3}/g, '').trim()
-    )
-    .replace(/`(.+?)`/g, '$1')            // inline code
-    .replace(/^#{1,6}\s+/gm, '')          // headings
-    .replace(/^[>\s]*>\s?/gm, '')         // blockquotes
-    .replace(/!\[.*?\]\(.*?\)/g, '')      // images
-    .replace(/\[(.+?)\]\(.*?\)/g, '$1')  // links → keep label
-    .replace(/^[-*+]\s+/gm, '\u2022 ')   // unordered list → bullet
-    .replace(/^\d+\.\s+/gm, '')          // ordered list
-    .replace(/\n{3,}/g, '\n\n')          // collapse excess blank lines
-    .trim();
+/** Convert markdown to Telegram HTML (parse_mode: 'HTML').
+ *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
+ */
+function markdownToTelegramHtml(text: string): string {
+  // Escape HTML special chars FIRST (before we insert our own tags)
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Process fenced code blocks first (multiline, preserve content)
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_m, _lang, code) =>
+    `<pre><code>${esc(code.trim())}</code></pre>`,
+  );
+
+  // Process line by line for headings, blockquotes, lists
+  text = text
+    .split('\n')
+    .map((line) => {
+      // Headings → bold
+      const heading = line.match(/^#{1,6}\s+(.+)/);
+      if (heading) return `<b>${esc(heading[1])}</b>`;
+      // Blockquotes → italic prefix
+      const quote = line.match(/^>\s?(.*)/);
+      if (quote) return `<i>${esc(quote[1])}</i>`;
+      // Unordered list
+      const ulist = line.match(/^[-*+]\s+(.*)/);
+      if (ulist) return `\u2022 ${ulist[1]}`;
+      // Ordered list — keep as-is
+      return line;
+    })
+    .join('\n');
+
+  // Inline formatting (order matters: bold+italic before bold/italic)
+  text = text
+    .replace(/\*\*\*(.+?)\*\*\*/gs, (_, c) => `<b><i>${esc(c)}</i></b>`)
+    .replace(/\*\*(.+?)\*\*/gs,     (_, c) => `<b>${esc(c)}</b>`)
+    .replace(/__(.+?)__/gs,          (_, c) => `<b>${esc(c)}</b>`)
+    .replace(/\*(.+?)\*/gs,          (_, c) => `<i>${esc(c)}</i>`)
+    .replace(/_(.+?)_/gs,            (_, c) => `<i>${esc(c)}</i>`)
+    .replace(/~~(.+?)~~/gs,          (_, c) => `<s>${esc(c)}</s>`)
+    .replace(/`(.+?)`/gs,            (_, c) => `<code>${esc(c)}</code>`)
+    .replace(/!\[.*?\]\(.*?\)/g, '') // remove images
+    .replace(/\[(.+?)\]\((.+?)\)/g, (_, label, url) => `<a href="${url}">${esc(label)}</a>`);
+
+  return text.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 export interface TelegramMessageJob {
@@ -252,11 +275,12 @@ export class TelegramProcessor {
         });
       }
 
-      // Send reply to Telegram — strip markdown so asterisks don't appear as raw characters
+      // Send reply to Telegram — convert markdown to Telegram HTML for proper formatting
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           chat_id: telegramChatId,
-          text: stripMarkdown(aiText),
+          text: markdownToTelegramHtml(aiText),
+          parse_mode: 'HTML',
         }),
       );
 
