@@ -252,6 +252,28 @@ export class BotsService {
       message: { id: userMessage.id, role: userMessage.role, content: userMessage.content, createdAt: userMessage.createdAt },
     });
 
+    // Fetch recent conversation history (exclude the just-saved user message)
+    // Fetch newest 40 from DB (cheap), then trim by token budget in memory
+    const priorMessages = await this.prisma.message.findMany({
+      where: { conversationId: conversation.id, NOT: { id: userMessage.id } },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+    });
+    // Build token-budgeted window (~4 chars ≈ 1 token, budget = 3000 tokens)
+    const TOKEN_BUDGET = 3000;
+    let tokenCount = 0;
+    const trimmed: typeof priorMessages = [];
+    for (const m of priorMessages) { // already newest-first
+      const est = Math.ceil(m.content.length / 4);
+      if (tokenCount + est > TOKEN_BUDGET) break;
+      tokenCount += est;
+      trimmed.unshift(m); // restore chronological order
+    }
+    const history = trimmed.map((m) => ({
+      role: m.role === 'USER' ? 'user' : 'assistant',
+      content: m.content,
+    }));
+
     // Call AI service and get response
     let aiReply = '';
     try {
@@ -264,6 +286,7 @@ export class BotsService {
           organization_id: bot.organizationId,
           bot_id: bot.id,
           message: userText.trim(),
+          history,
           bot_name: bot.name,
           org_name: bot.organization?.name,
           system_prompt: aiConfig.systemPrompt ?? null,

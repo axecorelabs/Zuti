@@ -5,11 +5,17 @@ from app.services.rag_service import rag_service
 router = APIRouter()
 
 
+class HistoryMessage(BaseModel):
+    role: str  # 'user' or 'assistant'
+    content: str
+
+
 class ChatRequest(BaseModel):
     conversation_id: str
     organization_id: str
     bot_id: str
     message: str
+    history: list[HistoryMessage] = []
     bot_name: str = "Assistant"
     org_name: str | None = None
     system_prompt: str | None = None
@@ -29,6 +35,7 @@ async def chat(request: ChatRequest):
             bot_id=request.bot_id,
             conversation_id=request.conversation_id,
             message=request.message,
+            history=[{"role": m.role, "content": m.content} for m in request.history],
             bot_name=request.bot_name,
             org_name=request.org_name,
             system_prompt=request.system_prompt,

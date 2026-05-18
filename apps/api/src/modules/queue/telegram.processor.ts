@@ -221,6 +221,26 @@ export class TelegramProcessor {
       return;
     }
 
+    // Fetch conversation history — newest 40 from DB, then trim by token budget
+    const recentMessages = await this.prisma.message.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+    });
+    const TOKEN_BUDGET = 3000;
+    let tokenCount = 0;
+    const trimmed: typeof recentMessages = [];
+    for (const m of recentMessages) { // already newest-first
+      const est = Math.ceil(m.content.length / 4);
+      if (tokenCount + est > TOKEN_BUDGET) break;
+      tokenCount += est;
+      trimmed.unshift(m); // restore chronological order
+    }
+    const history = trimmed.map((m) => ({
+      role: m.role === 'USER' ? 'user' : 'assistant',
+      content: m.content,
+    }));
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -228,6 +248,7 @@ export class TelegramProcessor {
           organization_id: organizationId,
           bot_id: botId,
           message: userText,
+          history,
           bot_name: botName,
           org_name: orgName,
           system_prompt: systemPrompt,

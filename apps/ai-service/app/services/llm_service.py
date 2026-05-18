@@ -48,6 +48,7 @@ class LlmService:
         user_message: str,
         context: str = "",
         conversation_id: str = "",
+        history: list[dict] | None = None,
         model: str = DEFAULT_MODEL,
         bot_name: str = "Assistant",
         org_name: str | None = None,
@@ -64,6 +65,10 @@ class LlmService:
                 "role": "system",
                 "content": f"Relevant context from knowledge base:\n{context}",
             })
+        # Inject conversation history so the AI has full context
+        for turn in (history or []):
+            if turn.get("role") in ("user", "assistant") and turn.get("content"):
+                messages.append({"role": turn["role"], "content": turn["content"]})
         messages.append({"role": "user", "content": user_message})
 
         response = await self._client().chat.completions.create(
