@@ -128,7 +128,7 @@ export default function Home() {
 
   useEffect(() => {
     const script = document.createElement('script');
-    script.src = '/widget.js';
+    script.src = 'https://zuti.bords.app/widget.js';
     script.async = true;
     script.setAttribute('data-zuti-widget-key', 'zwk_331cc064ab21e508c9b5437a564b6f0f5505');
     document.body.appendChild(script);

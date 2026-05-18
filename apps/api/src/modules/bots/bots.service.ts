@@ -195,6 +195,8 @@ export class BotsService {
           where: {
             botId: bot.id,
             organizationId: bot.organizationId,
+            // Never match Telegram-only conversations (they have null widget fields)
+            NOT: { widgetVisitorId: null, widgetVisitorEmail: null },
             OR: visitorConditions,
             status: { not: 'RESOLVED' },
           },
