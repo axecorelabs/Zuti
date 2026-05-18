@@ -8,6 +8,29 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { EventsGateway } from '../events/events.gateway';
 
+/** Strip common markdown so Telegram receives clean plain text. */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*\*(.+?)\*\*\*/g, '$1')   // bold+italic
+    .replace(/\*\*(.+?)\*\*/g, '$1')       // bold
+    .replace(/\*(.+?)\*/g, '$1')           // italic
+    .replace(/__(.+?)__/g, '$1')           // bold (underscore)
+    .replace(/_(.+?)_/g, '$1')             // italic (underscore)
+    .replace(/~~(.+?)~~/g, '$1')           // strikethrough
+    .replace(/`{3}[\s\S]*?`{3}/g, (m) =>  // fenced code blocks → keep content
+      m.replace(/`{3}\w*\n?/g, '').replace(/`{3}/g, '').trim()
+    )
+    .replace(/`(.+?)`/g, '$1')            // inline code
+    .replace(/^#{1,6}\s+/gm, '')          // headings
+    .replace(/^[>\s]*>\s?/gm, '')         // blockquotes
+    .replace(/!\[.*?\]\(.*?\)/g, '')      // images
+    .replace(/\[(.+?)\]\(.*?\)/g, '$1')  // links → keep label
+    .replace(/^[-*+]\s+/gm, '\u2022 ')   // unordered list → bullet
+    .replace(/^\d+\.\s+/gm, '')          // ordered list
+    .replace(/\n{3,}/g, '\n\n')          // collapse excess blank lines
+    .trim();
+}
+
 export interface TelegramMessageJob {
   botId: string;
   telegramChatId: string;
@@ -229,11 +252,11 @@ export class TelegramProcessor {
         });
       }
 
-      // Send reply to Telegram (plain text — model is instructed to avoid markdown)
+      // Send reply to Telegram — strip markdown so asterisks don't appear as raw characters
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           chat_id: telegramChatId,
-          text: aiText,
+          text: stripMarkdown(aiText),
         }),
       );
 
