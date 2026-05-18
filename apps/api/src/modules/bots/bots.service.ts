@@ -10,6 +10,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { EventsGateway } from '../events/events.gateway';
 import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
 
 @Injectable()
@@ -20,6 +21,7 @@ export class BotsService {
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
     private readonly config: ConfigService,
+    private readonly events: EventsGateway,
   ) {}
 
   async create(organizationId: string, dto: CreateBotDto) {
@@ -179,22 +181,25 @@ export class BotsService {
       throw new BadRequestException('Message cannot be empty');
     }
 
-    const customerName = visitorEmail || visitorId || 'Widget Visitor';
+    const customerName = visitorEmail || visitorId || 'Anonymous';
     const visitorIdKey = visitorId ? `widget_${visitorId}` : `email_${visitorEmail}`;
 
-    // Find or create conversation
-    const existing = await this.prisma.conversation.findFirst({
-      where: {
-        botId: bot.id,
-        organizationId: bot.organizationId,
-        OR: [
-          visitorId ? { widgetVisitorId: visitorIdKey } : { widgetVisitorId: null },
-          visitorEmail ? { widgetVisitorEmail: visitorEmail } : { widgetVisitorEmail: null },
-        ],
-        status: { not: 'RESOLVED' },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    // Find or create conversation — only search if at least one identifier is provided
+    const visitorConditions: Array<{ widgetVisitorId?: string; widgetVisitorEmail?: string }> = [];
+    if (visitorId) visitorConditions.push({ widgetVisitorId: visitorIdKey });
+    if (visitorEmail) visitorConditions.push({ widgetVisitorEmail: visitorEmail });
+
+    const existing = visitorConditions.length === 0
+      ? null
+      : await this.prisma.conversation.findFirst({
+          where: {
+            botId: bot.id,
+            organizationId: bot.organizationId,
+            OR: visitorConditions,
+            status: { not: 'RESOLVED' },
+          },
+          orderBy: { createdAt: 'desc' },
+        });
 
     let conversation: Awaited<ReturnType<typeof this.prisma.conversation.create>>;
 
@@ -212,6 +217,17 @@ export class BotsService {
           lastMessageAt: new Date(),
         },
       });
+      this.events.emitNewConversation(bot.organizationId, {
+        id: conversation.id,
+        customerName,
+        status: 'OPEN',
+        mode: 'AI',
+        botId: bot.id,
+        bot: { id: bot.id, name: bot.name },
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+        messages: [],
+      });
     } else {
       // Update existing conversation
       conversation = await this.prisma.conversation.update({
@@ -227,6 +243,11 @@ export class BotsService {
         role: 'USER',
         content: userText.trim(),
       },
+    });
+
+    this.events.emitNewMessage(bot.organizationId, {
+      conversationId: conversation.id,
+      message: { id: userMessage.id, role: userMessage.role, content: userMessage.content, createdAt: userMessage.createdAt },
     });
 
     // Call AI service and get response
@@ -261,6 +282,11 @@ export class BotsService {
         role: 'ASSISTANT',
         content: aiReply,
       },
+    });
+
+    this.events.emitNewMessage(bot.organizationId, {
+      conversationId: conversation.id,
+      message: { id: aiMessage.id, role: aiMessage.role, content: aiMessage.content, createdAt: aiMessage.createdAt },
     });
 
     return {

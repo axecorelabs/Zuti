@@ -10,7 +10,7 @@ import { botsApi, conversationsApi, orgsApi } from '@/lib/api';
 
 interface Conversation {
   id: string;
-  telegramChatId: string;
+  telegramChatId: string | null;
   customerName?: string | null;
   customerUsername?: string | null;
   status: 'OPEN' | 'PENDING' | 'RESOLVED' | 'ESCALATED';
@@ -319,11 +319,11 @@ export default function InboxPage() {
   const CustomerPanelContent = () => (
     <>
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
-        <h3 className="text-xs font-semibold text-zinc-300 mb-2">Telegram user</h3>
+        <h3 className="text-xs font-semibold text-zinc-300 mb-2">{selected?.telegramChatId ? 'Telegram user' : 'Widget visitor'}</h3>
         <div className="space-y-1.5 text-xs">
           <div className="flex items-center justify-between gap-2">
             <span className="text-zinc-500">Name</span>
-            <span className="text-zinc-200 truncate max-w-[190px] text-right">{selected?.customerName || 'Unknown'}</span>
+            <span className="text-zinc-200 truncate max-w-[190px] text-right">{selected?.customerName || (selected?.telegramChatId ? 'Unknown' : 'Anonymous')}</span>
           </div>
           <div className="flex items-center justify-between gap-2">
             <span className="text-zinc-500">Username</span>
@@ -478,7 +478,7 @@ export default function InboxPage() {
                 const lastMsg = conv.messages?.[conv.messages.length - 1];
                 const isActive = selected?.id === conv.id;
                 const cfg = STATUS_CONFIG[conv.status] ?? STATUS_CONFIG.OPEN;
-                const displayName = conv.customerName || `User ···${conv.telegramChatId.slice(-4)}`;
+                const displayName = conv.customerName || (conv.telegramChatId ? `User ···${conv.telegramChatId.slice(-4)}` : 'Anonymous');
                 return (
                   <button
                     key={conv.id}
@@ -553,11 +553,11 @@ export default function InboxPage() {
                   <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${
                     selected.status === 'ESCALATED' ? 'bg-red-500/20 text-red-400' : 'bg-zinc-800 text-zinc-400'
                   }`}>
-                    {nameInitials(selected.customerName || `U${selected.telegramChatId.slice(-4)}`)}
+                    {nameInitials(selected.customerName || (selected.telegramChatId ? `U${selected.telegramChatId.slice(-4)}` : 'Anonymous'))}
                   </div>
                   <div className="min-w-0">
                     <h2 className="font-semibold text-sm text-white tracking-tight truncate">
-                      {selected.customerName || `User ···${selected.telegramChatId.slice(-4)}`}
+                      {selected.customerName || (selected.telegramChatId ? `User ···${selected.telegramChatId.slice(-4)}` : 'Anonymous')}
                     </h2>
                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       <span className="text-xs text-zinc-600 font-light">via {selected.bot?.name}</span>

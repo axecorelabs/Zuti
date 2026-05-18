@@ -130,7 +130,7 @@ export default function Home() {
     const script = document.createElement('script');
     script.src = '/widget.js';
     script.async = true;
-    script.setAttribute('data-zuti-widget-key', 'zwk_b69a33afd3ad2ac2282e0ea9d065884ecc1e');
+    script.setAttribute('data-zuti-widget-key', 'zwk_331cc064ab21e508c9b5437a564b6f0f5505');
     document.body.appendChild(script);
     return () => {
       document.body.removeChild(script);

@@ -68,6 +68,12 @@ export class TelegramProcessor {
           lastMessageAt: new Date(),
         },
       });
+      // Emit new conversation to inbox
+      this.events.emitNewConversation(organizationId, {
+        ...conversation,
+        bot: { id: botId, name: '' },
+        messages: [],
+      });
     } else if (existing.status === 'RESOLVED') {
       // Customer re-opened after resolution — create a fresh conversation
       conversation = await this.prisma.conversation.create({
