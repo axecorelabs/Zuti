@@ -3,6 +3,9 @@
   "buildCommand": "cd ../.. && npx pnpm@9 run --filter=@zuti/web build",
   "outputDirectory": ".next",
   "framework": "nextjs",
+  "env": {
+    "NEXT_PUBLIC_API_URL": "https://zuti-api.bords.app"
+  },
   "rewrites": [
     {
       "source": "/api/:path*",
