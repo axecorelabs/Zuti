@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { Job } from 'bull';
 import { firstValueFrom } from 'rxjs';
-import * as sgMail from '@sendgrid/mail';
+import { BrevoClient } from '@getbrevo/brevo';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { EMAIL_QUEUE } from './queue.module';
@@ -257,21 +257,20 @@ export class EmailProcessor {
     text: string,
     inReplyTo: string | null,
   ) {
-    const apiKey = this.config.get<string>('SENDGRID_API_KEY');
+    const apiKey = this.config.get<string>('BREVO_API_KEY');
     if (!apiKey) {
-      this.logger.warn('SENDGRID_API_KEY not set — skipping email send');
+      this.logger.warn('BREVO_API_KEY not set — skipping email send');
       return;
     }
-    sgMail.setApiKey(apiKey);
-    const msg: sgMail.MailDataRequired = {
-      from,
-      to,
+    const brevo = new BrevoClient({ apiKey });
+    await brevo.transactionalEmails.sendTransacEmail({
+      sender: { email: from },
+      to: [{ email: to }],
       subject,
-      text,
+      textContent: text,
       headers: inReplyTo
         ? { 'In-Reply-To': `<${inReplyTo}>`, References: `<${inReplyTo}>` }
-        : {},
-    };
-    await sgMail.send(msg);
+        : undefined,
+    });
   }
 }
