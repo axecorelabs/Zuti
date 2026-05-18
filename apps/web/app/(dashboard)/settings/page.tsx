@@ -2,22 +2,14 @@
 
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Building2, Users, User, Mail, AtSign, Shield, Trash2, UserPlus, Clock } from 'lucide-react';
-import { orgsApi, invitationsApi } from '@/lib/api';
+import { Building2, Users, User, Mail, AtSign, Shield } from 'lucide-react';
+import { orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 interface Member {
   userId: string;
   role: string;
   user: { name: string; email: string };
-}
-
-interface PendingInvite {
-  id: string;
-  email: string;
-  role: string;
-  createdAt: string;
-  expiresAt: string;
 }
 
 interface Org {
@@ -27,7 +19,7 @@ interface Org {
   members?: Member[];
 }
 
-type Tab = 'workspace' | 'team' | 'account';
+type Tab = 'workspace' | 'account';
 
 const ROLE_COLORS: Record<string, string> = {
   OWNER: 'bg-orange-500/15 text-orange-400',
@@ -39,9 +31,6 @@ export default function SettingsPage() {
   const { user } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [loading, setLoading] = useState(true);
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [inviting, setInviting] = useState(false);
-  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [tab, setTab] = useState<Tab>('workspace');
 
   useEffect(() => {
@@ -50,41 +39,12 @@ export default function SettingsPage() {
       if (orgs.length > 0) {
         const full = await orgsApi.get(orgs[0].slug);
         setOrg(full.data);
-        invitationsApi.listByOrg(orgs[0].id)
-          .then((r) => setPendingInvites(r.data))
-          .catch(() => {});
       }
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
-  const handleInvite = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!org) return;
-    setInviting(true);
-    try {
-      await invitationsApi.create(org.id, inviteEmail);
-      toast.success('Invitation sent');
-      setInviteEmail('');
-      const r = await invitationsApi.listByOrg(org.id);
-      setPendingInvites(r.data);
-    } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to send invitation';
-      toast.error(Array.isArray(msg) ? msg[0] : msg);
-    } finally { setInviting(false); }
-  };
-
-  const handleRemove = async (userId: string) => {
-    if (!org || !confirm('Remove this member?')) return;
-    try {
-      await orgsApi.removeMember(org.id, userId);
-      setOrg((prev) => prev ? { ...prev, members: prev.members?.filter((m) => m.userId !== userId) } : prev);
-      toast.success('Member removed');
-    } catch { toast.error('Failed to remove member'); }
-  };
-
   const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
     { key: 'workspace', label: 'Workspace', icon: Building2 },
-    { key: 'team', label: 'Team', icon: Users },
     { key: 'account', label: 'Account', icon: User },
   ];
 
@@ -93,7 +53,8 @@ export default function SettingsPage() {
   const displayName = user?.name || currentMember?.user?.name || user?.email || '—';
 
   return (
-    <div className="p-4 md:p-8 max-w-2xl">
+    <div className="w-full px-4 py-4 md:px-8 md:py-8">
+      <div className="mx-auto w-full max-w-5xl lg:max-w-6xl">
       {/* Header */}
       <div className="mb-8">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Settings</h1>
@@ -101,7 +62,7 @@ export default function SettingsPage() {
       </div>
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-6 bg-zinc-900 rounded-xl p-1 w-fit">
+      <div className="flex gap-1 mb-6 bg-zinc-900 rounded-xl p-1 w-fit mx-auto md:mx-0">
         {TABS.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
@@ -170,106 +131,9 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* ── Team tab ── */}
-      {tab === 'team' && (
-        <div className="space-y-4">
-          <div className="card p-6">
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="font-semibold text-base text-white">Team members</h2>
-              <span className="text-xs text-zinc-600 bg-zinc-900 px-2.5 py-1 rounded-lg">
-                {memberCount} {memberCount === 1 ? 'member' : 'members'}
-              </span>
-            </div>
-            {loading ? (
-              <div className="space-y-2">
-                {[...Array(2)].map((_, i) => <div key={i} className="h-14 bg-zinc-800/50 animate-pulse rounded-xl" />)}
-              </div>
-            ) : (
-              <div className="space-y-1 mb-6">
-                {org?.members?.map((m) => (
-                  <div key={m.userId} className="flex items-center justify-between py-3 px-1 rounded-xl hover:bg-zinc-900/50 transition-colors group">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-full bg-zinc-800 flex items-center justify-center text-sm font-medium text-zinc-400 shrink-0">
-                        {m.user.name?.[0]?.toUpperCase() ?? '?'}
-                      </div>
-                      <div>
-                        <p className="text-sm text-zinc-200 font-light">{m.user.name}</p>
-                        <p className="text-xs text-zinc-600">{m.user.email}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${ROLE_COLORS[m.role] ?? ROLE_COLORS.MEMBER}`}>
-                        {m.role}
-                      </span>
-                      {m.userId !== user?.id && (
-                        <button
-                          onClick={() => handleRemove(m.userId)}
-                          className="p-1.5 rounded-lg text-zinc-700 hover:text-red-400 hover:bg-red-500/10 transition-colors opacity-0 group-hover:opacity-100"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Invite form */}
-            <div className="border-t border-zinc-900 pt-5">
-              <p className="text-xs text-zinc-500 font-medium mb-3 flex items-center gap-1.5">
-                <UserPlus className="w-3.5 h-3.5" /> Invite a teammate
-              </p>
-              <form onSubmit={handleInvite} className="flex gap-2">
-                <input
-                  type="email"
-                  required
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors"
-                  placeholder="colleague@company.com"
-                />
-                <button
-                  type="submit"
-                  disabled={inviting}
-                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors shrink-0"
-                >
-                  <Mail className="w-3.5 h-3.5" />
-                  {inviting ? 'Sending…' : 'Invite'}
-                </button>
-              </form>
-            </div>
-
-            {/* Pending invitations */}
-            {pendingInvites.length > 0 && (
-              <div className="border-t border-zinc-900 pt-5 mt-2">
-                <p className="text-xs text-zinc-500 font-medium mb-3 flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5" /> Pending invitations
-                </p>
-                <div className="space-y-2">
-                  {pendingInvites.map((inv) => (
-                    <div key={inv.id} className="flex items-center justify-between py-2 px-3 rounded-xl bg-zinc-900/50">
-                      <div>
-                        <p className="text-sm text-zinc-300 font-light">{inv.email}</p>
-                        <p className="text-xs text-zinc-600 mt-0.5">
-                          Expires {new Date(inv.expiresAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded-lg bg-zinc-800 text-zinc-500 font-medium">
-                        {inv.role}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
       {/* ── Account tab ── */}
       {tab === 'account' && (
-        <div className="card p-6">
+        <div className="card p-6 md:p-8">
           <div className="flex items-center gap-3 pb-5 border-b border-zinc-900 mb-5">
             <div className="w-12 h-12 rounded-full bg-blue-600/15 border border-blue-600/20 flex items-center justify-center text-lg font-semibold text-blue-400">
               {displayName[0]?.toUpperCase() ?? '?'}
@@ -306,6 +170,7 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

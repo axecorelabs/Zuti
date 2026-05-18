@@ -26,3 +26,16 @@ export class LoginDto {
   @IsString()
   declare password: string;
 }
+
+export class VerifyEmailDto {
+  @ApiProperty({ example: 'token-from-email-link' })
+  @IsString()
+  @MinLength(20)
+  declare token: string;
+}
+
+export class ResendVerificationDto {
+  @ApiProperty({ example: 'john@example.com' })
+  @IsEmail()
+  declare email: string;
+}

@@ -9,6 +9,7 @@ module.exports = {
       fontFamily: {
         sans: ['var(--font-inter)', 'system-ui', '-apple-system', 'sans-serif'],
         brand: ['var(--font-outfit)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        logo: ['var(--font-space-grotesk)', 'ui-sans-serif', 'system-ui', 'sans-serif'],
       },
       colors: {
         zinc: {

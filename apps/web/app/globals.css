@@ -44,6 +44,59 @@
     font-family: var(--font-outfit), ui-sans-serif, sans-serif;
   }
 
+  .reveal-block {
+    opacity: 0;
+    transform: translateY(24px);
+    filter: blur(10px);
+    transition:
+      opacity 900ms ease,
+      transform 900ms ease,
+      filter 900ms ease;
+    will-change: opacity, transform, filter;
+  }
+
+  .reveal-block.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+
+  .reveal-delay-1 {
+    transition-delay: 120ms;
+  }
+
+  .reveal-delay-2 {
+    transition-delay: 220ms;
+  }
+
+  .reveal-delay-3 {
+    transition-delay: 320ms;
+  }
+
+  .illustration-shell {
+    position: relative;
+  }
+
+  .illustration-float {
+    animation: zuti-float 7s ease-in-out infinite;
+  }
+
+  .illustration-float-slow {
+    animation: zuti-float 10s ease-in-out infinite;
+  }
+
+  .illustration-slide-left {
+    animation: zuti-slide-left 8s ease-in-out infinite;
+  }
+
+  .illustration-slide-right {
+    animation: zuti-slide-right 8s ease-in-out infinite;
+  }
+
+  .animate-pulse-slow {
+    animation: zuti-pulse 4.5s ease-in-out infinite;
+  }
+
   /* Card base */
   .card {
     @apply bg-zinc-900 border border-zinc-800 rounded-2xl;
@@ -74,5 +127,47 @@
   .btn-ghost {
     @apply text-zinc-400 px-3 py-2 rounded-lg text-sm font-light
            hover:text-white hover:bg-zinc-900 transition-all duration-200;
+  }
+}
+
+@keyframes zuti-float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes zuti-slide-left {
+  0%,
+  100% {
+    transform: translateX(0px);
+  }
+  50% {
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes zuti-slide-right {
+  0%,
+  100% {
+    transform: translateX(0px);
+  }
+  50% {
+    transform: translateX(6px);
+  }
+}
+
+@keyframes zuti-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 0.85;
   }
 }

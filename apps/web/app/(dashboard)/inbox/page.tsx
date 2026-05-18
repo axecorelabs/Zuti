@@ -586,14 +586,16 @@ export default function InboxPage() {
                     <Info className="w-3.5 h-3.5" />
                     Info
                   </button>
-                  <button
-                    onClick={() => setCustomerPanelOpen((v) => !v)}
-                    aria-label={customerPanelOpen ? 'Hide customer panel' : 'Show customer panel'}
-                    title={customerPanelOpen ? 'Hide customer panel' : 'Show customer panel'}
-                    className="hidden lg:inline-flex items-center justify-center w-9 h-9 rounded-xl bg-zinc-900 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors border border-zinc-800"
-                  >
-                    {customerPanelOpen ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
+                  {!customerPanelOpen && (
+                    <button
+                      onClick={() => setCustomerPanelOpen(true)}
+                      aria-label="Show customer panel"
+                      title="Show customer panel"
+                      className="hidden lg:inline-flex items-center justify-center w-9 h-9 rounded-xl bg-zinc-900 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors border border-zinc-800"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                  )}
                   {selected.mode === 'AI' && (
                     <button
                       onClick={handleTakeOver}
@@ -668,8 +670,8 @@ export default function InboxPage() {
                                 ul: ({ children }) => <ul className="list-disc ml-4 space-y-0.5 mb-1">{children}</ul>,
                                 ol: ({ children }) => <ol className="list-decimal ml-4 space-y-0.5 mb-1">{children}</ol>,
                                 li: ({ children }) => <li className="leading-snug">{children}</li>,
-                                code: ({ inline, children }) =>
-                                  inline
+                                code: ({ children, ...props }: any) =>
+                                  props.inline
                                     ? <code className="px-1 py-0.5 rounded bg-zinc-900/60 border border-zinc-700 text-[11px]">{children}</code>
                                     : <code className="block p-2 rounded-lg bg-zinc-900/60 border border-zinc-700 overflow-x-auto text-[11px]">{children}</code>,
                                 pre: ({ children }) => <pre className="mb-1">{children}</pre>,
@@ -752,9 +754,20 @@ export default function InboxPage() {
 
             {/* Customer context sidebar */}
             {customerPanelOpen && (
-            <aside className="hidden lg:flex w-[300px] xl:w-[320px] shrink-0 border-l border-zinc-900 bg-zinc-950/40 p-4 flex-col gap-4 overflow-y-auto">
-              <CustomerPanelContent />
-            </aside>
+              <aside className="hidden lg:flex w-[300px] xl:w-[320px] shrink-0 border-l border-zinc-900 bg-zinc-950/40 p-4 flex-col gap-4 overflow-y-auto">
+                <div className="flex items-center justify-between gap-3 pb-1">
+                  <h3 className="text-sm font-semibold text-white">Customer context</h3>
+                  <button
+                    onClick={() => setCustomerPanelOpen(false)}
+                    aria-label="Hide customer panel"
+                    title="Hide customer panel"
+                    className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-zinc-900 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors border border-zinc-800"
+                  >
+                    <EyeOff className="w-4 h-4" />
+                  </button>
+                </div>
+                <CustomerPanelContent />
+              </aside>
             )}
 
             {mobileCustomerPanelOpen && (

@@ -35,6 +35,10 @@ export const authApi = {
     api.post('/auth/register', { name, email, password }),
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }),
+  verifyEmail: (token: string) =>
+    api.post('/auth/verify-email', { token }),
+  resendVerification: (email: string) =>
+    api.post('/auth/resend-verification', { email }),
 };
 
 // ── Organizations ─────────────────────────────────────────────────────────────

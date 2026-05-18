@@ -1,19 +1,28 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Leaf } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { authApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
-export default function LoginPage() {
+function LoginPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const setAuth = useAuthStore((s) => s.setAuth);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showResendVerification, setShowResendVerification] = useState(false);
+  const [resendingVerification, setResendingVerification] = useState(false);
+
+  useEffect(() => {
+    if (searchParams.get('verify') === 'sent') {
+      toast.success('Verification email sent. Check your inbox before signing in.');
+    }
+  }, [searchParams]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -23,13 +32,35 @@ export default function LoginPage() {
       const { user, accessToken, refreshToken } = res.data;
       setAuth(user, accessToken, refreshToken);
       router.push('/dashboard');
+      setShowResendVerification(false);
     } catch (err: unknown) {
       const msg =
         (err as { response?: { data?: { message?: string } } })?.response?.data?.message ??
         'Login failed';
-      toast.error(Array.isArray(msg) ? msg[0] : msg);
+      const normalized = Array.isArray(msg) ? msg[0] : msg;
+      toast.error(normalized);
+      setShowResendVerification(
+        typeof normalized === 'string' && normalized.toLowerCase().includes('verify your email'),
+      );
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResendVerification = async () => {
+    if (!email) {
+      toast.error('Enter your email address first.');
+      return;
+    }
+
+    setResendingVerification(true);
+    try {
+      const res = await authApi.resendVerification(email);
+      toast.success(res.data?.message ?? 'Verification email sent.');
+    } catch {
+      toast.error('Could not resend verification email. Please try again.');
+    } finally {
+      setResendingVerification(false);
     }
   };
 
@@ -152,6 +183,22 @@ export default function LoginPage() {
               </div>
             </form>
 
+            {showResendVerification ? (
+              <div className="mt-4 p-3 rounded-xl border border-amber-600/20 bg-amber-500/10">
+                <p className="text-xs text-amber-200/90 mb-2">
+                  Your account appears unverified. Request a new verification link.
+                </p>
+                <button
+                  type="button"
+                  onClick={handleResendVerification}
+                  disabled={resendingVerification}
+                  className="text-xs px-3 py-2 rounded-lg border border-amber-500/30 text-amber-100 hover:bg-amber-500/15 transition-colors disabled:opacity-50"
+                >
+                  {resendingVerification ? 'Sending link...' : 'Resend verification email'}
+                </button>
+              </div>
+            ) : null}
+
             {/* Footer link — separated with more breathing room */}
             <p className="mt-8 text-center text-sm text-zinc-600 font-light">
               Don&apos;t have an account?{' '}
@@ -163,5 +210,21 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function LoginFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
+    </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<LoginFallback />}>
+      <LoginPageContent />
+    </Suspense>
   );
 }
