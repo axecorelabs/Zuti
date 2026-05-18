@@ -202,8 +202,11 @@ export default function InboxPage() {
 
   useEffect(() => {
     if (!orgId) return;
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-    const socketUrl = apiUrl.startsWith('http') ? apiUrl : `http://${apiUrl}`;
+    const rawUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    // Guard: must be a full URL with hostname, otherwise fall back to localhost
+    const apiUrl = /^https?:\/\/.+/.test(rawUrl) ? rawUrl : 'http://localhost:3001';
+    // Ensure socket.io uses wss:// on HTTPS pages (mixed content would block ws://)
+    const socketUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
     const socket = io(socketUrl, { path: '/ws', transports: ['websocket'] });
     socketRef.current = socket;
 
