@@ -112,7 +112,17 @@ export class WebhooksController {
     const inReplyTo = inReplyToMatch ? inReplyToMatch[1] : undefined;
 
     const subject = body.subject ?? '(no subject)';
-    const bodyText = body.text ?? body.html?.replace(/<[^>]+>/g, ' ').trim() ?? '';
+    const rawText = body.text ?? body.html?.replace(/<[^>]+>/g, ' ').trim() ?? '';
+
+    // Strip quoted reply history: remove "On ... wrote:" delimiter and everything after,
+    // then strip any remaining lines starting with ">" (inline quotes)
+    const stripped = rawText
+      .replace(/^On\s.+?wrote:\s*$/ms, '')   // "On Tue, 19 May ... wrote:"
+      .split('\n')
+      .filter(line => !line.trimStart().startsWith('>'))
+      .join('\n')
+      .trim();
+    const bodyText = stripped || rawText.trim();  // fallback to raw if stripping removes everything
 
     if (!toAddress || !fromEmail || !bodyText.trim()) return { ok: true };
 

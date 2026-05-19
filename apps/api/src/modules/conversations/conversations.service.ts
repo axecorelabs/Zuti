@@ -2,6 +2,9 @@ import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef 
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { render } from '@react-email/render';
+import React from 'react';
+import { BotReplyEmail } from '../mail/templates/BotReplyEmail';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -378,6 +381,19 @@ export class ConversationsService {
         const mimeHeaders: Record<string, string> = conversation.emailThreadId
           ? { 'In-Reply-To': `<${conversation.emailThreadId}>`, References: `<${conversation.emailThreadId}>` }
           : {};
+
+        const botName = conversation.bot.name ?? 'Support';
+        const orgName = orgSlug || botName;
+        const htmlbody = await render(
+          React.createElement(BotReplyEmail, { botName, orgName, replyText: content }),
+        );
+        const textbody = content
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/\*([^*]+)\*/g, '$1')
+          .replace(/^#+\s*/gm, '')
+          .replace(/^[-*]\s/gm, '\u2022 ')
+          .trim();
+
         await firstValueFrom(
           this.http.post(
             'https://api.zeptomail.com/v1.1/email',
@@ -386,7 +402,8 @@ export class ConversationsService {
               reply_to: [{ address: botEmail }],
               to: [{ email_address: { address: conversation.customerEmail } }],
               subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-              textbody: content,
+              htmlbody,
+              textbody,
               ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
             },
             {

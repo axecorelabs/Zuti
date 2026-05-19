@@ -4,6 +4,9 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { Job } from 'bull';
 import { firstValueFrom } from 'rxjs';
+import { render } from '@react-email/render';
+import React from 'react';
+import { BotReplyEmail } from '../mail/templates/BotReplyEmail';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
@@ -173,6 +176,7 @@ export class EmailProcessor {
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
         'Of course! I am connecting you with a human agent who will follow up shortly.',
         conversation.emailThreadId,
+        botName, orgName ?? '',
       );
       return;
     }
@@ -244,12 +248,13 @@ export class EmailProcessor {
         data: { lastMessageAt: new Date() },
       });
 
-      // Send email reply (plain text — no markdown)
+      // Send email reply
       await this.sendEmail(
         fromAddress, toAddress, customerEmail,
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
         aiText,
         conversation.emailThreadId,
+        botName, orgName ?? '',
       );
     } catch (err) {
       this.logger.error(`AI/email error for conversation ${conversation.id}: ${err}`);
@@ -263,6 +268,8 @@ export class EmailProcessor {
     subject: string,
     text: string,
     inReplyTo: string | null,
+    botName: string,
+    orgName: string,
   ) {
     const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
     if (!apiKey) {
@@ -277,6 +284,19 @@ export class EmailProcessor {
       mimeHeaders['References'] = `<${inReplyTo}>`;
     }
 
+    // Render HTML template
+    const htmlbody = await render(
+      React.createElement(BotReplyEmail, { botName, orgName: orgName || botName, replyText: text }),
+    );
+
+    // Strip markdown for plain-text fallback (** bold **, * italic *, # headings, - bullets)
+    const textbody = text
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/^#+\s*/gm, '')
+      .replace(/^[-*]\s/gm, '• ')
+      .trim();
+
     await firstValueFrom(
       this.http.post(
         'https://api.zeptomail.com/v1.1/email',
@@ -285,7 +305,8 @@ export class EmailProcessor {
           reply_to: [{ address: replyTo }],
           to: [{ email_address: { address: to } }],
           subject,
-          textbody: text,
+          htmlbody,
+          textbody,
           ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
         },
         {
