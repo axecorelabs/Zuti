@@ -383,7 +383,7 @@ export class ConversationsService {
             'https://api.zeptomail.com/v1.1/email',
             {
               from: { address: fromAddress, name: fromName },
-              reply_to: [{ email_address: { address: botEmail } }],
+              reply_to: [{ address: botEmail }],
               to: [{ email_address: { address: conversation.customerEmail } }],
               subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
               textbody: content,

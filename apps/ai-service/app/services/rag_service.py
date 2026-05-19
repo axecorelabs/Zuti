@@ -41,14 +41,14 @@ class RagService:
             )
             collection = _collection(organization_id)
 
-            results = await client.search(
+            response = await client.query_points(
                 collection_name=collection,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=top_k,
                 score_threshold=0.5,
             )
 
-            for hit in results:
+            for hit in response.points:
                 payload = hit.payload or {}
                 sources.append({"content": payload.get("content", ""), "score": hit.score})
 

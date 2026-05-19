@@ -15,6 +15,7 @@ import {
   Building2,
   Leaf,
   UserRound,
+  Users,
   Bell,
   X,
   CheckCircle,
@@ -66,7 +67,7 @@ const navItems = [
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
   { label: 'Bots', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
-  { label: 'Team', href: '/team', icon: UserRound, agentVisible: true },
+  { label: 'Team', href: '/team', icon: Users, agentVisible: true },
   { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },
   { label: 'Settings', href: '/settings', icon: Settings, agentVisible: true },
 ];

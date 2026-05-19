@@ -282,7 +282,7 @@ export class EmailProcessor {
         'https://api.zeptomail.com/v1.1/email',
         {
           from: { address: from, name: fromName },
-          reply_to: [{ email_address: { address: replyTo } }],
+          reply_to: [{ address: replyTo }],
           to: [{ email_address: { address: to } }],
           subject,
           textbody: text,
