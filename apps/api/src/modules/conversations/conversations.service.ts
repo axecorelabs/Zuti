@@ -368,6 +368,13 @@ export class ConversationsService {
       const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
       const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
       if (apiKey && conversation.bot.emailAddress && conversation.customerEmail) {
+        // from = {orgSlug}@bords.app (verified sending domain); reply_to = bot's actual address
+        const botEmail = conversation.bot.emailAddress;
+        const botDomain = botEmail.split('@')[1] ?? '';
+        const orgSlug = botDomain.replace(/\.bords\.app$/, '');
+        const fromAddress = orgSlug && orgSlug !== botDomain
+          ? `${orgSlug}@bords.app`
+          : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
         const mimeHeaders: Record<string, string> = conversation.emailThreadId
           ? { 'In-Reply-To': `<${conversation.emailThreadId}>`, References: `<${conversation.emailThreadId}>` }
           : {};
@@ -375,7 +382,8 @@ export class ConversationsService {
           this.http.post(
             'https://api.zeptomail.com/v1.1/email',
             {
-              from: { address: conversation.bot.emailAddress, name: fromName },
+              from: { address: fromAddress, name: fromName },
+              reply_to: [{ email_address: { address: botEmail } }],
               to: [{ email_address: { address: conversation.customerEmail } }],
               subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
               textbody: content,

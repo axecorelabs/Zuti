@@ -45,7 +45,7 @@ export class EmailProcessor {
 
     const bot = await this.prisma.bot.findUnique({
       where: { id: botId },
-      include: { organization: { select: { name: true } } },
+      include: { organization: { select: { name: true, slug: true } } },
     });
     if (!bot) return;
 
@@ -129,6 +129,7 @@ export class EmailProcessor {
       conversation, botId, toAddress, fromEmail, organizationId,
       bodyText.trim(), bot.name, aiConfig.systemPrompt ?? null,
       bot.organization?.name ?? null,
+      bot.organization?.slug ?? null,
     );
   }
 
@@ -142,8 +143,13 @@ export class EmailProcessor {
     botName: string,
     systemPrompt: string | null,
     orgName: string | null,
+    orgSlug: string | null,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+    // from = {orgSlug}@bords.app so it's on a verified sending domain; reply_to = bot's actual address
+    const fromAddress = orgSlug
+      ? `${orgSlug}@bords.app`
+      : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
 
     // Human escalation check (same phrases as Telegram)
     const humanRequestPhrases = [
@@ -163,7 +169,7 @@ export class EmailProcessor {
         mode: 'HUMAN',
       });
       await this.sendEmail(
-        toAddress, customerEmail,
+        fromAddress, toAddress, customerEmail,
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
         'Of course! I am connecting you with a human agent who will follow up shortly.',
         conversation.emailThreadId,
@@ -240,7 +246,7 @@ export class EmailProcessor {
 
       // Send email reply (plain text — no markdown)
       await this.sendEmail(
-        toAddress, customerEmail,
+        fromAddress, toAddress, customerEmail,
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
         aiText,
         conversation.emailThreadId,
@@ -252,6 +258,7 @@ export class EmailProcessor {
 
   private async sendEmail(
     from: string,
+    replyTo: string,
     to: string,
     subject: string,
     text: string,
@@ -275,6 +282,7 @@ export class EmailProcessor {
         'https://api.zeptomail.com/v1.1/email',
         {
           from: { address: from, name: fromName },
+          reply_to: [{ email_address: { address: replyTo } }],
           to: [{ email_address: { address: to } }],
           subject,
           textbody: text,
