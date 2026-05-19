@@ -11,6 +11,8 @@ import { BotReplyEmail } from '../mail/templates/BotReplyEmail';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { EMAIL_QUEUE } from './queue.module';
+import { OrganizationsService } from '../organizations/organizations.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export interface EmailMessageJob {
   botId: string;
@@ -36,6 +38,8 @@ export class EmailProcessor {
     private readonly config: ConfigService,
     private readonly http: HttpService,
     private readonly events: EventsGateway,
+    private readonly orgs: OrganizationsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   @Process()
@@ -162,19 +166,37 @@ export class EmailProcessor {
       'escalate', 'transfer me', 'transfer to human',
     ];
     if (humanRequestPhrases.some((p) => userText.toLowerCase().includes(p))) {
+      const bestAgent = await this.orgs.findBestAgent(organizationId);
       await this.prisma.conversation.update({
         where: { id: conversation.id },
-        data: { status: 'ESCALATED', mode: 'HUMAN' },
+        data: {
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+        },
       });
       this.events.emitConversationUpdate(organizationId, {
         conversationId: conversation.id,
         status: 'ESCALATED',
         mode: 'HUMAN',
+        ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
       });
+      if (!bestAgent) {
+        await this.notifications.createOrgNotification(
+          organizationId,
+          'no_agent_available',
+          '⚠️ Escalated conversation — no agent available',
+          'A customer requested a human agent but all agents are unavailable or at capacity. Please assign the conversation manually.',
+          { conversationId: conversation.id },
+        );
+      }
+      const handoffMsg = bestAgent
+        ? `Of course! I am connecting you with ${bestAgent.name}, one of our support agents, who will follow up shortly.`
+        : 'Of course! I am connecting you with a human agent who will follow up shortly. Please note our team is currently busy — someone will reach out to you as soon as possible.';
       await this.sendEmail(
         fromAddress, toAddress, customerEmail,
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-        'Of course! I am connecting you with a human agent who will follow up shortly.',
+        handoffMsg,
         conversation.emailThreadId,
         botName, orgName ?? '',
       );
@@ -223,15 +245,30 @@ export class EmailProcessor {
         "i can't help", "please contact support", "contact us directly",
       ];
       if (escalationPhrases.some((p) => aiText.toLowerCase().includes(p))) {
+        const bestAgent = await this.orgs.findBestAgent(organizationId);
         await this.prisma.conversation.update({
           where: { id: conversation.id },
-          data: { status: 'ESCALATED', mode: 'HUMAN' },
+          data: {
+            status: 'ESCALATED',
+            mode: 'HUMAN',
+            ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+          },
         });
         this.events.emitConversationUpdate(organizationId, {
           conversationId: conversation.id,
           status: 'ESCALATED',
           mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
         });
+        if (!bestAgent) {
+          await this.notifications.createOrgNotification(
+            organizationId,
+            'no_agent_available',
+            '⚠️ Escalated conversation — no agent available',
+            'The AI escalated a conversation but all agents are unavailable or at capacity. Please assign the conversation manually.',
+            { conversationId: conversation.id },
+          );
+        }
       }
 
       // Store AI reply

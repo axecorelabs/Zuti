@@ -283,6 +283,13 @@ export default function InboxPage() {
     setConversations((prev) => prev.map((c) => (c.id === selected.id ? { ...c, mode: 'HUMAN', assignedAgentId: res.data.assignedAgentId } : c)));
   };
 
+  const handleHandBack = async () => {
+    if (!orgId || !selected) return;
+    await conversationsApi.update(orgId, selected.id, { mode: 'AI' });
+    setSelected((prev) => prev ? { ...prev, mode: 'AI', assignedAgentId: null, assignedAgent: null } : prev);
+    setConversations((prev) => prev.map((c) => (c.id === selected.id ? { ...c, mode: 'AI', assignedAgentId: null } : c)));
+  };
+
   const handleResolve = async () => {
     if (!orgId || !selected) return;
     await conversationsApi.update(orgId, selected.id, { status: 'RESOLVED' });
@@ -627,6 +634,15 @@ export default function InboxPage() {
                     >
                       <User2 className="w-3.5 h-3.5" />
                       Take over
+                    </button>
+                  )}
+                  {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' && (
+                    <button
+                      onClick={handleHandBack}
+                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors text-xs font-medium border border-zinc-700"
+                    >
+                      <BotIcon className="w-3.5 h-3.5" />
+                      Hand back to AI
                     </button>
                   )}
                   {selected.status !== 'RESOLVED' && (

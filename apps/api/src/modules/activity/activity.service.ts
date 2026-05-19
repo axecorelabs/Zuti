@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 export const ActivityAction = {
   AGENT_TOOK_OVER:          'AGENT_TOOK_OVER',
+  HANDED_BACK_TO_AI:        'HANDED_BACK_TO_AI',
   CONVERSATION_ESCALATED:   'CONVERSATION_ESCALATED',
   CONVERSATION_ASSIGNED:    'CONVERSATION_ASSIGNED',
   CONVERSATION_RESOLVED:    'CONVERSATION_RESOLVED',

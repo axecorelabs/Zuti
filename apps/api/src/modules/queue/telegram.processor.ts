@@ -7,6 +7,8 @@ import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { EventsGateway } from '../events/events.gateway';
+import { OrganizationsService } from '../organizations/organizations.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
@@ -80,6 +82,8 @@ export class TelegramProcessor {
     private readonly http: HttpService,
     private readonly config: ConfigService,
     private readonly events: EventsGateway,
+    private readonly orgs: OrganizationsService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   @Process()
@@ -203,19 +207,36 @@ export class TelegramProcessor {
     const userRequestsHuman = humanRequestPhrases.some((p) => lowerUserText.includes(p));
 
     if (userRequestsHuman) {
+      const bestAgent = await this.orgs.findBestAgent(organizationId);
       await this.prisma.conversation.update({
         where: { id: conversationId },
-        data: { status: 'ESCALATED', mode: 'HUMAN' },
+        data: {
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+        },
       });
       this.events.emitConversationUpdate(organizationId, {
         conversationId,
         status: 'ESCALATED',
         mode: 'HUMAN',
+        ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
       });
+      if (!bestAgent) {
+        await this.notifications.createOrgNotification(
+          organizationId,
+          'no_agent_available',
+          '⚠️ Escalated conversation — no agent available',
+          'A customer requested a human agent but all agents are unavailable or at capacity. Please assign the conversation manually.',
+          { conversationId },
+        );
+      }
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           chat_id: telegramChatId,
-          text: 'Of course! I am connecting you with a human agent who will follow up shortly.',
+          text: bestAgent
+            ? `Of course! I am connecting you with ${bestAgent.name}, one of our support agents, who will follow up shortly.`
+            : 'Of course! I am connecting you with a human agent who will follow up shortly. Please note our team is currently busy — someone will reach out to you as soon as possible.',
         }),
       );
       return;
@@ -267,15 +288,30 @@ export class TelegramProcessor {
       const shouldEscalate = escalationPhrases.some((p) => lowerReply.includes(p));
 
       if (shouldEscalate) {
+        const bestAgent = await this.orgs.findBestAgent(organizationId);
         await this.prisma.conversation.update({
           where: { id: conversationId },
-          data: { status: 'ESCALATED', mode: 'HUMAN' },
+          data: {
+            status: 'ESCALATED',
+            mode: 'HUMAN',
+            ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+          },
         });
         this.events.emitConversationUpdate(organizationId, {
           conversationId,
           status: 'ESCALATED',
           mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
         });
+        if (!bestAgent) {
+          await this.notifications.createOrgNotification(
+            organizationId,
+            'no_agent_available',
+            '⚠️ Escalated conversation — no agent available',
+            'The AI escalated a conversation but all agents are unavailable or at capacity. Please assign the conversation manually.',
+            { conversationId },
+          );
+        }
       }
 
       // Store AI reply

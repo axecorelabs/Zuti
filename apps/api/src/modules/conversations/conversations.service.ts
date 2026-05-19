@@ -185,9 +185,12 @@ export class ConversationsService {
         // When switching to HUMAN mode, auto-assign the actor if no one is assigned yet
         ...(dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN' && !conversation.assignedAgentId
           ? { assignedAgentId: actorId }
-          : dto.assignedAgentId !== undefined
-            ? { assignedAgentId: dto.assignedAgentId }
-            : {}),
+          // When handing back to AI, clear the assigned agent
+          : dto.mode === 'AI' && conversation.mode !== 'AI'
+            ? { assignedAgentId: null }
+            : dto.assignedAgentId !== undefined
+              ? { assignedAgentId: dto.assignedAgentId }
+              : {}),
       },
       include: {
         bot: { select: { id: true, name: true } },
@@ -224,6 +227,25 @@ export class ConversationsService {
           { conversationId, actorId },
         ),
       ]);
+    }
+
+    // Agent hands back to AI
+    if (dto.mode === 'AI' && conversation.mode !== 'AI') {
+      if (token && chatId) {
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+            chat_id: chatId,
+            text: '🤖 You\'ve been reconnected to our AI assistant. Feel free to continue the conversation.',
+          }),
+        ).catch(() => null);
+      }
+
+      await this.activity.log(
+        organizationId, actorId, actorName,
+        ActivityAction.HANDED_BACK_TO_AI,
+        'conversation', conversationId,
+        { previousMode: 'HUMAN' },
+      );
     }
 
     // Conversation escalated
@@ -399,6 +421,18 @@ export class ConversationsService {
     if (!conversation) throw new NotFoundException('Conversation not found');
     if (conversation.mode !== 'HUMAN') {
       throw new BadRequestException('Can only send messages in HUMAN mode');
+    }
+
+    // Auto-assign: first agent to reply to an unassigned escalated conversation claims it
+    if (agentId && !conversation.assignedAgentId) {
+      await this.prisma.conversation.update({
+        where: { id: conversationId },
+        data: { assignedAgentId: agentId },
+      });
+      this.events.emitConversationUpdate(organizationId, {
+        conversationId,
+        assignedAgentId: agentId,
+      });
     }
 
     // Look up agent name for signature

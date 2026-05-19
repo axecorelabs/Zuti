@@ -72,7 +72,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    */
   emitConversationUpdate(
     organizationId: string,
-    payload: { conversationId: string; status?: string; mode?: string },
+    payload: { conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null },
   ) {
     this.server.to(`org:${organizationId}`).emit('conversation:update', payload);
   }
