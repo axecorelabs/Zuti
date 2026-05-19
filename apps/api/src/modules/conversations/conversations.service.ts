@@ -299,13 +299,57 @@ export class ConversationsService {
         data: { resolvedAt: new Date() },
       });
 
+      const resolvedText = '✅ Your support request has been resolved. Feel free to message us again if you need further help.';
+
       if (token && chatId) {
         await firstValueFrom(
           this.http.post(`https://api.telegram.org/bot${token}/sendMessage`, {
             chat_id: chatId,
-            text: '✅ Your support request has been resolved. Feel free to message us again if you need further help.',
+            text: resolvedText,
           }),
         ).catch(() => null);
+      }
+
+      // Send resolution email
+      if (conversation.channel === 'EMAIL') {
+        const emailApiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+        const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+        if (emailApiKey && conversation.bot.emailAddress && conversation.customerEmail) {
+          const botEmail = conversation.bot.emailAddress;
+          const botDomain = botEmail.split('@')[1] ?? '';
+          const orgSlug = botDomain.replace(/\.bords\.app$/, '');
+          const fromAddress = orgSlug && orgSlug !== botDomain
+            ? `${orgSlug}@bords.app`
+            : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
+          const mimeHeaders: Record<string, string> = conversation.emailThreadId
+            ? { 'In-Reply-To': `<${conversation.emailThreadId}>`, References: `<${conversation.emailThreadId}>` }
+            : {};
+          const botName = conversation.bot.name ?? 'Support';
+          const orgName = orgSlug || botName;
+          const htmlbody = await render(
+            React.createElement(BotReplyEmail, { botName, orgName, replyText: resolvedText }),
+          );
+          await firstValueFrom(
+            this.http.post(
+              'https://api.zeptomail.com/v1.1/email',
+              {
+                from: { address: fromAddress, name: fromName },
+                reply_to: [{ address: botEmail }],
+                to: [{ email_address: { address: conversation.customerEmail } }],
+                subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+                htmlbody,
+                textbody: resolvedText,
+                ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
+              },
+              {
+                headers: {
+                  Authorization: `Zoho-enczapikey ${emailApiKey}`,
+                  'Content-Type': 'application/json',
+                },
+              },
+            ),
+          ).catch(() => null);
+        }
       }
 
       await this.activity.log(
@@ -357,12 +401,20 @@ export class ConversationsService {
       throw new BadRequestException('Can only send messages in HUMAN mode');
     }
 
+    // Look up agent name for signature
+    let agentName = 'Support Agent';
+    if (agentId) {
+      const agent = await this.prisma.user.findUnique({ where: { id: agentId }, select: { name: true } });
+      if (agent?.name) agentName = agent.name;
+    }
+    const signedContent = `${content}\n\n\n${agentName}\nCustomer Support`;
+
     // Save message to DB
     const message = await this.prisma.message.create({
       data: {
         conversationId,
         role: 'AGENT',
-        content,
+        content: signedContent,
       },
     });
 
@@ -385,9 +437,9 @@ export class ConversationsService {
         const botName = conversation.bot.name ?? 'Support';
         const orgName = orgSlug || botName;
         const htmlbody = await render(
-          React.createElement(BotReplyEmail, { botName, orgName, replyText: content }),
+          React.createElement(BotReplyEmail, { botName: agentName, orgName, replyText: signedContent }),
         );
-        const textbody = content
+        const textbody = signedContent
           .replace(/\*\*([^*]+)\*\*/g, '$1')
           .replace(/\*([^*]+)\*/g, '$1')
           .replace(/^#+\s*/gm, '')
@@ -420,7 +472,7 @@ export class ConversationsService {
       await firstValueFrom(
         this.http.post(
           `https://api.telegram.org/bot${conversation.bot.telegramToken}/sendMessage`,
-          { chat_id: conversation.telegramChatId, text: content },
+          { chat_id: conversation.telegramChatId, text: signedContent },
         ),
       ).catch(() => null);
     }

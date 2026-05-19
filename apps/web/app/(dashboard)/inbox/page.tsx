@@ -111,7 +111,7 @@ export default function InboxPage() {
   const [sending, setSending] = useState(false);
   const [loadingSelected, setLoadingSelected] = useState(false);
   const [mobileShowConv, setMobileShowConv] = useState(false);
-  const [customerPanelOpen, setCustomerPanelOpen] = useState(true);
+  const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
   const [mobileCustomerPanelOpen, setMobileCustomerPanelOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -279,14 +279,14 @@ export default function InboxPage() {
   const handleTakeOver = async () => {
     if (!orgId || !selected) return;
     const res = await conversationsApi.update(orgId, selected.id, { mode: 'HUMAN' });
-    setSelected(res.data);
+    setSelected((prev) => prev ? { ...prev, mode: 'HUMAN', assignedAgentId: res.data.assignedAgentId, assignedAgent: res.data.assignedAgent ?? prev.assignedAgent } : prev);
     setConversations((prev) => prev.map((c) => (c.id === selected.id ? { ...c, mode: 'HUMAN', assignedAgentId: res.data.assignedAgentId } : c)));
   };
 
   const handleResolve = async () => {
     if (!orgId || !selected) return;
-    const res = await conversationsApi.update(orgId, selected.id, { status: 'RESOLVED' });
-    setSelected(res.data);
+    await conversationsApi.update(orgId, selected.id, { status: 'RESOLVED' });
+    setSelected((prev) => prev ? { ...prev, status: 'RESOLVED' } : prev);
     setConversations((prev) => prev.map((c) => (c.id === selected.id ? { ...c, status: 'RESOLVED' } : c)));
   };
 
