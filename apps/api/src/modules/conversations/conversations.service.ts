@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { render } from '@react-email/render';
-import React from 'react';
+import * as React from 'react';
 import { BotReplyEmail } from '../mail/templates/BotReplyEmail';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
