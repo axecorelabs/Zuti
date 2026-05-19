@@ -406,9 +406,9 @@ export class ConversationsService {
     return updated;
   }
 
-  async sendMessage(organizationId: string, conversationId: string, content: string, agentId?: string) {
+  async sendMessage(organizationId: string, conversationId: string, content: string, agentId?: string, restrictToOwn = false) {
     const where: Record<string, unknown> = { id: conversationId, organizationId };
-    if (agentId) {
+    if (agentId && restrictToOwn) {
       (where as any).OR = [
         { assignedAgentId: agentId },
         { assignedAgentId: null },

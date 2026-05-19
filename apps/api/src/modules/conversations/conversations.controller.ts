@@ -95,7 +95,8 @@ export class ConversationsController {
     @Body() dto: SendMessageDto,
     @Req() req: any,
   ) {
-    const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
-    return this.service.sendMessage(orgId, conversationId, dto.content, agentId);
+    const agentId = req.user.id;
+    const isAgent = req.memberRole === 'AGENT';
+    return this.service.sendMessage(orgId, conversationId, dto.content, agentId, isAgent);
   }
 }
