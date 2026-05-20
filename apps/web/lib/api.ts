@@ -108,6 +108,29 @@ export const conversationsApi = {
     api.patch(`/organizations/${orgId}/conversations/${convId}`, data),
   sendMessage: (orgId: string, convId: string, content: string) =>
     api.post(`/organizations/${orgId}/conversations/${convId}/messages`, { content }),
+  addNote: (orgId: string, convId: string, content: string) =>
+    api.post(`/organizations/${orgId}/conversations/${convId}/notes`, { content }),
+  analytics: (orgId: string, days = 30, botId?: string) =>
+    api.get(`/organizations/${orgId}/conversations/analytics/summary`, { params: { days: String(days), ...(botId ? { botId } : {}) } }),
+};
+
+// ── Canned Responses ──────────────────────────────────────────────────────────
+export const cannedResponsesApi = {
+  list: (orgId: string) => api.get(`/organizations/${orgId}/canned-responses`),
+  create: (orgId: string, data: { shortcut: string; title: string; content: string }) =>
+    api.post(`/organizations/${orgId}/canned-responses`, data),
+  update: (orgId: string, id: string, data: Partial<{ shortcut: string; title: string; content: string }>) =>
+    api.patch(`/organizations/${orgId}/canned-responses/${id}`, data),
+  remove: (orgId: string, id: string) =>
+    api.delete(`/organizations/${orgId}/canned-responses/${id}`),
+};
+
+// ── Team Chat ────────────────────────────────────────────────────────────────
+export const teamChatApi = {
+  listMessages: (orgId: string, params?: { limit?: number; before?: string }) =>
+    api.get(`/organizations/${orgId}/team-chat/messages`, { params }),
+  sendMessage: (orgId: string, content: string) =>
+    api.post(`/organizations/${orgId}/team-chat/messages`, { content }),
 };
 
 // ── Notifications ─────────────────────────────────────────────────────────────

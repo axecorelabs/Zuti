@@ -9,10 +9,20 @@ import { firstValueFrom } from 'rxjs';
 import { EventsGateway } from '../events/events.gateway';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CannedResponsesService } from '../canned-responses/canned-responses.service';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
  */
+function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
+  const t = text.toLowerCase().trim();
+  const POSITIVE = /\b(yes|yep|yeah|thanks|thank you|thank you so much|great|perfect|awesome|helpful|solved|sorted|works|working|excellent|exactly|good|brilliant|wonderful|that'?s all|nothing else|all good|all set|no more questions|no more|that'?s it|that helped|you helped)\b/;
+  const NEGATIVE = /\b(no|nope|not really|still|doesn'?t|don'?t|isn'?t|not working|not solved|not helpful|still broken|frustrated|useless|terrible|didn'?t help|not fixed|not resolved)\b/;
+  if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
+  if (NEGATIVE.test(t)) return 'negative';
+  return 'unclear';
+}
+
 function markdownToTelegramHtml(text: string): string {
   // Escape HTML special chars FIRST (before we insert our own tags)
   const esc = (s: string) =>
@@ -84,6 +94,7 @@ export class TelegramProcessor {
     private readonly events: EventsGateway,
     private readonly orgs: OrganizationsService,
     private readonly notifications: NotificationsService,
+    private readonly cannedResponses: CannedResponsesService,
   ) {}
 
   @Process()
@@ -113,6 +124,7 @@ export class TelegramProcessor {
           telegramChatId,
           customerName,
           customerUsername: message.from.username,
+          channel: 'TELEGRAM',
           status: 'OPEN',
           mode: 'AI',
           lastMessageAt: new Date(),
@@ -133,6 +145,7 @@ export class TelegramProcessor {
           telegramChatId,
           customerName,
           customerUsername: message.from.username,
+          channel: 'TELEGRAM',
           status: 'OPEN',
           mode: 'AI',
           lastMessageAt: new Date(),
@@ -171,6 +184,40 @@ export class TelegramProcessor {
 
     // If in AI mode, call AI service
     if (conversation.mode === 'AI') {
+      // CSAT collection: if conversation is awaiting satisfaction response, handle it
+      const convMeta = (conversation.metadata as Record<string, unknown>) ?? {};
+      if (conversation.status === 'PENDING' && convMeta.awaitingCsat === true) {
+        const rating = detectSatisfaction(message.text);
+        if (rating === 'positive') {
+          await this.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { status: 'RESOLVED', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'positive' } },
+          });
+          this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
+          // Thank them naturally
+          await firstValueFrom(
+            this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+              chat_id: telegramChatId,
+              text: 'Great, glad I could help! Feel free to reach out any time.',
+            }),
+          );
+          return;
+        } else if (rating === 'negative') {
+          await this.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { status: 'OPEN', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'negative' } },
+          });
+          this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
+          // Re-engage AI for the follow-up
+        } else {
+          // Unclear — new question or ambiguous, reopen and let AI handle it
+          await this.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { status: 'OPEN', metadata: { ...convMeta, awaitingCsat: false } },
+          });
+          this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
+        }
+      }
       const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true } });
       const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
       const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
@@ -262,6 +309,49 @@ export class TelegramProcessor {
       content: m.content,
     }));
 
+    // Build customer context from previous Telegram conversations — only on first message.
+    const conv = history.length === 0
+      ? await this.prisma.conversation.findUnique({
+          where: { id: conversationId },
+          select: { telegramChatId: true },
+        })
+      : null;
+    let customerContext: string | null = null;
+    if (conv?.telegramChatId) {
+      const prevConvs = await this.prisma.conversation.findMany({
+        where: {
+          organizationId,
+          telegramChatId: conv.telegramChatId,
+          NOT: { id: conversationId },
+          status: 'RESOLVED',
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        take: 3,
+        select: {
+          metadata: true,
+          messages: {
+            where: { role: 'USER' },
+            orderBy: { createdAt: 'asc' },
+            take: 10,
+            select: { content: true },
+          },
+        },
+      });
+      if (prevConvs.length > 0) {
+        const GREETINGS = /^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy|greetings|yo|sup)[^a-z]*$/i;
+        const lines = prevConvs.map((pc, i) => {
+          const meta = pc.metadata as Record<string, unknown> | null;
+          const summary = typeof meta?.handoffSummary === 'string' ? meta.handoffSummary : null;
+          if (summary) return `${i + 1}. ${summary.slice(0, 300)}`;
+          const firstSubstantive = pc.messages.find((m) => m.content.trim().length > 10 && !GREETINGS.test(m.content.trim()));
+          return firstSubstantive
+            ? `${i + 1}. Customer previously asked: ${firstSubstantive.content.trim().slice(0, 200)}`
+            : null;
+        }).filter(Boolean);
+        if (lines.length > 0) customerContext = lines.join('\n');
+      }
+    }
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -273,10 +363,12 @@ export class TelegramProcessor {
           bot_name: botName,
           org_name: orgName,
           system_prompt: systemPrompt,
+          customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
+      const shouldResolve: boolean = response.data?.should_resolve === true;
 
       // Auto-escalate if AI expresses uncertainty
       const escalationPhrases = [
@@ -340,6 +432,16 @@ export class TelegramProcessor {
           parse_mode: 'HTML',
         }),
       );
+
+      // Auto-resolve: AI signalled the conversation is done — set to PENDING awaiting CSAT
+      if (shouldResolve && !shouldEscalate) {
+        const currentMeta = (await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } }))?.metadata as Record<string, unknown> ?? {};
+        await this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { status: 'PENDING', metadata: { ...currentMeta, awaitingCsat: true } },
+        });
+        this.events.emitConversationUpdate(organizationId, { conversationId, status: 'PENDING' });
+      }
 
       // If escalated, send a follow-up notice to the user
       if (shouldEscalate) {

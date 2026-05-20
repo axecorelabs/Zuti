@@ -10,6 +10,7 @@ import { EventsGateway } from '../events/events.gateway';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
 import { OrganizationsService } from '../organizations/organizations.service';
+import { TeamChatService } from '../team-chat/team-chat.service';
 
 interface FindAllFilters {
   status?: string;
@@ -21,6 +22,15 @@ interface FindAllFilters {
   agentId?: string;
 }
 
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -30,6 +40,7 @@ export class ConversationsService {
     private readonly events: EventsGateway,
     private readonly notifications: NotificationsService,
     private readonly activity: ActivityService,
+    private readonly teamChat: TeamChatService,
     @Inject(forwardRef(() => OrganizationsService))
     private readonly orgs: OrganizationsService,
   ) {}
@@ -77,6 +88,11 @@ export class ConversationsService {
         bot: { select: { id: true, name: true, telegramUsername: true } },
         assignedAgent: { select: { id: true, name: true, email: true } },
         _count: { select: { messages: true } },
+        messages: {
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: { id: true, role: true, content: true, createdAt: true },
+        },
       },
       orderBy: { lastMessageAt: 'desc' },
     });
@@ -201,6 +217,50 @@ export class ConversationsService {
     const token = conversation.bot.telegramToken;
     const chatId = conversation.telegramChatId;
 
+    // Helper: send a plain-text notification email to the customer
+    const sendCustomerEmail = async (text: string) => {
+      if (conversation.channel !== 'EMAIL') return;
+      const emailApiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+      const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+      if (!emailApiKey || !conversation.bot.emailAddress || !conversation.customerEmail) return;
+      const botEmail = conversation.bot.emailAddress;
+      const botDomain = botEmail.split('@')[1] ?? '';
+      const orgSlug = botDomain.replace(/\.bords\.app$/, '');
+      const fromAddress = orgSlug && orgSlug !== botDomain
+        ? `${orgSlug}@bords.app`
+        : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
+      const mimeHeaders: Record<string, string> = (conversation as any).emailThreadId
+        ? { 'In-Reply-To': `<${(conversation as any).emailThreadId}>`, References: `<${(conversation as any).emailThreadId}>` }
+        : {};
+      await firstValueFrom(
+        this.http.post(
+          'https://api.zeptomail.com/v1.1/email',
+          {
+            from: { address: fromAddress, name: fromName },
+            reply_to: [{ address: botEmail }],
+            to: [{ email_address: { address: conversation.customerEmail } }],
+            subject: `Re: ${(conversation as any).emailSubject ?? 'Your enquiry'}`,
+            textbody: text,
+            htmlbody: `<p style="font-family:sans-serif;font-size:14px;color:#333;">${escapeHtml(text).replace(/\n/g, '<br>')}</p>`,
+            ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
+          },
+          { headers: { Authorization: `Zoho-enczapikey ${emailApiKey}`, 'Content-Type': 'application/json' } },
+        ),
+      ).catch(() => null);
+    };
+
+    // Helper: send a widget notification message (visible to customer in the widget)
+    const sendWidgetMessage = async (text: string) => {
+      if (conversation.channel !== 'WIDGET') return;
+      const msg = await this.prisma.message.create({
+        data: { conversationId, role: 'ASSISTANT', content: text },
+      });
+      this.events.emitNewMessage(organizationId, {
+        conversationId,
+        message: { id: msg.id, role: msg.role, content: msg.content, createdAt: msg.createdAt },
+      });
+    };
+
     // Agent takes over from AI
     if (dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN') {
       if (token && chatId) {
@@ -211,6 +271,8 @@ export class ConversationsService {
           }),
         ).catch(() => null);
       }
+      await sendCustomerEmail('You have been connected to a support agent. We will be with you shortly.');
+      await sendWidgetMessage('You have been connected to a support agent. We will be with you shortly.');
 
       await Promise.all([
         this.activity.log(
@@ -227,6 +289,9 @@ export class ConversationsService {
           { conversationId, actorId },
         ),
       ]);
+
+      // Fire-and-forget: generate AI handoff summary in the background
+      this.generateHandoffSummary(organizationId, conversationId).catch(() => null);
     }
 
     // Agent hands back to AI
@@ -239,6 +304,8 @@ export class ConversationsService {
           }),
         ).catch(() => null);
       }
+      await sendCustomerEmail('You\'ve been reconnected to our AI assistant. Feel free to reply to this email if you need further help.');
+      await sendWidgetMessage('You\'ve been reconnected to our AI assistant. Feel free to continue the conversation.');
 
       await this.activity.log(
         organizationId, actorId, actorName,
@@ -281,6 +348,19 @@ export class ConversationsService {
           'New conversation assigned to you',
           `A${dto.escalationTopic ? ` ${dto.escalationTopic}` : ''} support conversation has been routed to you.`,
           { conversationId, topic: dto.escalationTopic },
+        );
+
+        // Post an internal team-chat notification so assignees get immediate in-chat context.
+        await this.teamChat.sendMessage(
+          organizationId,
+          actorId,
+          `Escalation routed to ${assignedTo.name}: conversation ${conversationId}${dto.escalationTopic ? ` (${dto.escalationTopic})` : ''}.`,
+          {
+            kind: 'escalation_assigned',
+            conversationId,
+            assignedToUserId: assignedTo.userId,
+            topic: dto.escalationTopic ?? null,
+          },
         );
       }
 
@@ -518,5 +598,159 @@ export class ConversationsService {
     });
 
     return message;
+  }
+
+  async addNote(
+    organizationId: string,
+    conversationId: string,
+    content: string,
+    agentId: string,
+  ) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+
+    const agent = await this.prisma.user.findUnique({
+      where: { id: agentId },
+      select: { name: true },
+    });
+    const agentName = agent?.name ?? 'Agent';
+
+    return this.prisma.message.create({
+      data: {
+        conversationId,
+        role: 'SYSTEM',
+        content,
+        metadata: { internal: true, authorId: agentId, authorName: agentName },
+      },
+    });
+  }
+
+  private async generateHandoffSummary(
+    organizationId: string,
+    conversationId: string,
+  ): Promise<void> {
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId, NOT: { role: 'SYSTEM' } },
+      orderBy: { createdAt: 'asc' },
+      take: 30,
+      select: { role: true, content: true },
+    });
+    if (messages.length < 2) return;
+
+    const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+    const { data: summaryData } = await firstValueFrom(
+      this.http.post<{ summary: string }>(`${aiServiceUrl}/api/v1/summarize`, {
+        messages: messages.map((m) => ({
+          role: m.role === 'USER' ? 'user' : 'assistant',
+          content: m.content,
+        })),
+      }),
+    );
+    if (!summaryData?.summary) return;
+
+    const current = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { metadata: true },
+    });
+    const existingMeta = (current?.metadata as Record<string, unknown>) ?? {};
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { metadata: { ...existingMeta, handoffSummary: summaryData.summary } },
+    });
+
+    this.events.emitConversationUpdate(organizationId, {
+      conversationId,
+      metadata: { handoffSummary: summaryData.summary },
+    });
+  }
+
+  async getAnalytics(organizationId: string, days: number, botId?: string) {
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    // Fetch all conversations in the period (lightweight — no messages yet)
+    const conversations = await this.prisma.conversation.findMany({
+      where: { organizationId, createdAt: { gte: since }, ...(botId ? { botId } : {}) },
+      select: {
+        id: true,
+        status: true,
+        mode: true,
+        channel: true,
+        createdAt: true,
+        metadata: true,
+        // First AI response per conversation for response-time metric
+        messages: {
+          where: { role: 'ASSISTANT' },
+          orderBy: { createdAt: 'asc' },
+          take: 1,
+          select: { createdAt: true },
+        },
+      },
+    });
+
+    const total = conversations.length;
+    const resolved = conversations.filter((c) => c.status === 'RESOLVED').length;
+    const escalated = conversations.filter((c) => c.status === 'ESCALATED').length;
+    const open = conversations.filter((c) => c.status === 'OPEN').length;
+    const pending = conversations.filter((c) => c.status === 'PENDING').length;
+
+    // Resolution rate: resolved / conversations that reached a terminal state
+    const terminal = resolved + escalated;
+    const resolutionRate = terminal > 0 ? Math.round((resolved / terminal) * 100) : null;
+    const escalationRate = total > 0 ? Math.round((escalated / total) * 100) : null;
+
+    // AI resolution: resolved conversations that are still in AI mode (never handed to human)
+    const aiResolved = conversations.filter((c) => c.status === 'RESOLVED' && c.mode === 'AI').length;
+    const aiResolutionRate = resolved > 0 ? Math.round((aiResolved / resolved) * 100) : null;
+
+    // Avg first response time (seconds)
+    const responseTimes = conversations
+      .filter((c) => c.messages.length > 0)
+      .map((c) => (new Date(c.messages[0].createdAt).getTime() - new Date(c.createdAt).getTime()) / 1000);
+    const avgFirstResponseSec = responseTimes.length > 0
+      ? Math.round(responseTimes.reduce((a, b) => a + b, 0) / responseTimes.length)
+      : null;
+
+    // Channel breakdown
+    const channelBreakdown: Record<string, number> = { WIDGET: 0, TELEGRAM: 0, EMAIL: 0 };
+    for (const c of conversations) channelBreakdown[c.channel] = (channelBreakdown[c.channel] ?? 0) + 1;
+
+    // Volume by day (UTC date buckets)
+    const volumeMap: Record<string, number> = {};
+    for (let i = days - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      volumeMap[d.toISOString().slice(0, 10)] = 0;
+    }
+    for (const c of conversations) {
+      const key = new Date(c.createdAt).toISOString().slice(0, 10);
+      if (key in volumeMap) volumeMap[key]++;
+    }
+    const volumeByDay = Object.entries(volumeMap).map(([date, count]) => ({ date, count }));
+
+    return {
+      period: { start: since.toISOString(), end: new Date().toISOString(), days },
+      totals: { conversations: total, resolved, escalated, open, pending },
+      rates: { resolutionRate, escalationRate, aiResolutionRate },
+      avgFirstResponseSec,
+      channelBreakdown,
+      volumeByDay,
+      // CSAT — computed from conversations where a satisfaction rating was recorded
+      csatScore: (() => {
+        const rated = conversations.filter((c) => {
+          const m = c.metadata as Record<string, unknown> | null;
+          return m?.csatRating === 'positive' || m?.csatRating === 'negative';
+        });
+        if (rated.length === 0) return null as number | null;
+        const positive = rated.filter((c) => (c.metadata as Record<string, unknown>)?.csatRating === 'positive').length;
+        return Math.round((positive / rated.length) * 100) as number;
+      })(),
+      csatSampleSize: conversations.filter((c) => {
+        const m = c.metadata as Record<string, unknown> | null;
+        return m?.csatRating === 'positive' || m?.csatRating === 'negative';
+      }).length,
+    };
   }
 }

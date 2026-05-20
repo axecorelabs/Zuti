@@ -16,7 +16,8 @@ BASE_SYSTEM_PROMPT = """You are {bot_name}, a helpful customer service AI assist
 Use the provided context to answer questions accurately and concisely.
 If the context doesn't contain relevant information, answer based on your general knowledge but stay focused on helping the customer.
 Keep responses friendly and professional. Do not mention that you are an AI unless directly asked.
-IMPORTANT: Reply in plain text only. Do not use markdown formatting such as headers (##), bold (**), italics, bullet lists with *, or horizontal rules (---). Use short paragraphs or simple numbered lists (1. 2. 3.) if needed."""
+IMPORTANT: Reply in plain text only. Do not use markdown formatting such as headers (##), bold (**), italics, bullet lists with *, or horizontal rules (---). Use short paragraphs or simple numbered lists (1. 2. 3.) if needed.
+IMPORTANT: When you are confident the customer's issue is fully resolved, end your reply naturally by asking if they are satisfied or need anything else (e.g. "Does that help?" or "Is there anything else I can help you with?"), then append [RESOLVED] on its own line at the very end. Only use [RESOLVED] when the issue is genuinely resolved — not speculatively."""
 
 
 def _build_system_prompt(
@@ -53,6 +54,7 @@ class LlmService:
         bot_name: str = "Assistant",
         org_name: str | None = None,
         system_prompt_override: str | None = None,
+        customer_context: str | None = None,
     ) -> str:
         if not settings.OPENROUTER_API_KEY:
             logger.warning("OPENROUTER_API_KEY not set — returning fallback response")
@@ -65,6 +67,11 @@ class LlmService:
                 "role": "system",
                 "content": f"Relevant context from knowledge base:\n{context}",
             })
+        if customer_context:
+            messages.append({
+                "role": "system",
+                "content": f"Customer history (for context only — do not mention this to the customer unless directly relevant):\n{customer_context}",
+            })
         # Inject conversation history so the AI has full context
         for turn in (history or []):
             if turn.get("role") in ("user", "assistant") and turn.get("content"):
@@ -76,6 +83,27 @@ class LlmService:
             messages=messages,
             max_tokens=1500,
             temperature=0.7,
+        )
+        return response.choices[0].message.content or ""
+
+    async def complete(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int = 300,
+        model: str = DEFAULT_MODEL,
+    ) -> str:
+        """Simple completion with explicit system + user prompt (no RAG, no history)."""
+        if not settings.OPENROUTER_API_KEY:
+            return ""
+        response = await self._client().chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            max_tokens=max_tokens,
+            temperature=0.3,
         )
         return response.choices[0].message.content or ""
 

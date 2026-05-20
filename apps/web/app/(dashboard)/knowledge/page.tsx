@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Link as LinkIcon, FileText, Trash2, RefreshCw, ShieldCheck } from 'lucide-react';
+import Link from 'next/link';
+import { Link as LinkIcon, FileText, Trash2, RefreshCw, ShieldCheck, Zap, ChevronRight } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, orgsApi } from '@/lib/api';
 
@@ -314,6 +315,24 @@ export default function KnowledgePage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Canned Responses link */}
+      <div className="mt-6 card p-5">
+        <p className="text-xs text-zinc-500 mb-3 font-normal">Response templates</p>
+        <Link
+          href="/settings/canned-responses"
+          className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-zinc-800/60 transition-colors group"
+        >
+          <div className="w-8 h-8 rounded-lg bg-blue-600/15 border border-blue-600/20 flex items-center justify-center shrink-0">
+            <Zap className="w-4 h-4 text-blue-400" />
+          </div>
+          <div className="flex-1">
+            <p className="text-sm text-zinc-200">Canned Responses</p>
+            <p className="text-xs text-zinc-600">Pre-written reply templates used by agents and injected into the AI</p>
+          </div>
+          <ChevronRight className="w-4 h-4 text-zinc-700 group-hover:text-zinc-400 transition-colors" />
+        </Link>
       </div>
     </div>
   );

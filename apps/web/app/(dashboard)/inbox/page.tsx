@@ -6,7 +6,7 @@ import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Cloc
 import { io, Socket } from 'socket.io-client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { botsApi, conversationsApi, orgsApi } from '@/lib/api';
+import { botsApi, conversationsApi, orgsApi, cannedResponsesApi } from '@/lib/api';
 
 interface Conversation {
   id: string;
@@ -24,10 +24,11 @@ interface Conversation {
   updatedAt: string;
   lastMessageAt?: string | null;
   bot: { id: string; name: string };
-  messages: Array<{ id: string; role: string; content: string; createdAt: string }>;
+  messages: Array<{ id: string; role: string; content: string; createdAt: string; metadata?: Record<string, unknown> }>;
 }
 
 interface ConversationDetails extends Conversation {
+  metadata?: Record<string, unknown>;
   previousConversations?: Conversation[];
   escalationHistory?: Array<{
     id: string;
@@ -109,6 +110,12 @@ export default function InboxPage() {
   const [agents, setAgents] = useState<AgentOption[]>([]);
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
+  const [isNoteMode, setIsNoteMode] = useState(false);
+  // Canned responses
+  const [cannedItems, setCannedItems] = useState<{ id: string; shortcut: string; title: string; content: string }[]>([]);
+  const [cannedQuery, setCannedQuery] = useState<string | null>(null); // null = picker closed
+  const [cannedIndex, setCannedIndex] = useState(0);
+  const replyRef = useRef<HTMLTextAreaElement>(null);
   const [loadingSelected, setLoadingSelected] = useState(false);
   const [mobileShowConv, setMobileShowConv] = useState(false);
   const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
@@ -140,8 +147,9 @@ export default function InboxPage() {
     Promise.all([
       botsApi.list(orgId),
       orgsApi.listMembers(orgId),
+      cannedResponsesApi.list(orgId),
     ])
-      .then(([botsRes, membersRes]) => {
+      .then(([botsRes, membersRes, cannedRes]) => {
         setBots((botsRes.data ?? []).map((b: { id: string; name: string }) => ({ id: b.id, name: b.name })));
         setAgents(
           (membersRes.data ?? []).map((m: {
@@ -153,6 +161,7 @@ export default function InboxPage() {
             role: m.role,
           })),
         );
+        setCannedItems(cannedRes.data ?? []);
       })
       .catch(() => {});
   }, [orgId]);
@@ -190,6 +199,7 @@ export default function InboxPage() {
   useEffect(() => {
     if (!orgId || !selected) return;
     setLoadingSelected(true);
+    setIsNoteMode(false);
     conversationsApi.get(orgId, selected.id)
       .then((res) => setSelected(res.data as ConversationDetails))
       .catch(() => {})
@@ -210,7 +220,10 @@ export default function InboxPage() {
     const apiUrl = /^https?:\/\/.+/.test(rawUrl) ? rawUrl : 'http://localhost:3001';
     // Ensure socket.io uses wss:// on HTTPS pages (mixed content would block ws://)
     const socketUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
-    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'] });
+    const token = localStorage.getItem('accessToken');
+    if (!token) return;
+
+    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'], auth: { token } });
     socketRef.current = socket;
 
     socket.on('connect', () => socket.emit('join', orgId));
@@ -252,7 +265,7 @@ export default function InboxPage() {
       setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
     });
 
-    socket.on('conversation:update', (payload: { conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null }) => {
+    socket.on('conversation:update', (payload: { conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null; metadata?: Record<string, unknown> }) => {
       setConversations((prev) => prev.map((c) => c.id === payload.conversationId
         ? {
           ...c,
@@ -268,6 +281,7 @@ export default function InboxPage() {
           ...(payload.status && { status: payload.status as Conversation['status'] }),
           ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
           ...(payload.assignedAgentId !== undefined && { assignedAgentId: payload.assignedAgentId }),
+          ...(payload.metadata && { metadata: { ...(prev.metadata ?? {}), ...payload.metadata } }),
         }
         : prev,
       );
@@ -301,11 +315,63 @@ export default function InboxPage() {
     if (!orgId || !selected || !reply.trim() || sending) return;
     setSending(true);
     try {
-      const res = await conversationsApi.sendMessage(orgId, selected.id, reply.trim());
-      setReply('');
-      setSelected((prev) => prev ? { ...prev, messages: [...(prev.messages ?? []), res.data] } : prev);
+      if (isNoteMode) {
+        const res = await conversationsApi.addNote(orgId, selected.id, reply.trim());
+        setReply('');
+        setSelected((prev) => prev ? { ...prev, messages: [...(prev.messages ?? []), res.data] } : prev);
+      } else {
+        const res = await conversationsApi.sendMessage(orgId, selected.id, reply.trim());
+        setReply('');
+        setSelected((prev) => prev ? { ...prev, messages: [...(prev.messages ?? []), res.data] } : prev);
+      }
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     } catch { /* ignore */ } finally { setSending(false); }
+  };
+
+  // Canned response helpers
+  const filteredCanned = cannedQuery !== null
+    ? cannedItems.filter((c) =>
+        c.shortcut.includes(cannedQuery) || c.title.toLowerCase().includes(cannedQuery.toLowerCase()),
+      )
+    : [];
+
+  const insertCanned = (content: string) => {
+    // Replace everything from the last / up to cursor with the canned content
+    setReply((prev) => {
+      const slashIdx = prev.lastIndexOf('/');
+      return slashIdx === -1 ? content : prev.slice(0, slashIdx) + content;
+    });
+    setCannedQuery(null);
+    setCannedIndex(0);
+    setTimeout(() => replyRef.current?.focus(), 0);
+  };
+
+  const handleReplyChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setReply(val);
+    const slashIdx = val.lastIndexOf('/');
+    if (slashIdx !== -1 && slashIdx === val.length - 1 - (val.length - 1 - slashIdx)) {
+      // There's a / — compute what's typed after it
+      const afterSlash = val.slice(slashIdx + 1);
+      // Only show picker if / is at start or after whitespace, and no space in query
+      const charBefore = slashIdx > 0 ? val[slashIdx - 1] : ' ';
+      if ((charBefore === ' ' || charBefore === '\n' || slashIdx === 0) && !afterSlash.includes(' ')) {
+        setCannedQuery(afterSlash);
+        setCannedIndex(0);
+        return;
+      }
+    }
+    setCannedQuery(null);
+  };
+
+  const handleReplyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (cannedQuery !== null && filteredCanned.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setCannedIndex((i) => Math.min(i + 1, filteredCanned.length - 1)); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); setCannedIndex((i) => Math.max(i - 1, 0)); return; }
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); insertCanned(filteredCanned[cannedIndex].content); return; }
+      if (e.key === 'Escape') { setCannedQuery(null); return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
   const openCount = conversations.filter((c) => c.status === 'OPEN').length;
@@ -322,6 +388,7 @@ export default function InboxPage() {
   const escalationActionLabel = (action: string) => {
     const map: Record<string, string> = {
       AGENT_TOOK_OVER: 'Agent took over',
+      HANDED_BACK_TO_AI: 'Handed back to AI',
       CONVERSATION_ESCALATED: 'Conversation escalated',
       CONVERSATION_ASSIGNED: 'Conversation assigned',
       CONVERSATION_RESOLVED: 'Conversation resolved',
@@ -659,6 +726,16 @@ export default function InboxPage() {
 
               {/* Messages */}
               <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3">
+                {/* AI handoff summary banner */}
+                {typeof selected.metadata?.handoffSummary === 'string' && selected.mode === 'HUMAN' && (
+                  <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-xs">
+                    <span className="mt-0.5 shrink-0">📋</span>
+                    <div>
+                      <span className="font-semibold text-amber-300">AI handoff summary: </span>
+                      {selected.metadata.handoffSummary}
+                    </div>
+                  </div>
+                )}
                 {loadingSelected ? (
                   <div className="space-y-2.5">
                     {[...Array(8)].map((_, i) => (
@@ -675,6 +752,7 @@ export default function InboxPage() {
                     messageDateKey(selected.messages[index - 1].createdAt) !== messageDateKey(msg.createdAt);
                   const isUser = msg.role === 'USER';
                   const isAgent = msg.role === 'AGENT';
+                  const isInternalNote = msg.role === 'SYSTEM' && (msg.metadata as any)?.internal === true;
                   return (
                     <div key={msg.id}>
                       {showDateSeparator && (
@@ -684,6 +762,21 @@ export default function InboxPage() {
                           </span>
                         </div>
                       )}
+                      {isInternalNote ? (
+                        <div className="flex justify-center my-1">
+                          <div className="max-w-[80%] w-full px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-xs">
+                            <div className="flex items-center gap-1.5 mb-1 text-amber-400/80">
+                              <span className="text-[10px]">🗒️</span>
+                              <span className="font-semibold text-[10px] uppercase tracking-wide">Internal note</span>
+                              {(msg.metadata as any)?.authorName && (
+                                <span className="text-[10px] text-amber-300/60">· {(msg.metadata as any).authorName}</span>
+                              )}
+                              <span className="ml-auto text-[9px] opacity-50">{timeSince(msg.createdAt)}</span>
+                            </div>
+                            <p className="font-light whitespace-pre-wrap leading-snug">{msg.content}</p>
+                          </div>
+                        </div>
+                      ) : (
                       <div className={`flex ${isUser ? 'justify-start' : 'justify-end'}`}>
                         {isUser && (
                           <div className="w-5 h-5 rounded-full bg-zinc-800 flex items-center justify-center text-[9px] text-zinc-500 shrink-0 mr-2 mt-1">
@@ -742,6 +835,7 @@ export default function InboxPage() {
                           </div>
                         )}
                       </div>
+                      )}
                     </div>
                   );
                 })}
@@ -751,25 +845,62 @@ export default function InboxPage() {
               {/* Reply input */}
               {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' ? (
                 <div className="px-6 py-4 border-t border-zinc-900 shrink-0">
-                  <div className="flex gap-3 items-end bg-zinc-900/50 border border-zinc-800 rounded-2xl px-4 py-3">
+                  <div className={`relative flex gap-3 items-end rounded-2xl px-4 py-3 ${
+                    isNoteMode
+                      ? 'bg-amber-500/10 border border-amber-500/25'
+                      : 'bg-zinc-900/50 border border-zinc-800'
+                  }`}>
+                    {/* Canned response picker */}
+                    {cannedQuery !== null && filteredCanned.length > 0 && (
+                      <div className="absolute bottom-full mb-2 left-0 right-0 mx-4 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl overflow-hidden z-20 max-h-52 overflow-y-auto">
+                        <p className="px-3 py-1.5 text-[10px] text-zinc-600 border-b border-zinc-800">Canned responses — ↑↓ navigate, Enter to insert, Esc to close</p>
+                        {filteredCanned.map((c, i) => (
+                          <button
+                            key={c.id}
+                            onMouseDown={(e) => { e.preventDefault(); insertCanned(c.content); }}
+                            className={`w-full text-left px-3 py-2.5 flex items-start gap-3 transition-colors ${i === cannedIndex ? 'bg-zinc-800' : 'hover:bg-zinc-800/60'}`}
+                          >
+                            <span className="shrink-0 font-mono text-xs text-blue-400 bg-blue-600/10 border border-blue-600/20 px-1.5 py-0.5 rounded mt-0.5">/{c.shortcut}</span>
+                            <div>
+                              <p className="text-xs text-zinc-200">{c.title}</p>
+                              <p className="text-[11px] text-zinc-500 line-clamp-1 mt-0.5">{c.content}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <textarea
+                      ref={replyRef}
                       value={reply}
-                      onChange={(e) => setReply(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                      placeholder="Reply as agent… (Enter to send, Shift+Enter for newline)"
+                      onChange={handleReplyChange}
+                      onKeyDown={handleReplyKeyDown}
+                      placeholder={isNoteMode ? 'Add internal note… (visible only to agents)' : 'Reply as agent… (/ for canned responses)'}
                       rows={1}
-                      className="flex-1 bg-transparent text-sm text-zinc-200 placeholder-zinc-600 resize-none focus:outline-none"
+                      className={`flex-1 bg-transparent text-sm placeholder-zinc-600 resize-none focus:outline-none ${isNoteMode ? 'text-amber-100' : 'text-zinc-200'}`}
                     />
+                    <button
+                      onClick={() => { setIsNoteMode((v) => !v); }}
+                      title={isNoteMode ? 'Switch to reply' : 'Switch to internal note'}
+                      className={`w-8 h-8 rounded-xl transition-colors flex items-center justify-center shrink-0 text-[13px] ${
+                        isNoteMode
+                          ? 'bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                          : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
+                      }`}
+                    >
+                      🗒️
+                    </button>
                     <button
                       onClick={handleSend}
                       disabled={!reply.trim() || sending}
-                      className="w-8 h-8 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center shrink-0"
+                      className={`w-8 h-8 rounded-xl disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center justify-center shrink-0 ${
+                        isNoteMode ? 'bg-amber-500 hover:bg-amber-400' : 'bg-blue-600 hover:bg-blue-500'
+                      }`}
                     >
                       <Send className="w-3.5 h-3.5 text-white" />
                     </button>
                   </div>
                   <p className="text-[10px] text-zinc-700 mt-1.5 text-center">
-                    You are replying as a human agent
+                    {isNoteMode ? '🗒️ Internal note — not visible to the customer' : 'You are replying as a human agent'}
                   </p>
                 </div>
               ) : selected.status !== 'RESOLVED' ? (

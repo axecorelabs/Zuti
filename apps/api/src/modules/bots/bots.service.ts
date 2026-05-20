@@ -12,6 +12,16 @@ import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
+import { CannedResponsesService } from '../canned-responses/canned-responses.service';
+
+function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
+  const t = text.toLowerCase().trim();
+  const POSITIVE = /\b(yes|yep|yeah|thanks|thank you|thank you so much|great|perfect|awesome|helpful|solved|sorted|works|working|excellent|exactly|good|brilliant|wonderful|that'?s all|nothing else|all good|all set|no more questions|no more|that'?s it|that helped|you helped)\b/;
+  const NEGATIVE = /\b(no|nope|not really|still|doesn'?t|don'?t|isn'?t|not working|not solved|not helpful|still broken|frustrated|useless|terrible|didn'?t help|not fixed|not resolved)\b/;
+  if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
+  if (NEGATIVE.test(t)) return 'negative';
+  return 'unclear';
+}
 
 @Injectable()
 export class BotsService {
@@ -22,6 +32,7 @@ export class BotsService {
     private readonly http: HttpService,
     private readonly config: ConfigService,
     private readonly events: EventsGateway,
+    private readonly cannedResponses: CannedResponsesService,
   ) {}
 
   async create(organizationId: string, dto: CreateBotDto) {
@@ -345,6 +356,7 @@ export class BotsService {
           customerName,
           widgetVisitorId: visitorId ? visitorIdKey : null,
           widgetVisitorEmail: visitorEmail,
+          channel: 'WIDGET',
           status: 'OPEN',
           mode: 'AI',
           lastMessageAt: new Date(),
@@ -383,7 +395,40 @@ export class BotsService {
       message: { id: userMessage.id, role: userMessage.role, content: userMessage.content, createdAt: userMessage.createdAt },
     });
 
-    // Fetch recent conversation history (exclude the just-saved user message)
+    // CSAT collection: if conversation is awaiting satisfaction response, handle it
+    const convMeta = (conversation.metadata as Record<string, unknown>) ?? {};
+    if (conversation.status === 'PENDING' && convMeta.awaitingCsat === true) {
+      const rating = detectSatisfaction(userText.trim());
+      if (rating === 'positive') {
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'RESOLVED', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'positive' } },
+        });
+        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
+        const thankMsg = await this.prisma.message.create({
+          data: { conversationId: conversation.id, role: 'ASSISTANT', content: 'Great, glad I could help! Feel free to reach out any time.' },
+        });
+        this.events.emitNewMessage(bot.organizationId, {
+          conversationId: conversation.id,
+          message: { id: thankMsg.id, role: thankMsg.role, content: thankMsg.content, createdAt: thankMsg.createdAt },
+        });
+        return { conversationId: conversation.id, message: thankMsg.content };
+      } else if (rating === 'negative') {
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'OPEN', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'negative' } },
+        });
+        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'OPEN' });
+        // Fall through — re-engage AI
+      } else {
+        // New question — reopen silently, let AI handle it
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'OPEN', metadata: { ...convMeta, awaitingCsat: false } },
+        });
+        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'OPEN' });
+      }
+    }
     // Fetch newest 40 from DB (cheap), then trim by token budget in memory
     const priorMessages = await this.prisma.message.findMany({
       where: { conversationId: conversation.id, NOT: { id: userMessage.id } },
@@ -405,6 +450,49 @@ export class BotsService {
       content: m.content,
     }));
 
+    // Build customer context from previous conversations — only on the first message,
+    // so we don't waste tokens repeating it on every turn of an ongoing conversation.
+    const prevWhere = conversation.widgetVisitorEmail
+      ? { widgetVisitorEmail: conversation.widgetVisitorEmail }
+      : conversation.widgetVisitorId
+        ? { widgetVisitorId: conversation.widgetVisitorId }
+        : null;
+    let customerContext: string | null = null;
+    if (history.length === 0 && prevWhere) {
+      const prevConvs = await this.prisma.conversation.findMany({
+        where: {
+          organizationId: bot.organizationId,
+          ...prevWhere,
+          NOT: { id: conversation.id },
+          status: 'RESOLVED',
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        take: 3,
+        select: {
+          metadata: true,
+          messages: {
+            where: { role: 'USER' },
+            orderBy: { createdAt: 'asc' },
+            take: 10,
+            select: { content: true },
+          },
+        },
+      });
+      if (prevConvs.length > 0) {
+        const GREETINGS = /^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy|greetings|yo|sup)[^a-z]*$/i;
+        const lines = prevConvs.map((pc, i) => {
+          const meta = pc.metadata as Record<string, unknown> | null;
+          const summary = typeof meta?.handoffSummary === 'string' ? meta.handoffSummary : null;
+          if (summary) return `${i + 1}. ${summary.slice(0, 300)}`;
+          const firstSubstantive = pc.messages.find((m) => m.content.trim().length > 10 && !GREETINGS.test(m.content.trim()));
+          return firstSubstantive
+            ? `${i + 1}. Customer previously asked: ${firstSubstantive.content.trim().slice(0, 200)}`
+            : null;
+        }).filter(Boolean);
+        if (lines.length > 0) customerContext = lines.join('\n');
+      }
+    }
+
     // Call AI service and get response
     let aiReply = '';
     try {
@@ -421,29 +509,41 @@ export class BotsService {
           bot_name: bot.name,
           org_name: bot.organization?.name,
           system_prompt: aiConfig.systemPrompt ?? null,
+          customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(bot.organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
 
       aiReply = response.data?.reply ?? 'I am unable to respond right now. Please try again later.';
+      const shouldResolve: boolean = response.data?.should_resolve === true;
+
+      // Store AI message
+      const aiMessage = await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: 'ASSISTANT',
+          content: aiReply,
+        },
+      });
+
+      this.events.emitNewMessage(bot.organizationId, {
+        conversationId: conversation.id,
+        message: { id: aiMessage.id, role: aiMessage.role, content: aiMessage.content, createdAt: aiMessage.createdAt },
+      });
+
+      // Auto-resolve: AI signalled done — set PENDING, await CSAT response
+      if (shouldResolve) {
+        const currentMeta = (await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> ?? {};
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'PENDING', metadata: { ...currentMeta, awaitingCsat: true } },
+        });
+        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'PENDING' });
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`AI service error for widget message: ${msg}`);
       aiReply = 'I am unable to respond right now. Please try again later.';
     }
-
-    // Store AI message
-    const aiMessage = await this.prisma.message.create({
-      data: {
-        conversationId: conversation.id,
-        role: 'ASSISTANT',
-        content: aiReply,
-      },
-    });
-
-    this.events.emitNewMessage(bot.organizationId, {
-      conversationId: conversation.id,
-      message: { id: aiMessage.id, role: aiMessage.role, content: aiMessage.content, createdAt: aiMessage.createdAt },
-    });
 
     return {
       conversationId: conversation.id,

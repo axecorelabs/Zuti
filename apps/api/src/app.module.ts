@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './modules/auth/auth.module';
@@ -14,13 +15,14 @@ import { KnowledgeModule } from './modules/knowledge/knowledge.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { ActivityModule } from './modules/activity/activity.module';
+import { CannedResponsesModule } from './modules/canned-responses/canned-responses.module';
+import { TeamChatModule } from './modules/team-chat/team-chat.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
-    ThrottlerModule.forRoot([
+    ConfigModule.forRoot({ isGlobal: true }),    ScheduleModule.forRoot(),    ThrottlerModule.forRoot([
       {
         name: 'default',
         ttl: 60_000,
@@ -39,6 +41,8 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     InvitationsModule,
     NotificationsModule,
     ActivityModule,
+    CannedResponsesModule,
+    TeamChatModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },

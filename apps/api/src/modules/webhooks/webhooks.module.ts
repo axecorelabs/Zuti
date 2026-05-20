@@ -7,6 +7,7 @@ import { EmailProcessor } from '../queue/email.processor';
 import { TELEGRAM_QUEUE, EMAIL_QUEUE } from '../queue/queue.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { CannedResponsesModule } from '../canned-responses/canned-responses.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     BullModule.registerQueue({ name: EMAIL_QUEUE }),
     OrganizationsModule,
     NotificationsModule,
+    CannedResponsesModule,
   ],
   controllers: [WebhooksController],
   providers: [TelegramProcessor, EmailProcessor],

@@ -23,6 +23,7 @@ model User {
 
   memberships   OrganizationMember[]
   assignedConversations Conversation[] @relation("AssignedAgent")
+  teamChatMessages TeamChatMessage[]
   sentInvitations Invitation[] @relation("SentInvitations")
 }
 
@@ -45,6 +46,8 @@ model Organization {
   invitations    Invitation[]
   notifications  Notification[]
   activityLogs   ActivityLog[]
+  cannedResponses CannedResponse[]
+  teamChatMessages TeamChatMessage[]
 }
 
 model OrganizationMember {
@@ -354,4 +357,38 @@ model ActivityLog {
   organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([orgId, createdAt(sort: Desc)])
+}
+
+// ─── Canned Responses ─────────────────────────────────────────────────────────
+
+model CannedResponse {
+  id             String   @id @default(cuid())
+  organizationId String
+  shortcut       String   // trigger word, e.g. "refund"
+  title          String   // display label, e.g. "Refund policy"
+  content        String   // full response text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, shortcut])
+  @@index([organizationId])
+}
+
+// ─── Team Chat ───────────────────────────────────────────────────────────────
+
+model TeamChatMessage {
+  id             String   @id @default(cuid())
+  organizationId String
+  senderId       String
+  content        String
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([senderId])
 }

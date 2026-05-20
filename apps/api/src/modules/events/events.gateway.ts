@@ -6,9 +6,14 @@ import {
   ConnectedSocket,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  WsException,
 } from '@nestjs/websockets';
 import { Logger } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
+import { PrismaService } from '../prisma/prisma.service';
+
+type SocketUser = { id: string; email?: string };
 
 @WebSocketGateway({
   cors: { origin: '*' },
@@ -20,7 +25,26 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private readonly logger = new Logger(EventsGateway.name);
 
+  constructor(
+    private readonly jwt: JwtService,
+    private readonly prisma: PrismaService,
+  ) {}
+
   handleConnection(client: Socket) {
+    const token = this.extractToken(client);
+    if (!token) {
+      client.disconnect(true);
+      return;
+    }
+
+    try {
+      const payload = this.jwt.verify<{ sub: string; email?: string }>(token);
+      client.data.user = { id: payload.sub, email: payload.email } satisfies SocketUser;
+    } catch {
+      client.disconnect(true);
+      return;
+    }
+
     this.logger.log(`Client connected: ${client.id}`);
   }
 
@@ -29,10 +53,23 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   @SubscribeMessage('join')
-  handleJoin(
+  async handleJoin(
     @MessageBody() orgId: string,
     @ConnectedSocket() client: Socket,
   ) {
+    const user = client.data.user as SocketUser | undefined;
+    if (!user?.id || typeof orgId !== 'string' || !orgId.trim()) {
+      throw new WsException('Unauthorized');
+    }
+
+    const member = await this.prisma.organizationMember.findUnique({
+      where: { organizationId_userId: { organizationId: orgId, userId: user.id } },
+      select: { id: true },
+    });
+    if (!member) {
+      throw new WsException('Forbidden');
+    }
+
     client.join(`org:${orgId}`);
     this.logger.log(`Client ${client.id} joined org:${orgId}`);
   }
@@ -72,8 +109,37 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    */
   emitConversationUpdate(
     organizationId: string,
-    payload: { conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null },
+    payload: { conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null; metadata?: Record<string, unknown> },
   ) {
     this.server.to(`org:${organizationId}`).emit('conversation:update', payload);
+  }
+
+  /**
+   * Emit a team chat message to the org room.
+   */
+  emitTeamChatMessage(
+    organizationId: string,
+    payload: {
+      id: string;
+      organizationId: string;
+      content: string;
+      metadata: unknown;
+      createdAt: Date;
+      sender: { id: string; name: string | null; email: string };
+    },
+  ) {
+    this.server.to(`org:${organizationId}`).emit('team:message:new', payload);
+  }
+
+  private extractToken(client: Socket): string | null {
+    const authToken = client.handshake.auth?.token;
+    if (typeof authToken === 'string' && authToken.trim()) return authToken.trim();
+
+    const header = client.handshake.headers.authorization;
+    if (typeof header === 'string' && header.startsWith('Bearer ')) {
+      return header.slice('Bearer '.length).trim();
+    }
+
+    return null;
   }
 }

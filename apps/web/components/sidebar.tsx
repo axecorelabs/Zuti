@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   MessageSquare,
+  MessagesSquare,
   Bot,
   BookOpen,
   Settings,
@@ -22,6 +23,7 @@ import {
   XCircle,
   Mail,
   Activity,
+  BarChart2,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
@@ -65,6 +67,8 @@ export interface AppNotification {
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
+  { label: 'Team Chat', href: '/team-chat', icon: MessagesSquare, agentVisible: true },
+  { label: 'Analytics', href: '/analytics', icon: BarChart2, agentVisible: false },
   { label: 'Bots', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
@@ -387,7 +391,8 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
           {navItems
             .filter((item) => item.agentVisible || (roleResolved && !isAgent))
             .map(({ label, href, icon: Icon }) => {
-            const isActive = pathname === href || (href !== '/dashboard' && pathname.startsWith(href));
+            const isActive =
+              pathname === href || (href !== '/dashboard' && pathname.startsWith(`${href}/`));
             return (
               <Link
                 key={href}

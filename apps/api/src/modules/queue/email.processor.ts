@@ -13,6 +13,16 @@ import { EventsGateway } from '../events/events.gateway';
 import { EMAIL_QUEUE } from './queue.module';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CannedResponsesService } from '../canned-responses/canned-responses.service';
+
+function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
+  const t = text.toLowerCase().trim();
+  const POSITIVE = /\b(yes|yep|yeah|thanks|thank you|thank you so much|great|perfect|awesome|helpful|solved|sorted|works|working|excellent|exactly|good|brilliant|wonderful|that'?s all|nothing else|all good|all set|no more questions|no more|that'?s it|that helped|you helped)\b/;
+  const NEGATIVE = /\b(no|nope|not really|still|doesn'?t|don'?t|isn'?t|not working|not solved|not helpful|still broken|frustrated|useless|terrible|didn'?t help|not fixed|not resolved)\b/;
+  if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
+  if (NEGATIVE.test(t)) return 'negative';
+  return 'unclear';
+}
 
 export interface EmailMessageJob {
   botId: string;
@@ -40,6 +50,7 @@ export class EmailProcessor {
     private readonly events: EventsGateway,
     private readonly orgs: OrganizationsService,
     private readonly notifications: NotificationsService,
+    private readonly cannedResponses: CannedResponsesService,
   ) {}
 
   @Process()
@@ -130,6 +141,39 @@ export class EmailProcessor {
     });
 
     if (conversation.mode !== 'AI') return;
+
+    // CSAT collection: if conversation is awaiting satisfaction response, handle it
+    const existingMeta = (conversation as any).metadata as Record<string, unknown> | undefined;
+    if (conversation.status === 'PENDING' && existingMeta?.awaitingCsat === true) {
+      const rating = detectSatisfaction(bodyText.trim());
+      const aiConfig2 = (bot.aiConfig as Record<string, string>) ?? {};
+      const fromAddress2 = bot.organization?.slug
+        ? `${bot.organization.slug}@bords.app`
+        : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
+      if (rating === 'positive') {
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'RESOLVED', metadata: { ...existingMeta, awaitingCsat: false, csatRating: 'positive' } },
+        });
+        this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
+        await this.sendEmail(fromAddress2, toAddress, fromEmail, `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+          'Great, glad I could help! Feel free to reach out any time.', conversation.emailThreadId, bot.name, bot.organization?.name ?? '');
+        return;
+      } else if (rating === 'negative') {
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'OPEN', metadata: { ...existingMeta, awaitingCsat: false, csatRating: 'negative' } },
+        });
+        this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
+        // Fall through — re-engage AI
+      } else {
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'OPEN', metadata: { ...existingMeta, awaitingCsat: false } },
+        });
+        this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
+      }
+    }
 
     const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
     await this.callAiAndRespond(
@@ -223,6 +267,49 @@ export class EmailProcessor {
       content: m.content,
     }));
 
+    // Build customer context from previous email conversations — only on first message.
+    const emailConv = history.length === 0
+      ? await this.prisma.conversation.findUnique({
+          where: { id: conversation.id },
+          select: { customerEmail: true },
+        })
+      : null;
+    let customerContext: string | null = null;
+    if (emailConv?.customerEmail) {
+      const prevConvs = await this.prisma.conversation.findMany({
+        where: {
+          organizationId,
+          customerEmail: emailConv.customerEmail,
+          NOT: { id: conversation.id },
+          status: 'RESOLVED',
+        },
+        orderBy: { lastMessageAt: 'desc' },
+        take: 3,
+        select: {
+          metadata: true,
+          messages: {
+            where: { role: 'USER' },
+            orderBy: { createdAt: 'asc' },
+            take: 10,
+            select: { content: true },
+          },
+        },
+      });
+      if (prevConvs.length > 0) {
+        const GREETINGS = /^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy|greetings|yo|sup)[^a-z]*$/i;
+        const lines = prevConvs.map((pc, i) => {
+          const meta = pc.metadata as Record<string, unknown> | null;
+          const summary = typeof meta?.handoffSummary === 'string' ? meta.handoffSummary : null;
+          if (summary) return `${i + 1}. ${summary.slice(0, 300)}`;
+          const firstSubstantive = pc.messages.find((m) => m.content.trim().length > 10 && !GREETINGS.test(m.content.trim()));
+          return firstSubstantive
+            ? `${i + 1}. Customer previously asked: ${firstSubstantive.content.trim().slice(0, 200)}`
+            : null;
+        }).filter(Boolean);
+        if (lines.length > 0) customerContext = lines.join('\n');
+      }
+    }
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -234,10 +321,12 @@ export class EmailProcessor {
           bot_name: botName,
           org_name: orgName,
           system_prompt: systemPrompt,
+          customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
+      const shouldResolve: boolean = response.data?.should_resolve === true;
 
       // Auto-escalate check
       const escalationPhrases = [
@@ -293,6 +382,16 @@ export class EmailProcessor {
         conversation.emailThreadId,
         botName, orgName ?? '',
       );
+
+      // Auto-resolve: AI signalled done — set PENDING, await CSAT response
+      if (shouldResolve) {
+        const currentMeta = (await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> ?? {};
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'PENDING', metadata: { ...currentMeta, awaitingCsat: true } },
+        });
+        this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'PENDING' });
+      }
     } catch (err) {
       this.logger.error(`AI/email error for conversation ${conversation.id}: ${err}`);
     }

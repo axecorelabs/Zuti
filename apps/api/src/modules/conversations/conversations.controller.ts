@@ -64,6 +64,19 @@ export class ConversationsController {
     return this.service.findAll(orgId, { status, mode, botId, assignedAgentId, q, agentId });
   }
 
+  @Get('analytics/summary')
+  @ApiOperation({ summary: 'Get analytics summary for the organisation' })
+  @ApiQuery({ name: 'days', required: false, description: 'Lookback window in days (default 30)' })
+  @ApiQuery({ name: 'botId', required: false, description: 'Filter to a specific bot' })
+  getAnalytics(
+    @Param('id') orgId: string,
+    @Query('days') days?: string,
+    @Query('botId') botId?: string,
+  ) {
+    const d = days ? Math.min(Math.max(parseInt(days, 10) || 30, 1), 365) : 30;
+    return this.service.getAnalytics(orgId, d, botId || undefined);
+  }
+
   @Get(':conversationId')
   @ApiOperation({ summary: 'Get conversation with messages' })
   findOne(
@@ -98,5 +111,17 @@ export class ConversationsController {
     const agentId = req.user.id;
     const isAgent = req.memberRole === 'AGENT';
     return this.service.sendMessage(orgId, conversationId, dto.content, agentId, isAgent);
+  }
+
+  @Post(':conversationId/notes')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Add an internal agent note to a conversation' })
+  addNote(
+    @Param('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Body() dto: SendMessageDto,
+    @Req() req: any,
+  ) {
+    return this.service.addNote(orgId, conversationId, dto.content, req.user.id);
   }
 }
