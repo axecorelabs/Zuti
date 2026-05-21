@@ -31,7 +31,7 @@ const spaceGrotesk = Space_Grotesk({
 export const metadata: Metadata = {
   metadataBase: new URL(appUrl),
   title: 'Zuti — AI Customer Service',
-  description: 'AI-powered Telegram customer service platform',
+  description: 'AI-powered customer service platform',
   manifest: '/manifest.webmanifest',
   icons: {
     icon: [
@@ -45,7 +45,7 @@ export const metadata: Metadata = {
     type: 'website',
     url: appUrl,
     title: 'Zuti — AI Customer Service',
-    description: 'AI-powered Telegram customer service platform',
+    description: 'AI-powered customer service platform',
     siteName: 'Zuti',
     images: [
       {
@@ -59,7 +59,7 @@ export const metadata: Metadata = {
   twitter: {
     card: 'summary_large_image',
     title: 'Zuti — AI Customer Service',
-    description: 'AI-powered Telegram customer service platform',
+    description: 'AI-powered customer service platform',
     images: [`${appUrl}/twitter-image.png`],
   },
 };

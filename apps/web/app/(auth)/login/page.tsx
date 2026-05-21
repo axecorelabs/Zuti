@@ -101,12 +101,12 @@ function LoginPageContent() {
               AI-powered support,<br />built for teams.
             </h2>
             <p className="text-sm text-zinc-500 font-light leading-relaxed max-w-xs mb-10">
-              Connect your Telegram bots, automate responses with AI, and step in when it matters most.
+              Connect your support channels, automate responses with AI, and step in when it matters most.
             </p>
 
             <div className="space-y-4">
               {[
-                { label: 'Telegram bot management', desc: 'Connect and manage multiple bots' },
+                { label: 'Multi-channel bot management', desc: 'Connect and manage support bots' },
                 { label: 'AI-first conversations', desc: 'Handles routine questions instantly, 24/7' },
                 { label: 'Human escalation', desc: 'Take over any conversation in one click' },
               ].map(({ label, desc }) => (

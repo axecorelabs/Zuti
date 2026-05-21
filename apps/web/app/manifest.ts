@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: 'Zuti',
     short_name: 'Zuti',
-    description: 'AI-powered Telegram customer service platform',
+    description: 'AI-powered customer service platform',
     start_url: '/',
     display: 'standalone',
     background_color: '#000000',
