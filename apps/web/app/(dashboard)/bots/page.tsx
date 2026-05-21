@@ -993,8 +993,8 @@ onBeforeUnmount(() => {
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Bots</h1>
-          <p className="mt-1 text-sm text-zinc-500 font-light">Create bots for Telegram or Website Widget, then add more channels in settings.</p>
+          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Ai Support Bots</h1>
+          <p className="mt-1 text-sm text-zinc-500 font-light">Set up your AI support bots across channels, then expand routing and automation in bot settings.</p>
         </div>
         <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
           <Plus className="w-4 h-4" />

@@ -13,6 +13,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
 import { CannedResponsesService } from '../canned-responses/canned-responses.service';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { TeamChatService } from '../team-chat/team-chat.service';
+import { BillingService } from '../billing/billing.service';
+import { computeUsageCredits } from '../billing/credit-model';
 
 function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
   const t = text.toLowerCase().trim();
@@ -21,6 +25,14 @@ function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
   if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
   if (NEGATIVE.test(t)) return 'negative';
   return 'unclear';
+}
+
+function estimateTokens(value: unknown): number {
+  return Math.ceil(JSON.stringify(value ?? '').length / 4);
+}
+
+function estimateUsageCredits(promptTokens: number, completionTokens: number): number {
+  return computeUsageCredits(promptTokens, completionTokens, 1);
 }
 
 @Injectable()
@@ -33,6 +45,9 @@ export class BotsService {
     private readonly config: ConfigService,
     private readonly events: EventsGateway,
     private readonly cannedResponses: CannedResponsesService,
+    private readonly aiUsage: AiUsageService,
+    private readonly teamChat: TeamChatService,
+    private readonly billing: BillingService,
   ) {}
 
   async create(organizationId: string, dto: CreateBotDto) {
@@ -495,6 +510,9 @@ export class BotsService {
 
     // Call AI service and get response
     let aiReply = '';
+    const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
+    const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
+    await this.billing.assertMinimumCredits(bot.organizationId, preflightCredits);
     try {
       const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
       const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
@@ -515,6 +533,79 @@ export class BotsService {
 
       aiReply = response.data?.reply ?? 'I am unable to respond right now. Please try again later.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
+      const promptTokens = estimateTokens({ userText, history, customerContext });
+      const completionTokens = estimateTokens(aiReply);
+
+      await this.billing.debitUsageCredits({
+        organizationId: bot.organizationId,
+        usageType: 'CUSTOMER_REPLY',
+        promptTokens,
+        completionTokens,
+        idempotencyKey: `widget:${userMessage.id}`,
+        metadata: {
+          channel: 'WIDGET',
+          conversationId: conversation.id,
+          botId: bot.id,
+          sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+        },
+      });
+
+      await this.aiUsage.record({
+        organizationId: bot.organizationId,
+        botId: bot.id,
+        conversationId: conversation.id,
+        usageType: 'CUSTOMER_REPLY',
+        provider: 'openrouter',
+        model: typeof aiConfig.model === 'string' ? aiConfig.model : undefined,
+        promptTokens,
+        completionTokens,
+        metadata: {
+          channel: 'WIDGET',
+          sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+        },
+      }).catch(() => null);
+
+      await this.aiUsage.record({
+        organizationId: bot.organizationId,
+        botId: bot.id,
+        conversationId: conversation.id,
+        usageType: 'ESCALATION_ANALYSIS',
+        provider: 'openrouter',
+        model: typeof aiConfig.model === 'string' ? aiConfig.model : undefined,
+        promptTokens: 0,
+        completionTokens: 0,
+        metadata: {
+          channel: 'WIDGET',
+          decision: response.data?.should_escalate === true ? 'ESCALATE' : 'CONTINUE_AI',
+          reason: response.data?.should_escalate === true ? 'model_signal' : 'no_signal',
+          answerability: response.data?.answerability,
+          confidence: response.data?.confidence,
+        },
+      }).catch(() => null);
+
+      if (response.data?.should_escalate === true) {
+        const topic = response.data?.escalation_topic || undefined;
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { status: 'ESCALATED', mode: 'HUMAN' },
+        });
+        this.events.emitConversationUpdate(bot.organizationId, {
+          conversationId: conversation.id,
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+        });
+        await this.teamChat.ensureKnowledgeGapThread(bot.organizationId, {
+          conversationId: conversation.id,
+          question: userText.trim(),
+          topic,
+          senderId: await this.findOrgSystemSender(bot.organizationId),
+          metadata: {
+            source: 'widget_ai_uncertainty',
+            answerability: response.data?.answerability,
+            confidence: response.data?.confidence,
+          },
+        }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
+      }
 
       // Store AI message
       const aiMessage = await this.prisma.message.create({
@@ -553,5 +644,20 @@ export class BotsService {
 
   private generateWidgetKey(): string {
     return `zwk_${randomBytes(18).toString('hex')}`;
+  }
+
+  private async findOrgSystemSender(organizationId: string): Promise<string> {
+    const member = await this.prisma.organizationMember.findFirst({
+      where: { organizationId, role: { in: ['OWNER', 'ADMIN'] } },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true },
+    });
+    if (member?.userId) return member.userId;
+    const fallback = await this.prisma.organizationMember.findFirst({
+      where: { organizationId },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true },
+    });
+    return fallback?.userId ?? '';
   }
 }

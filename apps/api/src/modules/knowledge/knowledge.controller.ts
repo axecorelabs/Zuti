@@ -2,14 +2,17 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Delete,
   Body,
   Param,
+  Query,
+  Req,
   UploadedFile,
   UseInterceptors,
   UseGuards,
 } from '@nestjs/common';
-import { IsString, IsNotEmpty } from 'class-validator';
+import { IsOptional, IsString, IsNotEmpty } from 'class-validator';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth } from '@nestjs/swagger';
 import { KnowledgeService } from './knowledge.service';
@@ -27,6 +30,21 @@ class IngestTextDto {
   @IsString() @IsNotEmpty() text: string;
 }
 
+class UpdateSuggestionDto {
+  @IsOptional() @IsString() title?: string;
+  @IsOptional() @IsString() content?: string;
+}
+
+class RejectSuggestionDto {
+  @IsOptional() @IsString() reason?: string;
+}
+
+class UpdateGapStatusDto {
+  @IsString()
+  @IsNotEmpty()
+  status: 'OPEN' | 'ANSWERED' | 'RESOLVED' | 'DISMISSED';
+}
+
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
 @RequireRole('OWNER', 'ADMIN')
@@ -37,6 +55,56 @@ export class KnowledgeController {
   @Get()
   list(@Param('id') orgId: string) {
     return this.knowledge.list(orgId);
+  }
+
+  @Get('suggestions')
+  listSuggestions(@Param('id') orgId: string, @Query('status') status?: string) {
+    return this.knowledge.listSuggestions(orgId, status);
+  }
+
+  @Get('gaps')
+  listGaps(
+    @Param('id') orgId: string,
+    @Query('status') status?: 'OPEN' | 'ANSWERED' | 'RESOLVED' | 'DISMISSED',
+  ) {
+    return this.knowledge.listGaps(orgId, status);
+  }
+
+  @Patch('suggestions/:suggestionId')
+  updateSuggestion(
+    @Param('id') orgId: string,
+    @Param('suggestionId') suggestionId: string,
+    @Body() dto: UpdateSuggestionDto,
+  ) {
+    return this.knowledge.updateSuggestion(orgId, suggestionId, dto);
+  }
+
+  @Post('suggestions/:suggestionId/approve')
+  approveSuggestion(
+    @Param('id') orgId: string,
+    @Param('suggestionId') suggestionId: string,
+    @Req() req: any,
+  ) {
+    return this.knowledge.approveSuggestion(orgId, suggestionId, req.user.id);
+  }
+
+  @Post('suggestions/:suggestionId/reject')
+  rejectSuggestion(
+    @Param('id') orgId: string,
+    @Param('suggestionId') suggestionId: string,
+    @Body() dto: RejectSuggestionDto,
+    @Req() req: any,
+  ) {
+    return this.knowledge.rejectSuggestion(orgId, suggestionId, req.user.id, dto.reason);
+  }
+
+  @Post('gaps/:gapId/status')
+  updateGapStatus(
+    @Param('id') orgId: string,
+    @Param('gapId') gapId: string,
+    @Body() dto: UpdateGapStatusDto,
+  ) {
+    return this.knowledge.updateGapStatus(orgId, gapId, dto.status);
   }
 
   @Post('ingest/url')

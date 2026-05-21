@@ -8,6 +8,9 @@ import { TELEGRAM_QUEUE, EMAIL_QUEUE } from '../queue/queue.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CannedResponsesModule } from '../canned-responses/canned-responses.module';
+import { TeamChatModule } from '../team-chat/team-chat.module';
+import { AiUsageModule } from '../ai-usage/ai-usage.module';
+import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [
@@ -17,6 +20,9 @@ import { CannedResponsesModule } from '../canned-responses/canned-responses.modu
     OrganizationsModule,
     NotificationsModule,
     CannedResponsesModule,
+    TeamChatModule,
+    AiUsageModule,
+    BillingModule,
   ],
   controllers: [WebhooksController],
   providers: [TelegramProcessor, EmailProcessor],

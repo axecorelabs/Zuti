@@ -5,9 +5,11 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
+  AlertTriangle,
   MessageSquare,
   MessagesSquare,
   Bot,
+  CreditCard,
   BookOpen,
   Settings,
   LogOut,
@@ -67,9 +69,10 @@ export interface AppNotification {
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
-  { label: 'Team Chat', href: '/team-chat', icon: MessagesSquare, agentVisible: true },
+  { label: 'Escalations', href: '/resolution', icon: MessagesSquare, agentVisible: true },
   { label: 'Analytics', href: '/analytics', icon: BarChart2, agentVisible: false },
-  { label: 'Bots', href: '/bots', icon: Bot, agentVisible: false },
+  { label: 'Ai Support Bots', href: '/bots', icon: Bot, agentVisible: false },
+  { label: 'Billing & Usage', href: '/billing-usage', icon: CreditCard, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
   { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },

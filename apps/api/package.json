@@ -4,8 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "nest start --watch",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/main",
+    "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json --incremental false",
+    "prestart": "pnpm build",
+    "start": "node dist/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
     "test": "jest",
     "db:generate": "prisma generate",

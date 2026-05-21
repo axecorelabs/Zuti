@@ -131,6 +131,72 @@ export const teamChatApi = {
     api.get(`/organizations/${orgId}/team-chat/messages`, { params }),
   sendMessage: (orgId: string, content: string) =>
     api.post(`/organizations/${orgId}/team-chat/messages`, { content }),
+  listEscalationThreads: (orgId: string, status?: string) =>
+    api.get(`/organizations/${orgId}/team-chat/escalation-threads`, { params: status ? { status } : undefined }),
+  replyToEscalationThread: (
+    orgId: string,
+    threadId: string,
+    content: string,
+    createKnowledgeSuggestion = true,
+  ) => api.post(`/organizations/${orgId}/team-chat/escalation-threads/${threadId}/replies`, { content, createKnowledgeSuggestion }),
+  updateEscalationThreadStatus: (orgId: string, threadId: string, status: string) =>
+    api.post(`/organizations/${orgId}/team-chat/escalation-threads/${threadId}/status`, { status }),
+};
+
+// ── Knowledge Suggestions ───────────────────────────────────────────────────
+export const knowledgeApi = {
+  listSuggestions: (orgId: string, status?: string) =>
+    api.get(`/organizations/${orgId}/knowledge/suggestions`, { params: status ? { status } : undefined }),
+  updateSuggestion: (orgId: string, suggestionId: string, data: Partial<{ title: string; content: string }>) =>
+    api.patch(`/organizations/${orgId}/knowledge/suggestions/${suggestionId}`, data),
+  approveSuggestion: (orgId: string, suggestionId: string) =>
+    api.post(`/organizations/${orgId}/knowledge/suggestions/${suggestionId}/approve`),
+  rejectSuggestion: (orgId: string, suggestionId: string, reason?: string) =>
+    api.post(`/organizations/${orgId}/knowledge/suggestions/${suggestionId}/reject`, { reason }),
+  listGaps: (orgId: string, status?: string) =>
+    api.get(`/organizations/${orgId}/knowledge/gaps`, { params: status ? { status } : undefined }),
+  updateGapStatus: (orgId: string, gapId: string, status: 'OPEN' | 'ANSWERED' | 'RESOLVED' | 'DISMISSED') =>
+    api.post(`/organizations/${orgId}/knowledge/gaps/${gapId}/status`, { status }),
+};
+
+// ── AI Usage ────────────────────────────────────────────────────────────────
+export const aiUsageApi = {
+  summary: (orgId: string, days = 30) =>
+    api.get(`/organizations/${orgId}/ai-usage/summary`, { params: { days: String(days) } }),
+};
+
+// ── Pricing ─────────────────────────────────────────────────────────────────
+export const pricingApi = {
+  catalog: (orgId: string, market: 'NG' | 'US') =>
+    api.get(`/organizations/${orgId}/pricing/catalog`, { params: { market } }),
+  estimates: (orgId: string, market: 'NG' | 'US') =>
+    api.get(`/organizations/${orgId}/pricing/estimates`, { params: { market } }),
+  quote: (orgId: string, market: 'NG' | 'US', packId: string) =>
+    api.post(`/organizations/${orgId}/pricing/quote`, { market, packId }),
+};
+
+// ── Billing ─────────────────────────────────────────────────────────────────
+export const billingApi = {
+  wallet: (orgId: string) =>
+    api.get(`/organizations/${orgId}/billing/wallet`),
+  checkoutPack: (
+    orgId: string,
+    market: 'NG' | 'US',
+    packId: string,
+    callbackUrl?: string,
+  ) => api.post(`/organizations/${orgId}/billing/checkout/pack`, { market, packId, callbackUrl }),
+  checkoutCommitment: (
+    orgId: string,
+    market: 'NG' | 'US',
+    subscriptionId: string,
+    callbackUrl?: string,
+  ) => api.post(`/organizations/${orgId}/billing/checkout/commitment`, {
+    market,
+    subscriptionId,
+    callbackUrl,
+  }),
+  verifyCheckout: (orgId: string, reference: string) =>
+    api.post(`/organizations/${orgId}/billing/checkout/verify`, { reference }),
 };
 
 // ── Notifications ─────────────────────────────────────────────────────────────

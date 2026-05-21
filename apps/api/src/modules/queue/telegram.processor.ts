@@ -10,6 +10,10 @@ import { EventsGateway } from '../events/events.gateway';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CannedResponsesService } from '../canned-responses/canned-responses.service';
+import { TeamChatService } from '../team-chat/team-chat.service';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { BillingService } from '../billing/billing.service';
+import { computeUsageCredits } from '../billing/credit-model';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
@@ -21,6 +25,14 @@ function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
   if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
   if (NEGATIVE.test(t)) return 'negative';
   return 'unclear';
+}
+
+function estimateTokens(value: unknown): number {
+  return Math.ceil(JSON.stringify(value ?? '').length / 4);
+}
+
+function estimateUsageCredits(promptTokens: number, completionTokens: number): number {
+  return computeUsageCredits(promptTokens, completionTokens, 1);
 }
 
 function markdownToTelegramHtml(text: string): string {
@@ -95,6 +107,9 @@ export class TelegramProcessor {
     private readonly orgs: OrganizationsService,
     private readonly notifications: NotificationsService,
     private readonly cannedResponses: CannedResponsesService,
+    private readonly teamChat: TeamChatService,
+    private readonly aiUsage: AiUsageService,
+    private readonly billing: BillingService,
   ) {}
 
   @Process()
@@ -223,7 +238,7 @@ export class TelegramProcessor {
       const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
-        bot?.name ?? 'Assistant', aiConfig.systemPrompt ?? null, org?.name ?? null,
+        bot?.name ?? 'Assistant', aiConfig.systemPrompt ?? null, org?.name ?? null, userMessage.id,
       );
     }
   }
@@ -238,6 +253,7 @@ export class TelegramProcessor {
     botName: string = 'Assistant',
     systemPrompt: string | null = null,
     orgName: string | null = null,
+    inboundMessageId?: string,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
 
@@ -352,6 +368,10 @@ export class TelegramProcessor {
       }
     }
 
+    const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
+    const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
+    await this.billing.assertMinimumCredits(organizationId, preflightCredits);
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -369,6 +389,38 @@ export class TelegramProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
+      const promptTokens = estimateTokens({ userText, history, customerContext });
+      const completionTokens = estimateTokens(aiText);
+
+      await this.billing.debitUsageCredits({
+        organizationId,
+        usageType: 'CUSTOMER_REPLY',
+        promptTokens,
+        completionTokens,
+        idempotencyKey: `telegram:${inboundMessageId ?? conversationId}`,
+        metadata: {
+          channel: 'TELEGRAM',
+          conversationId,
+          botId,
+          sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+        },
+      });
+
+      await this.aiUsage.record({
+        organizationId,
+        botId,
+        conversationId,
+        usageType: 'CUSTOMER_REPLY',
+        provider: 'openrouter',
+        promptTokens,
+        completionTokens,
+        metadata: {
+          channel: 'TELEGRAM',
+          answerability: response.data?.answerability,
+          confidence: response.data?.confidence,
+          sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+        },
+      }).catch(() => null);
 
       // Auto-escalate if AI expresses uncertainty
       const escalationPhrases = [
@@ -377,10 +429,29 @@ export class TelegramProcessor {
         "talk to an agent", "reach out to our team", "contact us directly",
       ];
       const lowerReply = aiText.toLowerCase();
-      const shouldEscalate = escalationPhrases.some((p) => lowerReply.includes(p));
+      const shouldEscalate = response.data?.should_escalate === true ||
+        escalationPhrases.some((p) => lowerReply.includes(p));
+
+      await this.aiUsage.record({
+        organizationId,
+        botId,
+        conversationId,
+        usageType: 'ESCALATION_ANALYSIS',
+        provider: 'openrouter',
+        promptTokens: 0,
+        completionTokens: 0,
+        metadata: {
+          channel: 'TELEGRAM',
+          decision: shouldEscalate ? 'ESCALATE' : 'CONTINUE_AI',
+          reason: response.data?.should_escalate === true ? 'model_signal' : 'heuristic_signal',
+          answerability: response.data?.answerability,
+          confidence: response.data?.confidence,
+        },
+      }).catch(() => null);
 
       if (shouldEscalate) {
-        const bestAgent = await this.orgs.findBestAgent(organizationId);
+        const topic = response.data?.escalation_topic || undefined;
+        const bestAgent = await this.orgs.findBestAgent(organizationId, topic);
         await this.prisma.conversation.update({
           where: { id: conversationId },
           data: {
@@ -404,6 +475,18 @@ export class TelegramProcessor {
             { conversationId },
           );
         }
+        await this.teamChat.ensureKnowledgeGapThread(organizationId, {
+          conversationId,
+          question: userText,
+          topic,
+          assignedUserId: bestAgent?.userId,
+          senderId: bestAgent?.userId ?? (await this.findOrgSystemSender(organizationId)),
+          metadata: {
+            source: 'telegram_ai_uncertainty',
+            answerability: response.data?.answerability,
+            confidence: response.data?.confidence,
+          },
+        }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
 
       // Store AI reply
@@ -456,5 +539,20 @@ export class TelegramProcessor {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`AI service error for conversation ${conversationId}: ${msg}`);
     }
+  }
+
+  private async findOrgSystemSender(organizationId: string): Promise<string> {
+    const member = await this.prisma.organizationMember.findFirst({
+      where: { organizationId, role: { in: ['OWNER', 'ADMIN'] } },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true },
+    });
+    if (member) return member.userId;
+    const fallback = await this.prisma.organizationMember.findFirst({
+      where: { organizationId },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true },
+    });
+    return fallback?.userId ?? '';
   }
 }

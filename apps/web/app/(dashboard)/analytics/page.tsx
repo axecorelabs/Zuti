@@ -81,8 +81,12 @@ export default function AnalyticsPage() {
     setLoading(true);
     const botId = selectedBotId === 'all' ? undefined : selectedBotId;
     conversationsApi.analytics(org.id, days, botId)
-      .then((res) => setData(res.data))
-      .catch(() => setData(null))
+      .then((analyticsRes) => {
+        setData(analyticsRes.data);
+      })
+      .catch(() => {
+        setData(null);
+      })
       .finally(() => setLoading(false));
   }, [org, days, selectedBotId]);
 
@@ -132,7 +136,7 @@ export default function AnalyticsPage() {
         <div>
           <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Analytics</h1>
           <p className="mt-1 text-sm text-zinc-500 font-light">
-            Performance metrics for your support workspace.
+            Track customer outcomes, resolution quality, and escalation pressure.
           </p>
         </div>
         {/* Filters */}

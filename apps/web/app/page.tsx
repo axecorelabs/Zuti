@@ -156,6 +156,9 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-2">
+            <Link href="/pricing" className="inline-flex items-center px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors whitespace-nowrap">
+              Pricing
+            </Link>
             <Link href="/login" className="inline-flex items-center px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors whitespace-nowrap">
               Sign in
             </Link>
@@ -314,6 +317,7 @@ export default function Home() {
           <span>AI-native customer support</span>
         </div>
         <div className="flex items-center gap-3 sm:gap-4 text-[11px] sm:text-xs">
+          <Link href="/pricing" className="hover:text-white transition-colors">Pricing</Link>
           <a href="mailto:axecore.org@gmail.com" className="hover:text-white transition-colors">Contact</a>
           <span className="text-zinc-600">© {new Date().getFullYear()} AxecoreLabs</span>
         </div>

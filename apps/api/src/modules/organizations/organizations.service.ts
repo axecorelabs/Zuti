@@ -19,16 +19,41 @@ export class OrganizationsService {
     const slugTaken = await this.prisma.organization.findUnique({ where: { slug: dto.slug } });
     if (slugTaken) throw new ConflictException('Slug already taken');
 
-    const org = await this.prisma.organization.create({
-      data: {
-        name: dto.name,
-        slug: dto.slug,
-        members: {
-          create: { userId, role: 'OWNER' },
-        },
-      },
-      include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } },
+    // Policy: users can create unlimited organizations. Only their first org gets free starter credits.
+    const existingMembershipCount = await this.prisma.organizationMember.count({
+      where: { userId },
     });
+    const starterCreditGrant = existingMembershipCount === 0 ? 200 : 0;
+
+    const org = await this.prisma.$transaction(async (tx) => {
+      const createdOrg = await tx.organization.create({
+        data: {
+          name: dto.name,
+          slug: dto.slug,
+          members: {
+            create: { userId, role: 'OWNER' },
+          },
+          billing: {
+            create: {
+              plan: 'STARTER',
+              messageCount: 0,
+              // Reusing existing billing capacity fields for startup wallet allocation.
+              messageLimit: starterCreditGrant,
+              creditBalance: starterCreditGrant,
+              committedMonthlyCredits: 0,
+            },
+          },
+        },
+        include: {
+          members: {
+            include: { user: { select: { id: true, name: true, email: true } } },
+          },
+          billing: true,
+        },
+      });
+      return createdOrg;
+    });
+
     return org;
   }
 
@@ -39,6 +64,17 @@ export class OrganizationsService {
         members: {
           where: { userId },
           select: { role: true },
+        },
+        billing: {
+          select: {
+            plan: true,
+            messageCount: true,
+            messageLimit: true,
+            creditBalance: true,
+            committedMonthlyCredits: true,
+            commitmentRenewsAt: true,
+            renewsAt: true,
+          },
         },
         _count: { select: { bots: true, conversations: true } },
       },

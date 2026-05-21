@@ -1,6 +1,6 @@
 import {
   Controller, Post, Param, Body, Headers,
-  Logger, HttpCode, HttpStatus, UseInterceptors,
+  Logger, HttpCode, HttpStatus, UseInterceptors, Req,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
@@ -12,6 +12,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { TELEGRAM_QUEUE, EMAIL_QUEUE } from '../queue/queue.module';
 import { TelegramMessageJob } from '../queue/telegram.processor';
 import { EmailMessageJob } from '../queue/email.processor';
+import { BillingService } from '../billing/billing.service';
 
 @ApiExcludeController()
 @Controller('webhooks')
@@ -22,6 +23,7 @@ export class WebhooksController {
     private readonly prisma: PrismaService,
     @InjectQueue(TELEGRAM_QUEUE) private readonly telegramQueue: Queue,
     @InjectQueue(EMAIL_QUEUE) private readonly emailQueue: Queue,
+    private readonly billing: BillingService,
   ) {}
 
   // ── Telegram ──────────────────────────────────────────────────────────────
@@ -163,5 +165,17 @@ export class WebhooksController {
     });
 
     return { ok: true };
+  }
+
+  @Post('paystack')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async handlePaystack(
+    @Headers('x-paystack-signature') signature: string | undefined,
+    @Req() req: any,
+    @Body() payload: any,
+  ) {
+    const rawBody = req?.rawBody as Buffer | undefined;
+    return this.billing.handlePaystackWebhook(signature, rawBody ?? Buffer.from(''), payload);
   }
 }

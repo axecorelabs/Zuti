@@ -11,6 +11,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { BillingService } from '../billing/billing.service';
 
 interface FindAllFilters {
   status?: string;
@@ -31,6 +33,10 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function estimateTokens(value: unknown): number {
+  return Math.ceil(JSON.stringify(value ?? '').length / 4);
+}
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -41,6 +47,8 @@ export class ConversationsService {
     private readonly notifications: NotificationsService,
     private readonly activity: ActivityService,
     private readonly teamChat: TeamChatService,
+    private readonly aiUsage: AiUsageService,
+    private readonly billing: BillingService,
     @Inject(forwardRef(() => OrganizationsService))
     private readonly orgs: OrganizationsService,
   ) {}
@@ -317,7 +325,7 @@ export class ConversationsService {
 
     // Conversation escalated
     if (dto.status === 'ESCALATED' && conversation.status !== 'ESCALATED') {
-      await this.prisma.escalation.create({
+      const escalation = await this.prisma.escalation.create({
         data: {
           conversationId,
           reason: dto.escalationTopic ?? null,
@@ -350,18 +358,24 @@ export class ConversationsService {
           { conversationId, topic: dto.escalationTopic },
         );
 
-        // Post an internal team-chat notification so assignees get immediate in-chat context.
-        await this.teamChat.sendMessage(
-          organizationId,
-          actorId,
-          `Escalation routed to ${assignedTo.name}: conversation ${conversationId}${dto.escalationTopic ? ` (${dto.escalationTopic})` : ''}.`,
-          {
-            kind: 'escalation_assigned',
-            conversationId,
-            assignedToUserId: assignedTo.userId,
-            topic: dto.escalationTopic ?? null,
+        const latestUserMessage = await this.prisma.message.findFirst({
+          where: { conversationId, role: 'USER' },
+          orderBy: { createdAt: 'desc' },
+          select: { content: true },
+        });
+
+        await this.teamChat.createEscalationThread(organizationId, {
+          conversationId,
+          escalationId: escalation.id,
+          assignedUserId: assignedTo.userId,
+          topic: dto.escalationTopic ?? null,
+          question: latestUserMessage?.content ?? dto.escalationTopic ?? 'A customer conversation needs specialist review.',
+          senderId: actorId,
+          metadata: {
+            source: 'manual_escalation',
+            actorId,
           },
-        );
+        });
       }
 
       // Telegram message to customer — plain text (no parse_mode) avoids injection
@@ -640,6 +654,7 @@ export class ConversationsService {
     if (messages.length < 2) return;
 
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+    await this.billing.assertMinimumCredits(organizationId, 1);
     const { data: summaryData } = await firstValueFrom(
       this.http.post<{ summary: string }>(`${aiServiceUrl}/api/v1/summarize`, {
         messages: messages.map((m) => ({
@@ -649,6 +664,30 @@ export class ConversationsService {
       }),
     );
     if (!summaryData?.summary) return;
+
+    const promptTokens = estimateTokens(messages);
+    const completionTokens = estimateTokens(summaryData.summary);
+    await this.billing.debitUsageCredits({
+      organizationId,
+      usageType: 'SUMMARIZATION',
+      promptTokens,
+      completionTokens,
+      idempotencyKey: `summary:${conversationId}:${messages.length}`,
+      metadata: {
+        purpose: 'handoff_summary',
+        conversationId,
+      },
+    });
+
+    await this.aiUsage.record({
+      organizationId,
+      conversationId,
+      usageType: 'SUMMARIZATION',
+      provider: 'ai-service',
+      promptTokens,
+      completionTokens,
+      metadata: { purpose: 'handoff_summary' },
+    }).catch(() => null);
 
     const current = await this.prisma.conversation.findUnique({
       where: { id: conversationId },

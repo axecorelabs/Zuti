@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft } from 'lucide-react';
+import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -101,7 +101,7 @@ export default function InboxPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<ConversationDetails | null>(null);
   const [loading, setLoading] = useState(true);
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'OPEN' | 'PENDING' | 'ESCALATED' | 'RESOLVED'>('OPEN');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'OPEN' | 'PENDING' | 'ESCALATED' | 'RESOLVED'>('ALL');
   const [botFilter, setBotFilter] = useState<string>('ALL');
   const [agentFilter, setAgentFilter] = useState<string>('ALL');
   const [search, setSearch] = useState('');
@@ -120,6 +120,10 @@ export default function InboxPage() {
   const [mobileShowConv, setMobileShowConv] = useState(false);
   const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
   const [mobileCustomerPanelOpen, setMobileCustomerPanelOpen] = useState(false);
+  const [showHandoffQuickButton, setShowHandoffQuickButton] = useState(false);
+  const [handoffPopupOpen, setHandoffPopupOpen] = useState(false);
+  const handoffSummaryRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const filterRef = useRef({ statusFilter, botFilter, agentFilter });
@@ -212,6 +216,36 @@ export default function InboxPage() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
     }, 0);
   }, [selected?.id, selected?.messages?.length, loadingSelected]);
+
+  const handoffSummaryText = typeof selected?.metadata?.handoffSummary === 'string'
+    ? selected.metadata.handoffSummary
+    : null;
+
+  useEffect(() => {
+    if (!selected || selected.mode !== 'HUMAN' || !handoffSummaryText) {
+      setShowHandoffQuickButton(false);
+      setHandoffPopupOpen(false);
+      return;
+    }
+
+    const root = messagesScrollRef.current;
+    const target = handoffSummaryRef.current;
+    if (!root || !target) {
+      setShowHandoffQuickButton(false);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowHandoffQuickButton(!entry.isIntersecting);
+      },
+      { root, threshold: 0.15 },
+    );
+
+    observer.observe(target);
+
+    return () => observer.disconnect();
+  }, [selected?.id, selected?.mode, handoffSummaryText]);
 
   useEffect(() => {
     if (!orgId) return;
@@ -465,7 +499,17 @@ export default function InboxPage() {
       </section>
 
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
-        <h3 className="text-xs font-semibold text-zinc-300 mb-2">Escalation history</h3>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <h3 className="text-xs font-semibold text-zinc-300">Escalation history</h3>
+          {selected?.status === 'ESCALATED' ? (
+            <a
+              href={`/resolution?tab=escalations&conversationId=${selected.id}`}
+              className="text-[10px] px-2 py-1 rounded border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+            >
+              Open in Resolution
+            </a>
+          ) : null}
+        </div>
         {selected?.escalationHistory && selected.escalationHistory.length > 0 ? (
           <div className="space-y-2">
             {selected.escalationHistory.map((event) => (
@@ -488,33 +532,36 @@ export default function InboxPage() {
   return (
     <div className="flex h-full overflow-hidden">
       {/* ── Left panel ── */}
-      <div className={`${mobileShowConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-[340px] shrink-0 border-r border-zinc-900 h-full bg-black/20`}>
+      <div className={`${mobileShowConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-[340px] xl:w-[360px] shrink-0 border-r border-zinc-900 h-full bg-zinc-950/70`}>
         {/* Header */}
-        <div className="px-5 pt-6 pb-4 border-b border-zinc-900">
-          <div className="flex items-center justify-between mb-4">
-            <h1 className="font-brand font-semibold text-lg tracking-tight text-white">Inbox</h1>
+        <div className="px-3.5 md:px-4 pt-4 md:pt-5 pb-3.5 md:pb-4 border-b border-zinc-900/80 bg-zinc-950/90 backdrop-blur-sm">
+          <div className="flex items-start justify-between mb-3">
+            <div>
+              <h1 className="font-brand font-semibold text-lg tracking-tight text-white">Inbox</h1>
+              <p className="mt-0.5 text-[11px] text-zinc-600 hidden md:block">Customer conversations and queue controls</p>
+            </div>
             {escalatedCount > 0 && (
-              <span className="bg-red-500/15 text-red-400 text-[10px] px-2 py-0.5 rounded-full font-medium">
+              <span className="bg-red-500/15 border border-red-500/25 text-red-300 text-[10px] px-2 py-0.5 rounded-full font-medium">
                 {escalatedCount} escalated
               </span>
             )}
           </div>
 
-          <div className="relative mb-3">
+          <div className="relative mb-2.5">
             <Search className="w-3.5 h-3.5 text-zinc-600 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search customer or message"
-              className="w-full h-9 rounded-xl bg-zinc-900 border border-zinc-800 pl-9 pr-3 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-blue-600/50"
+              className="w-full h-8.5 rounded-lg bg-zinc-900/90 border border-zinc-800 pl-9 pr-3 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-blue-600/50"
             />
           </div>
 
-          <div className="grid grid-cols-1 gap-2">
+          <div className="grid grid-cols-1 gap-1.5">
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
-              className="h-8 rounded-lg bg-zinc-900 border border-zinc-800 px-2.5 text-[11px] text-zinc-300 focus:outline-none focus:border-blue-600/50"
+              className="h-8 rounded-lg bg-zinc-900/90 border border-zinc-800 px-2.5 text-[11px] text-zinc-300 focus:outline-none focus:border-blue-600/50"
             >
               {statusOptions.map((s) => (
                 <option key={s.key} value={s.key}>{s.label}</option>
@@ -525,7 +572,7 @@ export default function InboxPage() {
               <select
                 value={botFilter}
                 onChange={(e) => setBotFilter(e.target.value)}
-                className="h-8 rounded-lg bg-zinc-900 border border-zinc-800 px-2.5 text-[11px] text-zinc-300 focus:outline-none focus:border-blue-600/50"
+                className="h-8 rounded-lg bg-zinc-900/90 border border-zinc-800 px-2.5 text-[11px] text-zinc-300 focus:outline-none focus:border-blue-600/50"
               >
                 <option value="ALL">All bots</option>
                 {bots.map((b) => (
@@ -536,7 +583,7 @@ export default function InboxPage() {
               <select
                 value={agentFilter}
                 onChange={(e) => setAgentFilter(e.target.value)}
-                className="h-8 rounded-lg bg-zinc-900 border border-zinc-800 px-2.5 text-[11px] text-zinc-300 focus:outline-none focus:border-blue-600/50"
+                className="h-8 rounded-lg bg-zinc-900/90 border border-zinc-800 px-2.5 text-[11px] text-zinc-300 focus:outline-none focus:border-blue-600/50"
               >
                 <option value="ALL">All assignees</option>
                 <option value="UNASSIGNED">Unassigned</option>
@@ -546,18 +593,27 @@ export default function InboxPage() {
               </select>
             </div>
 
-            <div className="flex items-center justify-between px-0.5">
-              <span className="text-[10px] text-zinc-600">{openCount} open</span>
-              <span className="text-[10px] text-zinc-600">{escalatedCount} escalated</span>
-              <span className="text-[10px] text-zinc-600">{conversations.length} shown</span>
+            <div className="grid grid-cols-3 gap-1 text-center mt-0.5">
+              <div className="rounded-md border border-zinc-900 bg-zinc-900/60 px-1.5 py-1">
+                <p className="text-[9px] text-zinc-600">Open</p>
+                <p className="text-[11px] text-zinc-300">{openCount}</p>
+              </div>
+              <div className="rounded-md border border-zinc-900 bg-zinc-900/60 px-1.5 py-1">
+                <p className="text-[9px] text-zinc-600">Escalated</p>
+                <p className="text-[11px] text-zinc-300">{escalatedCount}</p>
+              </div>
+              <div className="rounded-md border border-zinc-900 bg-zinc-900/60 px-1.5 py-1">
+                <p className="text-[9px] text-zinc-600">Shown</p>
+                <p className="text-[11px] text-zinc-300">{conversations.length}</p>
+              </div>
             </div>
           </div>
         </div>
 
         {/* List */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto px-1.5 md:px-2 py-2">
           {loading ? (
-            <div className="p-4 space-y-2">
+            <div className="p-2 space-y-2">
               {[...Array(5)].map((_, i) => <div key={i} className="h-[72px] bg-zinc-900/50 animate-pulse rounded-xl" />)}
             </div>
           ) : conversations.length === 0 ? (
@@ -566,7 +622,7 @@ export default function InboxPage() {
               <p className="text-sm text-zinc-600 font-light">No conversations</p>
             </div>
           ) : (
-            <div className="py-2 px-2 space-y-0.5">
+            <div className="space-y-1.5">
               {conversations.map((conv) => {
                 const lastMsg = conv.messages?.[conv.messages.length - 1];
                 const isActive = selected?.id === conv.id;
@@ -578,27 +634,27 @@ export default function InboxPage() {
                   <button
                     key={conv.id}
                     onClick={() => { setSelected(conv); setMobileShowConv(true); }}
-                    className={`w-full text-left px-3 py-3 rounded-xl transition-all ${
+                    className={`w-full text-left px-2.5 md:px-3 py-2.5 md:py-3 rounded-xl border transition-all ${
                       isActive
-                        ? 'bg-blue-600/10 border border-blue-600/30'
-                        : 'hover:bg-zinc-900/60 border border-transparent'
+                        ? 'bg-blue-600/10 border-blue-600/30 shadow-[0_0_0_1px_rgba(59,130,246,0.15)]'
+                        : 'bg-zinc-950/40 border-zinc-900 hover:bg-zinc-900/60 hover:border-zinc-800'
                     }`}
                   >
                     <div className="flex items-start gap-2.5">
                       {/* Avatar */}
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-medium shrink-0 mt-0.5 ${
-                        conv.status === 'ESCALATED' ? 'bg-red-500/20 text-red-400' : 'bg-zinc-800 text-zinc-400'
+                      <div className={`w-7.5 h-7.5 md:w-8 md:h-8 rounded-full border flex items-center justify-center text-[11px] font-medium shrink-0 mt-0.5 ${
+                        conv.status === 'ESCALATED' ? 'bg-red-500/15 border-red-500/25 text-red-300' : 'bg-zinc-900 border-zinc-700 text-zinc-400'
                       }`}>
                         {nameInitials(displayName)}
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between gap-1 mb-0.5">
-                          <span className={`text-sm font-normal truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>
+                          <span className={`text-[13px] md:text-sm font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>
                             {displayName}
                           </span>
                           <span className="text-[10px] text-zinc-600 shrink-0">{timeSince(conv.updatedAt)}</span>
                         </div>
-                        <p className="text-xs text-zinc-600 font-light truncate mb-1.5">
+                        <p className="text-[11px] text-zinc-600 font-light truncate mb-1.5">
                           {lastMsg?.content ?? 'No messages yet'}
                         </p>
                         <div className="flex gap-1 flex-wrap">
@@ -638,7 +694,7 @@ export default function InboxPage() {
       <div className={`${mobileShowConv ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 h-full overflow-hidden`}>
         {selected ? (
           <div className="flex-1 min-w-0 min-h-0 flex">
-            <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden">
+            <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden relative">
               {/* Conv header */}
               <div className="px-6 py-4 border-b border-zinc-900 flex items-center justify-between shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
@@ -662,21 +718,19 @@ export default function InboxPage() {
                       <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium ${STATUS_CONFIG[selected.status]?.cls}`}>
                         {STATUS_CONFIG[selected.status]?.label}
                       </span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium flex items-center gap-1 ${
-                        selected.mode === 'AI' ? 'bg-blue-500/15 text-blue-400' : 'bg-orange-500/15 text-orange-400'
-                      }`}>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium flex items-center gap-1 bg-zinc-800 text-zinc-300">
                         {selected.mode === 'AI' ? <Sparkles className="w-2.5 h-2.5" /> : <User2 className="w-2.5 h-2.5" />}
                         {selected.mode === 'AI' ? 'AI handling' : 'Human handling'}
                       </span>
                       {selected.assignedAgent?.name && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-emerald-500/10 text-emerald-400">
+                        <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800 text-zinc-300">
                           {selected.assignedAgent.name}
                         </span>
                       )}
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap justify-end">
                   <button
                     onClick={() => setMobileCustomerPanelOpen(true)}
                     className="inline-flex lg:hidden items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 text-zinc-300 hover:text-white hover:bg-zinc-800 transition-colors text-xs border border-zinc-800"
@@ -694,28 +748,48 @@ export default function InboxPage() {
                       <Eye className="w-4 h-4" />
                     </button>
                   )}
-                  {selected.mode === 'AI' && (
+
+                  {selected.status === 'ESCALATED' && (
+                    <a
+                      href={`/resolution?tab=escalations&conversationId=${selected.id}`}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 transition-colors text-[11px] font-medium"
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      Open escalation
+                      <ArrowUpRight className="w-3 h-3" />
+                    </a>
+                  )}
+
+                  {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' && (
+                    <button
+                      onClick={handleHandBack}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 transition-colors text-[11px] font-medium"
+                    >
+                      <BotIcon className="w-3 h-3" />
+                      Hand back
+                    </button>
+                  )}
+
+                  {selected.mode === 'AI' ? (
                     <button
                       onClick={handleTakeOver}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-orange-500/15 text-orange-400 hover:bg-orange-500/25 transition-colors text-xs font-medium border border-orange-500/20"
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-orange-500/15 text-orange-300 hover:bg-orange-500/25 transition-colors text-xs font-medium border border-orange-500/20"
                     >
                       <User2 className="w-3.5 h-3.5" />
                       Take over
                     </button>
-                  )}
-                  {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' && (
-                    <button
-                      onClick={handleHandBack}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-zinc-700 hover:text-white transition-colors text-xs font-medium border border-zinc-700"
-                    >
-                      <BotIcon className="w-3.5 h-3.5" />
-                      Hand back to AI
-                    </button>
-                  )}
-                  {selected.status !== 'RESOLVED' && (
+                  ) : selected.status !== 'RESOLVED' ? (
                     <button
                       onClick={handleResolve}
-                      className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-500 transition-colors text-xs font-medium"
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-blue-600 text-white hover:bg-blue-500 transition-colors text-xs font-medium"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      Resolve
+                    </button>
+                  ) : (
+                    <button
+                      disabled
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 text-zinc-500 transition-colors text-xs font-medium"
                     >
                       <CheckCircle2 className="w-3.5 h-3.5" />
                       Resolve
@@ -725,10 +799,10 @@ export default function InboxPage() {
               </div>
 
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto px-6 py-6 space-y-3">
+              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-3">
                 {/* AI handoff summary banner */}
                 {typeof selected.metadata?.handoffSummary === 'string' && selected.mode === 'HUMAN' && (
-                  <div className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-xs">
+                  <div ref={handoffSummaryRef} className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-xs">
                     <span className="mt-0.5 shrink-0">📋</span>
                     <div>
                       <span className="font-semibold text-amber-300">AI handoff summary: </span>
@@ -842,17 +916,52 @@ export default function InboxPage() {
                 <div ref={messagesEndRef} />
               </div>
 
+              {showHandoffQuickButton && handoffSummaryText && (
+                <div className="absolute right-6 bottom-24 z-20 flex flex-col items-end gap-2">
+                  {handoffPopupOpen && (
+                    <div className="w-[min(86vw,360px)] rounded-xl border border-zinc-800 bg-zinc-900/95 shadow-xl p-3">
+                      <div className="flex items-center justify-between gap-2 mb-2">
+                        <p className="text-xs font-semibold text-zinc-100">AI handoff summary</p>
+                        <button
+                          onClick={() => setHandoffPopupOpen(false)}
+                          className="p-1 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+                          aria-label="Close handoff summary"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <p className="text-xs text-zinc-300 whitespace-pre-wrap leading-relaxed">{handoffSummaryText}</p>
+                    </div>
+                  )}
+                  <button
+                    onClick={() => setHandoffPopupOpen((v) => !v)}
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border border-blue-600/30 bg-blue-600/10 text-blue-200 hover:bg-blue-600/20 transition-colors"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                    Handoff summary
+                  </button>
+                </div>
+              )}
+
               {/* Reply input */}
               {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' ? (
                 <div className="px-6 py-4 border-t border-zinc-900 shrink-0">
-                  <div className={`relative flex gap-3 items-end rounded-2xl px-4 py-3 ${
+                  <div className={`relative rounded-2xl border px-3.5 py-3 transition-colors ${
                     isNoteMode
-                      ? 'bg-amber-500/10 border border-amber-500/25'
-                      : 'bg-zinc-900/50 border border-zinc-800'
+                      ? 'bg-amber-500/10 border-amber-500/25'
+                      : 'bg-zinc-900/60 border-zinc-800 focus-within:border-blue-600/40'
                   }`}>
+                    <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                      <span className={`text-[10px] uppercase tracking-wide ${isNoteMode ? 'text-amber-300/80' : 'text-zinc-500'}`}>
+                        {isNoteMode ? 'Internal note' : 'Reply to customer'}
+                      </span>
+                      <span className="text-[10px] text-zinc-600">Enter to send • Shift+Enter newline</span>
+                    </div>
+
+                    <div className="flex gap-2.5 items-end">
                     {/* Canned response picker */}
                     {cannedQuery !== null && filteredCanned.length > 0 && (
-                      <div className="absolute bottom-full mb-2 left-0 right-0 mx-4 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl overflow-hidden z-20 max-h-52 overflow-y-auto">
+                      <div className="absolute bottom-full mb-2 left-0 right-0 mx-2 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl overflow-hidden z-20 max-h-52 overflow-y-auto">
                         <p className="px-3 py-1.5 text-[10px] text-zinc-600 border-b border-zinc-800">Canned responses — ↑↓ navigate, Enter to insert, Esc to close</p>
                         {filteredCanned.map((c, i) => (
                           <button
@@ -876,7 +985,7 @@ export default function InboxPage() {
                       onKeyDown={handleReplyKeyDown}
                       placeholder={isNoteMode ? 'Add internal note… (visible only to agents)' : 'Reply as agent… (/ for canned responses)'}
                       rows={1}
-                      className={`flex-1 bg-transparent text-sm placeholder-zinc-600 resize-none focus:outline-none ${isNoteMode ? 'text-amber-100' : 'text-zinc-200'}`}
+                      className={`flex-1 min-h-[38px] bg-transparent text-sm placeholder-zinc-600 resize-none focus:outline-none leading-relaxed px-0.5 ${isNoteMode ? 'text-amber-100' : 'text-zinc-200'}`}
                     />
                     <button
                       onClick={() => { setIsNoteMode((v) => !v); }}
@@ -887,7 +996,7 @@ export default function InboxPage() {
                           : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200'
                       }`}
                     >
-                      🗒️
+                      <FileText className="w-3.5 h-3.5" />
                     </button>
                     <button
                       onClick={handleSend}
@@ -898,6 +1007,7 @@ export default function InboxPage() {
                     >
                       <Send className="w-3.5 h-3.5 text-white" />
                     </button>
+                    </div>
                   </div>
                   <p className="text-[10px] text-zinc-700 mt-1.5 text-center">
                     {isNoteMode ? '🗒️ Internal note — not visible to the customer' : 'You are replying as a human agent'}

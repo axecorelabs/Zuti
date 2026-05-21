@@ -43,7 +43,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         setOrgRoles(roles);
 
         const firstRole = list[0]?.members?.[0]?.role;
-        const restrictedForAgent = ['/bots', '/knowledge'];
+        const restrictedForAgent = ['/bots', '/knowledge', '/knowledge-gaps', '/billing-usage'];
         const blockedForAgent =
           firstRole === 'AGENT' &&
           restrictedForAgent.some((route) => pathname === route || pathname.startsWith(`${route}/`));

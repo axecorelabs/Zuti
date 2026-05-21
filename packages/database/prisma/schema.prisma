@@ -25,6 +25,10 @@ model User {
   assignedConversations Conversation[] @relation("AssignedAgent")
   teamChatMessages TeamChatMessage[]
   sentInvitations Invitation[] @relation("SentInvitations")
+  assignedEscalationThreads EscalationThread[] @relation("AssignedEscalationThread")
+  escalationThreadReplies EscalationThreadReply[]
+  reviewedKnowledgeSuggestions KnowledgeSuggestion[] @relation("ReviewedKnowledgeSuggestions")
+  billingTransactions BillingTransaction[]
 }
 
 // ─── Organizations ────────────────────────────────────────────────────────────
@@ -48,6 +52,12 @@ model Organization {
   activityLogs   ActivityLog[]
   cannedResponses CannedResponse[]
   teamChatMessages TeamChatMessage[]
+  escalationThreads EscalationThread[]
+  knowledgeSuggestions KnowledgeSuggestion[]
+  aiUsageEvents AiUsageEvent[]
+  knowledgeGaps KnowledgeGap[]
+  creditLedgerEntries CreditLedger[]
+  billingTransactions BillingTransaction[]
 }
 
 model OrganizationMember {
@@ -173,6 +183,31 @@ model KnowledgeChunk {
   file            KnowledgeFile @relation(fields: [knowledgeFileId], references: [id], onDelete: Cascade)
 }
 
+model KnowledgeSuggestion {
+  id             String                    @id @default(cuid())
+  organizationId String
+  conversationId String?
+  threadId       String?
+  title          String
+  content        String
+  sourceQuestion String?
+  sourceAnswer   String?
+  status         KnowledgeSuggestionStatus @default(PENDING)
+  reviewedById   String?
+  reviewedAt     DateTime?
+  metadata       Json                      @default("{}")
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  organization   Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation   Conversation?             @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  thread         EscalationThread?         @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  reviewedBy     User?                     @relation("ReviewedKnowledgeSuggestions", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, status, createdAt])
+  @@index([threadId])
+}
+
 enum KnowledgeFileType {
   PDF
   DOCX
@@ -186,6 +221,13 @@ enum ProcessingStatus {
   PROCESSING
   COMPLETED
   FAILED
+}
+
+enum KnowledgeSuggestionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  MERGED
 }
 
 // ─── Conversations ────────────────────────────────────────────────────────────
@@ -219,6 +261,9 @@ model Conversation {
   assignedAgent    User?        @relation("AssignedAgent", fields: [assignedAgentId], references: [id])
   messages         Message[]
   escalations      Escalation[]
+  escalationThreads EscalationThread[]
+  knowledgeSuggestions KnowledgeSuggestion[]
+  knowledgeGaps KnowledgeGap[]
 
   @@index([botId, telegramChatId])
   @@index([botId, widgetVisitorId])
@@ -280,6 +325,7 @@ model Escalation {
   createdAt      DateTime        @default(now())
 
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  thread         EscalationThread?
 }
 
 enum EscalationTrigger {
@@ -309,17 +355,95 @@ model Billing {
   plan           BillingPlan @default(STARTER)
   messageCount   Int         @default(0)
   messageLimit   Int         @default(1000)
+  creditBalance  Int         @default(0)
+  committedMonthlyCredits Int @default(0)
+  commitmentRenewsAt DateTime?
   renewsAt       DateTime?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  ledgerEntries  CreditLedger[]
+  transactions   BillingTransaction[]
+}
+
+model CreditLedger {
+  id             String           @id @default(cuid())
+  organizationId String
+  billingId      String
+  transactionId  String?
+  type           CreditLedgerType
+  creditsDelta   Int
+  balanceAfter   Int
+  description    String?
+  metadata       Json             @default("{}")
+  idempotencyKey String?          @unique
+  createdAt      DateTime         @default(now())
+
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  billing        Billing          @relation(fields: [billingId], references: [id], onDelete: Cascade)
+  transaction    BillingTransaction? @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([billingId, createdAt(sort: Desc)])
+}
+
+model BillingTransaction {
+  id             String                   @id @default(cuid())
+  organizationId String
+  billingId      String
+  initiatedById  String?
+  idempotencyKey String?                  @unique
+  provider       PaymentProvider          @default(PAYSTACK)
+  reference      String                   @unique
+  kind           BillingTransactionKind
+  status         BillingTransactionStatus @default(PENDING)
+  amountMinor    Int
+  currency       String
+  credits        Int
+  metadata       Json                     @default("{}")
+  paidAt         DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  organization   Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  billing        Billing                  @relation(fields: [billingId], references: [id], onDelete: Cascade)
+  initiatedBy    User?                    @relation(fields: [initiatedById], references: [id], onDelete: SetNull)
+  ledgerEntries  CreditLedger[]
+
+  @@index([organizationId, status, createdAt(sort: Desc)])
+  @@index([organizationId, initiatedById, kind, createdAt(sort: Desc)])
 }
 
 enum BillingPlan {
   STARTER
   GROWTH
   ENTERPRISE
+}
+
+enum CreditLedgerType {
+  GRANT
+  PURCHASE
+  USAGE
+  ADJUSTMENT
+  REFUND
+  COMMITMENT_ALLOCATION
+}
+
+enum PaymentProvider {
+  PAYSTACK
+}
+
+enum BillingTransactionKind {
+  CREDIT_PACK
+  COMMITMENT
+}
+
+enum BillingTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  ABANDONED
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
@@ -391,4 +515,114 @@ model TeamChatMessage {
 
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([senderId])
+}
+
+model EscalationThread {
+  id                String                 @id @default(cuid())
+  organizationId    String
+  conversationId    String?
+  escalationId      String?                @unique
+  teamChatMessageId String?
+  assignedUserId    String?
+  topic             String?
+  question          String
+  status            EscalationThreadStatus @default(OPEN)
+  duplicateCount    Int                    @default(1)
+  metadata          Json                   @default("{}")
+  resolvedAt        DateTime?
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+
+  organization      Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation      Conversation?          @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  escalation        Escalation?            @relation(fields: [escalationId], references: [id], onDelete: SetNull)
+  assignedUser      User?                  @relation("AssignedEscalationThread", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  replies           EscalationThreadReply[]
+  knowledgeSuggestions KnowledgeSuggestion[]
+  knowledgeGaps     KnowledgeGap[]
+
+  @@index([organizationId, status, createdAt])
+  @@index([assignedUserId, status])
+  @@index([conversationId])
+}
+
+model KnowledgeGap {
+  id             String             @id @default(cuid())
+  organizationId String
+  conversationId String?
+  threadId       String?
+  topicKey       String
+  topic          String?
+  question       String
+  status         KnowledgeGapStatus @default(OPEN)
+  seenCount      Int                @default(1)
+  lastSeenAt     DateTime           @default(now())
+  metadata       Json               @default("{}")
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  conversation   Conversation?      @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  thread         EscalationThread?  @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, topicKey])
+  @@index([organizationId, status, lastSeenAt])
+  @@index([threadId])
+}
+
+enum KnowledgeGapStatus {
+  OPEN
+  ANSWERED
+  RESOLVED
+  DISMISSED
+}
+
+model EscalationThreadReply {
+  id        String   @id @default(cuid())
+  threadId  String
+  authorId  String
+  content   String
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  thread    EscalationThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author    User             @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([threadId, createdAt])
+  @@index([authorId])
+}
+
+enum EscalationThreadStatus {
+  OPEN
+  ANSWERED
+  RESOLVED
+  DUPLICATE
+}
+
+model AiUsageEvent {
+  id               String      @id @default(cuid())
+  organizationId   String
+  botId            String?
+  conversationId   String?
+  usageType        AiUsageType
+  provider         String?
+  model            String?
+  promptTokens     Int         @default(0)
+  completionTokens Int         @default(0)
+  totalTokens      Int         @default(0)
+  metadata         Json        @default("{}")
+  createdAt        DateTime    @default(now())
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, usageType, createdAt])
+  @@index([conversationId])
+}
+
+enum AiUsageType {
+  CUSTOMER_REPLY
+  ESCALATION_ANALYSIS
+  KNOWLEDGE_SUGGESTION
+  INTERNAL_ASSISTANT
+  SUMMARIZATION
 }

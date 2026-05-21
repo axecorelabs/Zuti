@@ -17,6 +17,9 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { ActivityModule } from './modules/activity/activity.module';
 import { CannedResponsesModule } from './modules/canned-responses/canned-responses.module';
 import { TeamChatModule } from './modules/team-chat/team-chat.module';
+import { AiUsageModule } from './modules/ai-usage/ai-usage.module';
+import { PricingModule } from './modules/pricing/pricing.module';
+import { BillingModule } from './modules/billing/billing.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 
@@ -43,6 +46,9 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     ActivityModule,
     CannedResponsesModule,
     TeamChatModule,
+    AiUsageModule,
+    PricingModule,
+    BillingModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },

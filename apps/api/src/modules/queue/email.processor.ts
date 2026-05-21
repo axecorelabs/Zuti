@@ -14,6 +14,10 @@ import { EMAIL_QUEUE } from './queue.module';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CannedResponsesService } from '../canned-responses/canned-responses.service';
+import { TeamChatService } from '../team-chat/team-chat.service';
+import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { BillingService } from '../billing/billing.service';
+import { computeUsageCredits } from '../billing/credit-model';
 
 function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
   const t = text.toLowerCase().trim();
@@ -22,6 +26,14 @@ function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
   if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
   if (NEGATIVE.test(t)) return 'negative';
   return 'unclear';
+}
+
+function estimateTokens(value: unknown): number {
+  return Math.ceil(JSON.stringify(value ?? '').length / 4);
+}
+
+function estimateUsageCredits(promptTokens: number, completionTokens: number): number {
+  return computeUsageCredits(promptTokens, completionTokens, 1);
 }
 
 export interface EmailMessageJob {
@@ -51,6 +63,9 @@ export class EmailProcessor {
     private readonly orgs: OrganizationsService,
     private readonly notifications: NotificationsService,
     private readonly cannedResponses: CannedResponsesService,
+    private readonly teamChat: TeamChatService,
+    private readonly aiUsage: AiUsageService,
+    private readonly billing: BillingService,
   ) {}
 
   @Process()
@@ -181,6 +196,7 @@ export class EmailProcessor {
       bodyText.trim(), bot.name, aiConfig.systemPrompt ?? null,
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
+      userMessage.id,
     );
   }
 
@@ -195,6 +211,7 @@ export class EmailProcessor {
     systemPrompt: string | null,
     orgName: string | null,
     orgSlug: string | null,
+    inboundMessageId?: string,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
     // from = {orgSlug}@bords.app so it's on a verified sending domain; reply_to = bot's actual address
@@ -310,6 +327,10 @@ export class EmailProcessor {
       }
     }
 
+    const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
+    const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
+    await this.billing.assertMinimumCredits(organizationId, preflightCredits);
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -327,14 +348,67 @@ export class EmailProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
+      const promptTokens = estimateTokens({ userText, history, customerContext });
+      const completionTokens = estimateTokens(aiText);
+
+      await this.billing.debitUsageCredits({
+        organizationId,
+        usageType: 'CUSTOMER_REPLY',
+        promptTokens,
+        completionTokens,
+        idempotencyKey: `email:${inboundMessageId ?? conversation.id}`,
+        metadata: {
+          channel: 'EMAIL',
+          conversationId: conversation.id,
+          botId,
+          sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+        },
+      });
+
+      await this.aiUsage.record({
+        organizationId,
+        botId,
+        conversationId: conversation.id,
+        usageType: 'CUSTOMER_REPLY',
+        provider: 'openrouter',
+        promptTokens,
+        completionTokens,
+        metadata: {
+          channel: 'EMAIL',
+          answerability: response.data?.answerability,
+          confidence: response.data?.confidence,
+          sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+        },
+      }).catch(() => null);
 
       // Auto-escalate check
       const escalationPhrases = [
         "i don't know", "i am not sure", "i'm not sure", "i cannot help",
         "i can't help", "please contact support", "contact us directly",
       ];
-      if (escalationPhrases.some((p) => aiText.toLowerCase().includes(p))) {
-        const bestAgent = await this.orgs.findBestAgent(organizationId);
+      const shouldEscalate = response.data?.should_escalate === true ||
+        escalationPhrases.some((p) => aiText.toLowerCase().includes(p));
+
+      await this.aiUsage.record({
+        organizationId,
+        botId,
+        conversationId: conversation.id,
+        usageType: 'ESCALATION_ANALYSIS',
+        provider: 'openrouter',
+        promptTokens: 0,
+        completionTokens: 0,
+        metadata: {
+          channel: 'EMAIL',
+          decision: shouldEscalate ? 'ESCALATE' : 'CONTINUE_AI',
+          reason: response.data?.should_escalate === true ? 'model_signal' : 'heuristic_signal',
+          answerability: response.data?.answerability,
+          confidence: response.data?.confidence,
+        },
+      }).catch(() => null);
+
+      if (shouldEscalate) {
+        const topic = response.data?.escalation_topic || undefined;
+        const bestAgent = await this.orgs.findBestAgent(organizationId, topic);
         await this.prisma.conversation.update({
           where: { id: conversation.id },
           data: {
@@ -358,6 +432,18 @@ export class EmailProcessor {
             { conversationId: conversation.id },
           );
         }
+        await this.teamChat.ensureKnowledgeGapThread(organizationId, {
+          conversationId: conversation.id,
+          question: userText,
+          topic,
+          assignedUserId: bestAgent?.userId,
+          senderId: bestAgent?.userId ?? (await this.findOrgSystemSender(organizationId)),
+          metadata: {
+            source: 'email_ai_uncertainty',
+            answerability: response.data?.answerability,
+            confidence: response.data?.confidence,
+          },
+        }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
 
       // Store AI reply
@@ -395,6 +481,21 @@ export class EmailProcessor {
     } catch (err) {
       this.logger.error(`AI/email error for conversation ${conversation.id}: ${err}`);
     }
+  }
+
+  private async findOrgSystemSender(organizationId: string): Promise<string> {
+    const member = await this.prisma.organizationMember.findFirst({
+      where: { organizationId, role: { in: ['OWNER', 'ADMIN'] } },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true },
+    });
+    if (member) return member.userId;
+    const fallback = await this.prisma.organizationMember.findFirst({
+      where: { organizationId },
+      orderBy: { createdAt: 'asc' },
+      select: { userId: true },
+    });
+    return fallback?.userId ?? '';
   }
 
   private async sendEmail(

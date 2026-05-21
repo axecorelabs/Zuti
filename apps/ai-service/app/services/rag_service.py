@@ -10,6 +10,20 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+UNCERTAIN_PHRASES = (
+    "i don't know",
+    "i do not know",
+    "i am not sure",
+    "i'm not sure",
+    "i cannot help",
+    "i can't help",
+    "please contact support",
+    "contact us directly",
+    "reach out to our team",
+    "speak to a human",
+    "talk to an agent",
+)
+
 # Collection names are scoped per-organization
 def _collection(organization_id: str) -> str:
     return f"org_{organization_id}"
@@ -28,7 +42,7 @@ class RagService:
         org_name: str | None = None,
         system_prompt: str | None = None,
         customer_context: str | None = None,
-    ) -> tuple[str, list[dict]]:
+    ) -> tuple[str, list[dict], dict[str, Any]]:
         # 1. Try RAG (embed + Qdrant search) — degrade gracefully if unavailable
         sources: list[dict] = []
         context = ""
@@ -69,7 +83,58 @@ class RagService:
             customer_context=customer_context,
         )
 
-        return reply, sources
+        assessment = self._assess_answerability(message, reply, sources)
+        return reply, sources, assessment
+
+    def _assess_answerability(
+        self,
+        message: str,
+        reply: str,
+        sources: list[dict],
+    ) -> dict[str, Any]:
+        reply_lower = reply.lower()
+        has_uncertainty = any(phrase in reply_lower for phrase in UNCERTAIN_PHRASES)
+        strong_sources = [s for s in sources if float(s.get("score") or 0) >= 0.62]
+
+        if has_uncertainty and not strong_sources:
+            answerability = "not_answerable"
+            confidence = 0.25
+        elif has_uncertainty:
+            answerability = "partially_answerable"
+            confidence = 0.45
+        elif strong_sources:
+            answerability = "answerable"
+            confidence = min(0.95, 0.65 + (len(strong_sources) * 0.07))
+        elif sources:
+            answerability = "partially_answerable"
+            confidence = 0.55
+        else:
+            answerability = "general_answer"
+            confidence = 0.5
+
+        should_escalate = answerability in {"not_answerable", "partially_answerable"} and has_uncertainty
+        topic = self._topic_hint(message)
+        return {
+            "answerability": answerability,
+            "confidence": confidence,
+            "should_escalate": should_escalate,
+            "escalation_topic": topic,
+        }
+
+    def _topic_hint(self, message: str) -> str | None:
+        text = message.lower()
+        topics = {
+            "billing": ("bill", "billing", "charge", "payment", "refund", "invoice", "subscription", "renewal"),
+            "technical": ("bug", "error", "crash", "broken", "login", "password", "api", "integration"),
+            "shipping": ("ship", "delivery", "tracking", "package", "order"),
+            "returns": ("return", "exchange", "refund", "cancel"),
+        }
+        for topic, keywords in topics.items():
+            if any(keyword in text for keyword in keywords):
+                return topic
+        words = [w.strip(".,!?;:()[]{}\"'").lower() for w in message.split()]
+        useful = [w for w in words if len(w) > 4][:3]
+        return " ".join(useful) or None
 
     async def health_check(self) -> bool:
         try:

@@ -27,12 +27,16 @@ class ChatResponse(BaseModel):
     conversation_id: str
     sources: list[dict] = []
     should_resolve: bool = False
+    answerability: str = "unknown"
+    confidence: float = 0.5
+    should_escalate: bool = False
+    escalation_topic: str | None = None
 
 
 @router.post("", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     try:
-        reply, sources = await rag_service.chat(
+        reply, sources, assessment = await rag_service.chat(
             organization_id=request.organization_id,
             bot_id=request.bot_id,
             conversation_id=request.conversation_id,
@@ -51,6 +55,10 @@ async def chat(request: ChatRequest):
             conversation_id=request.conversation_id,
             sources=sources,
             should_resolve=should_resolve,
+            answerability=assessment.get("answerability", "unknown"),
+            confidence=assessment.get("confidence", 0.5),
+            should_escalate=assessment.get("should_escalate", False),
+            escalation_topic=assessment.get("escalation_topic"),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
