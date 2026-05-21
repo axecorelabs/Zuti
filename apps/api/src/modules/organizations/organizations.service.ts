@@ -39,9 +39,7 @@ export class OrganizationsService {
               messageCount: 0,
               // Reusing existing billing capacity fields for startup wallet allocation.
               messageLimit: starterCreditGrant,
-              creditBalance: starterCreditGrant,
               creditBalanceUnits: starterCreditGrant * 100,
-              committedMonthlyCredits: 0,
               committedMonthlyCreditsUnits: 0,
             },
           },
@@ -60,7 +58,7 @@ export class OrganizationsService {
   }
 
   async findAllForUser(userId: string) {
-    return this.prisma.organization.findMany({
+    const orgs = await this.prisma.organization.findMany({
       where: { members: { some: { userId } } },
       include: {
         members: {
@@ -72,9 +70,7 @@ export class OrganizationsService {
             plan: true,
             messageCount: true,
             messageLimit: true,
-            creditBalance: true,
             creditBalanceUnits: true,
-            committedMonthlyCredits: true,
             committedMonthlyCreditsUnits: true,
             commitmentRenewsAt: true,
             renewsAt: true,
@@ -83,6 +79,17 @@ export class OrganizationsService {
         _count: { select: { bots: true, conversations: true } },
       },
     });
+
+    return orgs.map((org) => ({
+      ...org,
+      billing: org.billing
+        ? {
+            ...org.billing,
+            creditBalance: Number((org.billing.creditBalanceUnits / 100).toFixed(2)),
+            committedMonthlyCredits: Number((org.billing.committedMonthlyCreditsUnits / 100).toFixed(2)),
+          }
+        : org.billing,
+    }));
   }
 
   async findOne(slug: string, userId: string) {

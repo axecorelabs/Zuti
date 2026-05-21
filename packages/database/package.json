@@ -6,7 +6,9 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:reconcile-credits": "prisma db execute --schema prisma/schema.prisma --file prisma/reconcile_minor_credit_units.sql",
+    "db:check-credit-drift": "prisma db execute --schema prisma/schema.prisma --file prisma/check_credit_drift.sql"
   },
   "dependencies": {
     "@prisma/client": "^5.14.0"
