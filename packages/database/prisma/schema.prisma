@@ -356,7 +356,9 @@ model Billing {
   messageCount   Int         @default(0)
   messageLimit   Int         @default(1000)
   creditBalance  Int         @default(0)
+  creditBalanceUnits Int     @default(0)
   committedMonthlyCredits Int @default(0)
+  committedMonthlyCreditsUnits Int @default(0)
   commitmentRenewsAt DateTime?
   renewsAt       DateTime?
   createdAt      DateTime    @default(now())
@@ -374,7 +376,9 @@ model CreditLedger {
   transactionId  String?
   type           CreditLedgerType
   creditsDelta   Int
+  creditsDeltaUnits Int           @default(0)
   balanceAfter   Int
+  balanceAfterUnits Int           @default(0)
   description    String?
   metadata       Json             @default("{}")
   idempotencyKey String?          @unique
@@ -401,6 +405,7 @@ model BillingTransaction {
   amountMinor    Int
   currency       String
   credits        Int
+  creditsUnits   Int              @default(0)
   metadata       Json                     @default("{}")
   paidAt         DateTime?
   createdAt      DateTime                 @default(now())

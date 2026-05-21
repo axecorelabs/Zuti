@@ -21,7 +21,13 @@ import { randomBytes, createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingMarket, PricingService } from '../pricing/pricing.service';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
-import { computeUsageCredits } from './credit-model';
+import {
+  BASE_CREDIT_UNITS_DEFAULT,
+  BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY,
+  CREDIT_UNITS_PER_CREDIT,
+  computeUsageOverageCredits,
+  computeUsageOverageUnits,
+} from './credit-model';
 
 type CheckoutRequest = {
   market: PricingMarket;
@@ -82,6 +88,18 @@ type PaystackChargeAuthorizationResponse = {
   };
 };
 
+function toWholeCredits(units: number) {
+  return Math.floor(units / CREDIT_UNITS_PER_CREDIT);
+}
+
+function fromCreditUnits(units: number) {
+  return Number((units / CREDIT_UNITS_PER_CREDIT).toFixed(2));
+}
+
+function toCreditUnits(credits: number) {
+  return Math.max(0, Math.floor(credits)) * CREDIT_UNITS_PER_CREDIT;
+}
+
 @Injectable()
 export class BillingService {
   private readonly logger = new Logger(BillingService.name);
@@ -105,7 +123,9 @@ export class BillingService {
         id: true,
         type: true,
         creditsDelta: true,
+        creditsDeltaUnits: true,
         balanceAfter: true,
+        balanceAfterUnits: true,
         description: true,
         createdAt: true,
         transactionId: true,
@@ -115,23 +135,30 @@ export class BillingService {
     return {
       organizationId,
       plan: billing.plan,
-      creditBalance: billing.creditBalance,
-      committedMonthlyCredits: billing.committedMonthlyCredits,
+      creditBalance: fromCreditUnits(billing.creditBalanceUnits),
+      committedMonthlyCredits: fromCreditUnits(billing.committedMonthlyCreditsUnits),
       commitmentRenewsAt: billing.commitmentRenewsAt,
-      recentLedger,
+      recentLedger: recentLedger.map((entry) => ({
+        ...entry,
+        creditsDelta: fromCreditUnits(entry.creditsDeltaUnits),
+        balanceAfter: fromCreditUnits(entry.balanceAfterUnits),
+      })),
     };
   }
 
   async assertMinimumCredits(organizationId: string, minCredits = 1) {
     const billing = await this.ensureBilling(organizationId);
-    if (billing.creditBalance < minCredits) {
+    const minUnits = toCreditUnits(minCredits);
+    if (billing.creditBalanceUnits < minUnits) {
       await this.logBillingActivity(
         organizationId,
         ActivityAction.BILLING_SECURITY_ALERT,
         {
           reason: 'insufficient_credits_precheck',
           requiredCredits: minCredits,
-          availableCredits: billing.creditBalance,
+          requiredCreditUnits: minUnits,
+            availableCredits: fromCreditUnits(billing.creditBalanceUnits),
+          availableCreditUnits: billing.creditBalanceUnits,
         },
         null,
       );
@@ -143,29 +170,36 @@ export class BillingService {
         HttpStatus.PAYMENT_REQUIRED,
       );
     }
-    return { ok: true, creditBalance: billing.creditBalance };
+    return { ok: true, creditBalance: fromCreditUnits(billing.creditBalanceUnits) };
   }
 
   async debitUsageCredits(input: UsageDebitInput) {
-    const creditsToDebit = computeUsageCredits(input.promptTokens, input.completionTokens, 1);
-
     return this.prisma.$transaction(async (tx) => {
       const billing = await tx.billing.findUnique({ where: { organizationId: input.organizationId } });
       if (!billing) throw new NotFoundException('Billing record not found');
+
+      const isCustomerReply = input.usageType === 'CUSTOMER_REPLY';
+      const baseCreditUnits = isCustomerReply
+        ? BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY
+        : BASE_CREDIT_UNITS_DEFAULT;
+      const overageCredits = computeUsageOverageCredits(input.promptTokens, input.completionTokens, 1);
+      const overageCreditUnits = computeUsageOverageUnits(input.promptTokens, input.completionTokens, 1);
+      const creditsToDebitUnits = baseCreditUnits + overageCreditUnits;
+      const creditsToDebit = fromCreditUnits(creditsToDebitUnits);
 
       const ledgerKey = input.idempotencyKey ? `usage:${input.idempotencyKey}` : null;
       if (ledgerKey) {
         const existing = await tx.creditLedger.findUnique({ where: { idempotencyKey: ledgerKey } });
         if (existing) {
           return {
-            creditsDebited: Math.abs(existing.creditsDelta),
-            balanceAfter: existing.balanceAfter,
+            creditsDebited: Math.abs(fromCreditUnits(existing.creditsDeltaUnits)),
+            balanceAfter: fromCreditUnits(existing.balanceAfterUnits),
             deduplicated: true,
           };
         }
       }
 
-      if (billing.creditBalance < creditsToDebit) {
+      if (billing.creditBalanceUnits < creditsToDebitUnits) {
         await this.logBillingActivity(
           input.organizationId,
           ActivityAction.BILLING_SECURITY_ALERT,
@@ -173,7 +207,9 @@ export class BillingService {
             reason: 'insufficient_credits_debit',
             usageType: input.usageType,
             requiredCredits: creditsToDebit,
-            availableCredits: billing.creditBalance,
+            requiredCreditUnits: creditsToDebitUnits,
+            availableCredits: fromCreditUnits(billing.creditBalanceUnits),
+            availableCreditUnits: billing.creditBalanceUnits,
           },
           null,
         );
@@ -186,7 +222,8 @@ export class BillingService {
         );
       }
 
-      const nextBalance = billing.creditBalance - creditsToDebit;
+      const nextBalanceUnits = billing.creditBalanceUnits - creditsToDebitUnits;
+      const nextBalance = fromCreditUnits(nextBalanceUnits);
 
       try {
         await tx.creditLedger.create({
@@ -194,15 +231,22 @@ export class BillingService {
             organizationId: input.organizationId,
             billingId: billing.id,
             type: CreditLedgerType.USAGE,
-            creditsDelta: -creditsToDebit,
-            balanceAfter: nextBalance,
+            creditsDelta: -toWholeCredits(creditsToDebitUnits),
+            creditsDeltaUnits: -creditsToDebitUnits,
+            balanceAfter: toWholeCredits(nextBalanceUnits),
+            balanceAfterUnits: nextBalanceUnits,
             description: `AI usage debit (${input.usageType})`,
             idempotencyKey: ledgerKey,
             metadata: {
               usageType: input.usageType,
               promptTokens: Math.max(0, Math.floor(input.promptTokens)),
               completionTokens: Math.max(0, Math.floor(input.completionTokens)),
+              baseCredits: baseCreditUnits / CREDIT_UNITS_PER_CREDIT,
+              baseCreditUnits,
+              overageCredits,
+              overageCreditUnits,
               creditsDebited: creditsToDebit,
+              creditsDebitedUnits: creditsToDebitUnits,
               ...(input.metadata ?? {}),
             } as Prisma.InputJsonValue,
           },
@@ -213,8 +257,8 @@ export class BillingService {
             const existing = await tx.creditLedger.findUnique({ where: { idempotencyKey: ledgerKey } });
             if (existing) {
               return {
-                creditsDebited: Math.abs(existing.creditsDelta),
-                balanceAfter: existing.balanceAfter,
+                creditsDebited: Math.abs(fromCreditUnits(existing.creditsDeltaUnits)),
+                balanceAfter: fromCreditUnits(existing.balanceAfterUnits),
                 deduplicated: true,
               };
             }
@@ -225,7 +269,11 @@ export class BillingService {
 
       await tx.billing.update({
         where: { id: billing.id },
-        data: { creditBalance: nextBalance },
+        data: {
+          creditBalance: toWholeCredits(nextBalanceUnits),
+          creditBalanceUnits: nextBalanceUnits,
+          messageCount: { increment: 1 },
+        },
       });
 
       await this.logBillingActivity(
@@ -236,8 +284,14 @@ export class BillingService {
           usageType: input.usageType,
           promptTokens: Math.max(0, Math.floor(input.promptTokens)),
           completionTokens: Math.max(0, Math.floor(input.completionTokens)),
+          baseCredits: baseCreditUnits / CREDIT_UNITS_PER_CREDIT,
+          baseCreditUnits,
+          overageCredits,
+          overageCreditUnits,
           creditsDebited: creditsToDebit,
+          creditsDebitedUnits: creditsToDebitUnits,
           balanceAfter: nextBalance,
+          balanceAfterUnits: nextBalanceUnits,
         },
         null,
       );
@@ -325,6 +379,7 @@ export class BillingService {
         amountMinor: pack.amountMinor,
         currency: pack.currency,
         credits: pack.credits,
+        creditsUnits: toCreditUnits(pack.credits),
         metadata: {
           market: dto.market,
           packId: pack.id,
@@ -438,6 +493,7 @@ export class BillingService {
         amountMinor: plan.amountMinor,
         currency: plan.currency,
         credits: plan.includedCredits,
+        creditsUnits: toCreditUnits(plan.includedCredits),
         metadata: {
           market: dto.market,
           subscriptionId: plan.id,
@@ -664,13 +720,14 @@ export class BillingService {
   async runDueCommitmentRenewals() {
     const dueBillings = await this.prisma.billing.findMany({
       where: {
-        committedMonthlyCredits: { gt: 0 },
+        committedMonthlyCreditsUnits: { gt: 0 },
         commitmentRenewsAt: { lte: new Date() },
       },
       select: {
         id: true,
         organizationId: true,
         committedMonthlyCredits: true,
+        committedMonthlyCreditsUnits: true,
         commitmentRenewsAt: true,
       },
       take: 100,
@@ -744,7 +801,8 @@ export class BillingService {
           reference,
           amountMinor: latestCommitment.amountMinor,
           currency: latestCommitment.currency,
-          credits: billing.committedMonthlyCredits,
+          credits: toWholeCredits(billing.committedMonthlyCreditsUnits),
+          creditsUnits: billing.committedMonthlyCreditsUnits,
           metadata: {
             renewal: true,
             cycleKey,
@@ -808,7 +866,8 @@ export class BillingService {
           reason: 'commitment_renewal_applied',
           reference,
           cycleKey,
-          credits: billing.committedMonthlyCredits,
+          credits: fromCreditUnits(billing.committedMonthlyCreditsUnits),
+          creditsUnits: billing.committedMonthlyCreditsUnits,
         },
         null,
         reference,
@@ -835,14 +894,18 @@ export class BillingService {
       if (transaction.status !== BillingTransactionStatus.PENDING) {
         return { credited: false, alreadyApplied: false };
       }
-      if (transaction.credits <= 0) {
+      const creditUnits = transaction.creditsUnits > 0
+        ? transaction.creditsUnits
+        : toCreditUnits(transaction.credits);
+      if (creditUnits <= 0) {
         throw new BadRequestException('Transaction has invalid credit amount');
       }
 
       const billing = await tx.billing.findUnique({ where: { id: transaction.billingId } });
       if (!billing) throw new NotFoundException('Billing record not found for transaction');
 
-      const nextBalance = billing.creditBalance + transaction.credits;
+      const nextBalanceUnits = billing.creditBalanceUnits + creditUnits;
+      const nextBalance = toWholeCredits(nextBalanceUnits);
       const ledgerKey = `paystack:${transaction.reference}:credit`;
 
       try {
@@ -855,8 +918,10 @@ export class BillingService {
               transaction.kind === BillingTransactionKind.COMMITMENT
                 ? CreditLedgerType.COMMITMENT_ALLOCATION
                 : CreditLedgerType.PURCHASE,
-            creditsDelta: transaction.credits,
+            creditsDelta: toWholeCredits(creditUnits),
+            creditsDeltaUnits: creditUnits,
             balanceAfter: nextBalance,
+            balanceAfterUnits: nextBalanceUnits,
             description:
               transaction.kind === BillingTransactionKind.COMMITMENT
                 ? 'Monthly prepaid commitment allocation via Paystack'
@@ -899,9 +964,11 @@ export class BillingService {
       await tx.billing.update({
         where: { id: billing.id },
         data: {
-          creditBalance: { increment: transaction.credits },
+          creditBalance: { increment: toWholeCredits(creditUnits) },
+          creditBalanceUnits: { increment: creditUnits },
           ...(transaction.kind === BillingTransactionKind.COMMITMENT && {
-            committedMonthlyCredits: transaction.credits,
+            committedMonthlyCredits: toWholeCredits(creditUnits),
+            committedMonthlyCreditsUnits: creditUnits,
             commitmentRenewsAt: commitmentRenewal,
           }),
         },
@@ -977,6 +1044,8 @@ export class BillingService {
         messageCount: 0,
         messageLimit: 0,
         creditBalance: 0,
+        creditBalanceUnits: 0,
+        committedMonthlyCreditsUnits: 0,
       },
     });
   }
