@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+import re
 from app.services.rag_service import rag_service
 
 router = APIRouter()
@@ -48,8 +49,8 @@ async def chat(request: ChatRequest):
             customer_context=request.customer_context,
         )
         # Strip [RESOLVED] token from the reply text; surface it as a flag
-        should_resolve = '[RESOLVED]' in reply
-        clean_reply = reply.replace('[RESOLVED]', '').rstrip()
+        should_resolve = re.search(r'\[\s*resolved\s*\]', reply, re.IGNORECASE) is not None
+        clean_reply = re.sub(r'\[\s*resolved\s*\]', '', reply, flags=re.IGNORECASE).rstrip()
         return ChatResponse(
             reply=clean_reply,
             conversation_id=request.conversation_id,

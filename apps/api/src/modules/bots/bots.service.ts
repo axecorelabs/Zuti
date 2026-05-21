@@ -19,11 +19,25 @@ import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 
 function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
-  const t = text.toLowerCase().trim();
-  const POSITIVE = /\b(yes|yep|yeah|thanks|thank you|thank you so much|great|perfect|awesome|helpful|solved|sorted|works|working|excellent|exactly|good|brilliant|wonderful|that'?s all|nothing else|all good|all set|no more questions|no more|that'?s it|that helped|you helped)\b/;
-  const NEGATIVE = /\b(no|nope|not really|still|doesn'?t|don'?t|isn'?t|not working|not solved|not helpful|still broken|frustrated|useless|terrible|didn'?t help|not fixed|not resolved)\b/;
-  if (POSITIVE.test(t) && !NEGATIVE.test(t)) return 'positive';
-  if (NEGATIVE.test(t)) return 'negative';
+  const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  const NEGATIVE_PATTERNS = [
+    /\bnot\s+(working|solved|resolved|fixed|helpful)\b/,
+    /\b(still\s+broken|still\s+not\s+working)\b/,
+    /\b(didn'?t\s+help|doesn'?t\s+work|don'?t\s+work|isn'?t\s+working)\b/,
+    /\b(frustrated|useless|terrible)\b/,
+    /^(no|nope|nah|not really)$/,
+  ];
+
+  const POSITIVE_PATTERNS = [
+    /^(yes|yep|yeah)$/,
+    /\b(thanks|thank you|thank you so much|great|perfect|awesome|helpful|excellent|exactly|good|brilliant|wonderful)\b/,
+    /\b(works|working|solved|sorted|resolved|fixed|that helped|you helped)\b/,
+    /\b(that'?s all|that'?s it|nothing else|all good|all set|no more questions?|no more)\b/,
+  ];
+
+  if (NEGATIVE_PATTERNS.some((p) => p.test(t))) return 'negative';
+  if (POSITIVE_PATTERNS.some((p) => p.test(t))) return 'positive';
   return 'unclear';
 }
 
