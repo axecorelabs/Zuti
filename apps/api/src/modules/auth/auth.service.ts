@@ -17,7 +17,10 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const exists = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const exists = await this.prisma.user.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+    });
     if (exists) throw new ConflictException('Email already in use');
 
     const passwordHash = await bcrypt.hash(dto.password, 12);
@@ -27,7 +30,7 @@ export class AuthService {
     const user = await this.prisma.user.create({
       data: {
         name: dto.name,
-        email: dto.email,
+        email: normalizedEmail,
         passwordHash,
         emailVerificationTokenHash: verificationTokenHash,
         emailVerificationSentAt: new Date(),
@@ -56,7 +59,10 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+    });
     if (!user) throw new UnauthorizedException('No account found with that email address');
 
     if (!user.emailVerifiedAt) {
@@ -102,8 +108,8 @@ export class AuthService {
 
   async resendVerification(email: string) {
     const normalizedEmail = email.trim().toLowerCase();
-    const user = await this.prisma.user.findUnique({
-      where: { email: normalizedEmail },
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
       select: { id: true, email: true, name: true, emailVerifiedAt: true },
     });
 

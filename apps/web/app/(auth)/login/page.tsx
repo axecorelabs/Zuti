@@ -28,7 +28,8 @@ function LoginPageContent() {
     e.preventDefault();
     setLoading(true);
     try {
-      const res = await authApi.login(email, password);
+      const normalizedEmail = email.trim().toLowerCase();
+      const res = await authApi.login(normalizedEmail, password);
       const { user, accessToken, refreshToken } = res.data;
       setAuth(user, accessToken, refreshToken);
 
@@ -64,7 +65,7 @@ function LoginPageContent() {
 
     setResendingVerification(true);
     try {
-      await authApi.resendVerification(email);
+      await authApi.resendVerification(email.trim().toLowerCase());
       toast.success('If your account is unverified, a verification link has been sent. Check inbox and spam.');
     } catch {
       toast.error('Could not resend verification email. Please try again.');
