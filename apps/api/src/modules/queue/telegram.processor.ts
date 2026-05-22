@@ -12,35 +12,13 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CannedResponsesService } from '../canned-responses/canned-responses.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
  */
-function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
-  const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
-
-  const NEGATIVE_PATTERNS = [
-    /\bnot\s+(working|solved|resolved|fixed|helpful)\b/,
-    /\b(still\s+broken|still\s+not\s+working)\b/,
-    /\b(didn'?t\s+help|doesn'?t\s+work|don'?t\s+work|isn'?t\s+working)\b/,
-    /\b(frustrated|useless|terrible)\b/,
-    /^(no|nope|nah|not really)$/,
-  ];
-
-  const POSITIVE_PATTERNS = [
-    /^(yes|yep|yeah)$/,
-    /\b(thanks|thank you|thank you so much|great|perfect|awesome|helpful|excellent|exactly|good|brilliant|wonderful)\b/,
-    /\b(works|working|solved|sorted|resolved|fixed|that helped|you helped)\b/,
-    /\b(that'?s all|that'?s it|nothing else|all good|all set|no more questions?|no more)\b/,
-  ];
-
-  if (NEGATIVE_PATTERNS.some((p) => p.test(t))) return 'negative';
-  if (POSITIVE_PATTERNS.some((p) => p.test(t))) return 'positive';
-  return 'unclear';
-}
-
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
 }
@@ -123,6 +101,7 @@ export class TelegramProcessor {
     private readonly cannedResponses: CannedResponsesService,
     private readonly teamChat: TeamChatService,
     private readonly aiUsage: AiUsageService,
+    private readonly csatClassifier: CsatClassifierService,
     private readonly billing: BillingService,
   ) {}
 
@@ -215,8 +194,23 @@ export class TelegramProcessor {
     if (conversation.mode === 'AI') {
       // CSAT collection: if conversation is awaiting satisfaction response, handle it
       const convMeta = (conversation.metadata as Record<string, unknown>) ?? {};
+      const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true } });
       if (conversation.status === 'PENDING' && convMeta.awaitingCsat === true) {
-        const rating = detectSatisfaction(message.text);
+        const lastAssistantMessage = await this.prisma.message.findFirst({
+          where: { conversationId: conversation.id, role: 'ASSISTANT' },
+          orderBy: { createdAt: 'desc' },
+          select: { content: true },
+        });
+        const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
+        const rating = await this.csatClassifier.classify({
+          organizationId,
+          botId,
+          conversationId: conversation.id,
+          channel: 'TELEGRAM',
+          userReply: message.text.trim(),
+          lastAssistantMessage: lastAssistantMessage?.content ?? null,
+          model: typeof aiConfig.model === 'string' ? aiConfig.model : null,
+        });
         if (rating === 'positive') {
           await this.prisma.conversation.update({
             where: { id: conversation.id },
@@ -247,7 +241,6 @@ export class TelegramProcessor {
           this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
         }
       }
-      const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true } });
       const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
       const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
       await this.callAiAndRespond(

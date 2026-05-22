@@ -16,31 +16,9 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { CannedResponsesService } from '../canned-responses/canned-responses.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
+import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
-
-function detectSatisfaction(text: string): 'positive' | 'negative' | 'unclear' {
-  const t = text.toLowerCase().replace(/\s+/g, ' ').trim();
-
-  const NEGATIVE_PATTERNS = [
-    /\bnot\s+(working|solved|resolved|fixed|helpful)\b/,
-    /\b(still\s+broken|still\s+not\s+working)\b/,
-    /\b(didn'?t\s+help|doesn'?t\s+work|don'?t\s+work|isn'?t\s+working)\b/,
-    /\b(frustrated|useless|terrible)\b/,
-    /^(no|nope|nah|not really)$/,
-  ];
-
-  const POSITIVE_PATTERNS = [
-    /^(yes|yep|yeah)$/,
-    /\b(thanks|thank you|thank you so much|great|perfect|awesome|helpful|excellent|exactly|good|brilliant|wonderful)\b/,
-    /\b(works|working|solved|sorted|resolved|fixed|that helped|you helped)\b/,
-    /\b(that'?s all|that'?s it|nothing else|all good|all set|no more questions?|no more)\b/,
-  ];
-
-  if (NEGATIVE_PATTERNS.some((p) => p.test(t))) return 'negative';
-  if (POSITIVE_PATTERNS.some((p) => p.test(t))) return 'positive';
-  return 'unclear';
-}
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -79,6 +57,7 @@ export class EmailProcessor {
     private readonly cannedResponses: CannedResponsesService,
     private readonly teamChat: TeamChatService,
     private readonly aiUsage: AiUsageService,
+    private readonly csatClassifier: CsatClassifierService,
     private readonly billing: BillingService,
   ) {}
 
@@ -174,8 +153,21 @@ export class EmailProcessor {
     // CSAT collection: if conversation is awaiting satisfaction response, handle it
     const existingMeta = (conversation as any).metadata as Record<string, unknown> | undefined;
     if (conversation.status === 'PENDING' && existingMeta?.awaitingCsat === true) {
-      const rating = detectSatisfaction(bodyText.trim());
       const aiConfig2 = (bot.aiConfig as Record<string, string>) ?? {};
+      const lastAssistantMessage = await this.prisma.message.findFirst({
+        where: { conversationId: conversation.id, role: 'ASSISTANT' },
+        orderBy: { createdAt: 'desc' },
+        select: { content: true },
+      });
+      const rating = await this.csatClassifier.classify({
+        organizationId,
+        botId,
+        conversationId: conversation.id,
+        channel: 'EMAIL',
+        userReply: bodyText.trim(),
+        lastAssistantMessage: lastAssistantMessage?.content ?? null,
+        model: typeof aiConfig2.model === 'string' ? aiConfig2.model : null,
+      });
       const fromAddress2 = bot.organization?.slug
         ? `${bot.organization.slug}@bords.app`
         : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');

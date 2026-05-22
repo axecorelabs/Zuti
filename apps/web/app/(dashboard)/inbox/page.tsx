@@ -917,7 +917,7 @@ export default function InboxPage() {
               </div>
 
               {showHandoffQuickButton && handoffSummaryText && (
-                <div className="absolute right-6 bottom-24 z-20 flex flex-col items-end gap-2">
+                <div className="absolute right-6 bottom-36 z-20 flex flex-col items-end gap-2">
                   {handoffPopupOpen && (
                     <div className="w-[min(86vw,360px)] rounded-xl border border-zinc-800 bg-zinc-900/95 shadow-xl p-3">
                       <div className="flex items-center justify-between gap-2 mb-2">
