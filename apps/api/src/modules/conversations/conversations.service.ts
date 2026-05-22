@@ -37,6 +37,28 @@ function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
 }
 
+function toTitleWords(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function buildBrandedFromName(
+  organizationName: string | null | undefined,
+  replyToEmail: string | null | undefined,
+  fallback: string,
+): string {
+  const org = (organizationName ?? '').trim();
+  const localPart = (replyToEmail ?? '').split('@')[0] ?? '';
+  const prefix = toTitleWords(localPart);
+
+  if (org && prefix) return `${org} ${prefix}`;
+  if (org) return org;
+  return fallback;
+}
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -200,6 +222,10 @@ export class ConversationsService {
       ? await this.prisma.user.findUnique({ where: { id: actorId }, select: { name: true, email: true } })
       : null;
     const actorName = actor?.name ?? actor?.email ?? 'Unknown';
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { name: true },
+    });
 
     const updated = await this.prisma.conversation.update({
       where: { id: conversationId },
@@ -229,7 +255,8 @@ export class ConversationsService {
     const sendCustomerEmail = async (text: string) => {
       if (conversation.channel !== 'EMAIL') return;
       const emailApiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
-      const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+      const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+      const fromName = buildBrandedFromName(organization?.name, conversation.bot.emailAddress, baseFromName);
       if (!emailApiKey || !conversation.bot.emailAddress || !conversation.customerEmail) return;
       const botEmail = conversation.bot.emailAddress;
       const botDomain = botEmail.split('@')[1] ?? '';
@@ -429,7 +456,8 @@ export class ConversationsService {
       // Send resolution email
       if (conversation.channel === 'EMAIL') {
         const emailApiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
-        const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+        const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+        const fromName = buildBrandedFromName(organization?.name, conversation.bot.emailAddress, baseFromName);
         if (emailApiKey && conversation.bot.emailAddress && conversation.customerEmail) {
           const botEmail = conversation.bot.emailAddress;
           const botDomain = botEmail.split('@')[1] ?? '';
@@ -549,8 +577,13 @@ export class ConversationsService {
     if (conversation.channel === 'EMAIL') {
       // Send reply via ZeptoMail
       const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
-      const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
       if (apiKey && conversation.bot.emailAddress && conversation.customerEmail) {
+        const org = await this.prisma.organization.findUnique({
+          where: { id: organizationId },
+          select: { name: true },
+        });
+        const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+        const fromName = buildBrandedFromName(org?.name, conversation.bot.emailAddress, baseFromName);
         // from = {orgSlug}@bords.app (verified sending domain); reply_to = bot's actual address
         const botEmail = conversation.bot.emailAddress;
         const botDomain = botEmail.split('@')[1] ?? '';

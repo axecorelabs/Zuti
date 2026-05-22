@@ -93,7 +93,7 @@ export function BotReplyEmail({
           {/* Header */}
           <Section style={header}>
             <Text style={brandText}>{orgName}</Text>
-            <Text style={subText}>Powered by Zuti AI</Text>
+            <Text style={subText}>Powered by Zuti</Text>
           </Section>
 
           <Hr style={divider} />

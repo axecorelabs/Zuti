@@ -30,6 +30,28 @@ function estimateUsageCredits(promptTokens: number, completionTokens: number): n
   return computeUsageCredits(promptTokens, completionTokens, 1);
 }
 
+function toTitleWords(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function buildBrandedFromName(
+  organizationName: string | null | undefined,
+  replyToEmail: string | null | undefined,
+  fallback: string,
+): string {
+  const org = (organizationName ?? '').trim();
+  const localPart = (replyToEmail ?? '').split('@')[0] ?? '';
+  const prefix = toTitleWords(localPart);
+
+  if (org && prefix) return `${org} ${prefix}`;
+  if (org) return org;
+  return fallback;
+}
+
 export interface EmailMessageJob {
   botId: string;
   organizationId: string;
@@ -550,7 +572,8 @@ export class EmailProcessor {
       this.logger.warn('ZEPTOMAIL_API_KEY not set — skipping email send');
       return;
     }
-    const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+    const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+    const fromName = buildBrandedFromName(orgName, replyTo, baseFromName);
 
     const mimeHeaders: Record<string, string> = {};
     if (inReplyTo) {
