@@ -588,7 +588,9 @@ export class BotsService {
         },
       }).catch(() => null);
 
-      if (response.data?.should_escalate === true) {
+      const shouldEscalate = response.data?.should_escalate === true;
+
+      if (shouldEscalate) {
         const topic = response.data?.escalation_topic || undefined;
         await this.prisma.conversation.update({
           where: { id: conversation.id },
@@ -626,14 +628,19 @@ export class BotsService {
         message: { id: aiMessage.id, role: aiMessage.role, content: aiMessage.content, createdAt: aiMessage.createdAt },
       });
 
-      // Auto-resolve: AI signalled done — set PENDING, await CSAT response
-      if (shouldResolve) {
-        const currentMeta = (await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> ?? {};
+      // Auto-resolve: AI signalled done and no escalation is needed.
+      if (shouldResolve && !shouldEscalate) {
+        const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
+        const { awaitingCsat, ...metaWithoutAwaitingCsat } = currentMeta;
+        await this.prisma.escalation.updateMany({
+          where: { conversationId: conversation.id, resolvedAt: null },
+          data: { resolvedAt: new Date() },
+        });
         await this.prisma.conversation.update({
           where: { id: conversation.id },
-          data: { status: 'PENDING', metadata: { ...currentMeta, awaitingCsat: true } },
+          data: { status: 'RESOLVED', metadata: metaWithoutAwaitingCsat },
         });
-        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'PENDING' });
+        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

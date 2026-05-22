@@ -476,14 +476,21 @@ export class EmailProcessor {
         botName, orgName ?? '',
       );
 
-      // Auto-resolve: AI signalled done — set PENDING, await CSAT response
+      // Auto-resolve: AI signalled done and no escalation is needed.
       if (shouldResolve) {
-        const currentMeta = (await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> ?? {};
-        await this.prisma.conversation.update({
-          where: { id: conversation.id },
-          data: { status: 'PENDING', metadata: { ...currentMeta, awaitingCsat: true } },
-        });
-        this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'PENDING' });
+        if (!shouldEscalate) {
+          const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
+          const { awaitingCsat, ...metaWithoutAwaitingCsat } = currentMeta;
+          await this.prisma.escalation.updateMany({
+            where: { conversationId: conversation.id, resolvedAt: null },
+            data: { resolvedAt: new Date() },
+          });
+          await this.prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { status: 'RESOLVED', metadata: metaWithoutAwaitingCsat },
+          });
+          this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
+        }
       }
     } catch (err) {
       this.logger.error(`AI/email error for conversation ${conversation.id}: ${err}`);

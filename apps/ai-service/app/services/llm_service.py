@@ -12,12 +12,20 @@ logger = logging.getLogger(__name__)
 # Default model — change to any model slug on https://openrouter.ai/models
 DEFAULT_MODEL = "google/gemini-2.5-flash"
 
+RESOLUTION_TAG_INSTRUCTION = (
+    "IMPORTANT: When you are confident the customer's issue is fully resolved, "
+    "end your reply naturally by asking if they are satisfied or need anything else "
+    "(e.g. \"Does that help?\" or \"Is there anything else I can help you with?\"), "
+    "then append [RESOLVED] on its own line at the very end. "
+    "Only use [RESOLVED] when the issue is genuinely resolved — not speculatively."
+)
+
 BASE_SYSTEM_PROMPT = """You are {bot_name}, a helpful customer service AI assistant for {org_name}.
 Use the provided context to answer questions accurately and concisely.
 If the context doesn't contain relevant information, answer based on your general knowledge but stay focused on helping the customer.
 Keep responses friendly and professional. Do not mention that you are an AI unless directly asked.
 IMPORTANT: Reply in plain text only. Do not use markdown formatting such as headers (##), bold (**), italics, bullet lists with *, or horizontal rules (---). Use short paragraphs or simple numbered lists (1. 2. 3.) if needed.
-IMPORTANT: When you are confident the customer's issue is fully resolved, end your reply naturally by asking if they are satisfied or need anything else (e.g. "Does that help?" or "Is there anything else I can help you with?"), then append [RESOLVED] on its own line at the very end. Only use [RESOLVED] when the issue is genuinely resolved — not speculatively."""
+"""
 
 
 def _build_system_prompt(
@@ -26,11 +34,12 @@ def _build_system_prompt(
     override: str | None,
 ) -> str:
     if override and override.strip():
-        return override
-    return BASE_SYSTEM_PROMPT.format(
+        # Keep custom instructions while enforcing the [RESOLVED] contract.
+        return f"{override.strip()}\n\n{RESOLUTION_TAG_INSTRUCTION}"
+    return f"{BASE_SYSTEM_PROMPT.format(
         bot_name=bot_name,
         org_name=org_name or "our company",
-    )
+    )}\n\n{RESOLUTION_TAG_INSTRUCTION}"
 
 
 class LlmService:

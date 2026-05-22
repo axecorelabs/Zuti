@@ -524,14 +524,19 @@ export class TelegramProcessor {
         }),
       );
 
-      // Auto-resolve: AI signalled the conversation is done — set to PENDING awaiting CSAT
+      // Auto-resolve: AI signalled the conversation is done and no escalation is needed.
       if (shouldResolve && !shouldEscalate) {
-        const currentMeta = (await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } }))?.metadata as Record<string, unknown> ?? {};
+        const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
+        const { awaitingCsat, ...metaWithoutAwaitingCsat } = currentMeta;
+        await this.prisma.escalation.updateMany({
+          where: { conversationId, resolvedAt: null },
+          data: { resolvedAt: new Date() },
+        });
         await this.prisma.conversation.update({
           where: { id: conversationId },
-          data: { status: 'PENDING', metadata: { ...currentMeta, awaitingCsat: true } },
+          data: { status: 'RESOLVED', metadata: metaWithoutAwaitingCsat },
         });
-        this.events.emitConversationUpdate(organizationId, { conversationId, status: 'PENDING' });
+        this.events.emitConversationUpdate(organizationId, { conversationId, status: 'RESOLVED' });
       }
 
       // If escalated, send a follow-up notice to the user
