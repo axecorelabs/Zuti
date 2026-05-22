@@ -1,9 +1,252 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
-import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
+import { BotKnowledgeTab } from '@/components/bots/bot-knowledge-tab';
+
+interface AiConfig {
+  promptMode?: 'guided' | 'override';
+  systemPrompt?: string;
+  agentAlias?: string;
+  guidedPreset?: string | null;
+  mission?: string;
+  persona?: string;
+  tone?: string;
+  languageStyle?: string;
+  escalationPolicy?: string;
+  prohibitedTopics?: string;
+  extraDetails?: string;
+  creativity?: number;
+  verbosity?: number;
+}
+
+type PromptMode = 'guided' | 'override';
+
+const TONE_PRESETS = [
+  'Professional and concise',
+  'Warm and empathetic',
+  'Friendly and conversational',
+  'Confident and direct',
+  'Custom',
+] as const;
+
+const PERSONA_PRESETS = [
+  'Helpful support specialist',
+  'Technical product expert',
+  'Patient onboarding guide',
+  'Sales assistant',
+  'Custom',
+] as const;
+
+const STYLE_PRESETS = [
+  { label: 'Support', creativity: 35, verbosity: 45 },
+  { label: 'Sales', creativity: 65, verbosity: 60 },
+  { label: 'Technical', creativity: 25, verbosity: 70 },
+] as const;
+
+const GUIDED_PACK_PRESETS = [
+  {
+    label: 'Support',
+    description: 'Balanced helpdesk responses with empathy and concise guidance.',
+    mission: 'Resolve customer issues quickly and accurately while keeping the customer calm and informed at every step.',
+    tone: 'Warm and empathetic',
+    persona: 'Helpful support specialist',
+    languageStyle: 'Use plain language and reassure customers while staying precise.',
+    escalationPolicy: 'Escalate billing disputes, account lockouts, and legal/compliance questions.',
+    prohibitedTopics: 'Legal advice, medical advice, financial investment advice, policy exceptions without approval',
+    extraDetails: 'Always summarize next steps at the end. Confirm customer goal before proposing a solution when the request is ambiguous.',
+    creativity: 35,
+    verbosity: 45,
+    cardClass: 'border-emerald-500/25 bg-emerald-500/8 hover:border-emerald-400/40',
+    selectedCardClass: 'border-emerald-400/50 bg-emerald-500/15',
+  },
+  {
+    label: 'Sales',
+    description: 'Value-oriented assistant that handles objections and keeps momentum.',
+    mission: 'Help customers choose the right plan confidently by highlighting value, fit, and clear next actions without overpromising.',
+    tone: 'Friendly and conversational',
+    persona: 'Sales assistant',
+    languageStyle: 'Highlight value clearly and keep responses energetic but factual.',
+    escalationPolicy: 'Escalate contract negotiation, custom pricing exceptions, and enterprise security requests.',
+    prohibitedTopics: 'Unapproved discounts, legal commitments, competitor misinformation, guaranteed outcomes',
+    extraDetails: 'Ask one discovery question before recommending when context is missing. Use concise benefit bullets and include a clear CTA.',
+    creativity: 65,
+    verbosity: 60,
+    cardClass: 'border-amber-500/25 bg-amber-500/8 hover:border-amber-400/40',
+    selectedCardClass: 'border-amber-400/50 bg-amber-500/15',
+  },
+  {
+    label: 'Technical',
+    description: 'Methodical troubleshooting with strong detail and low speculation.',
+    mission: 'Diagnose and resolve technical issues with reproducible, step-by-step guidance and minimal ambiguity.',
+    tone: 'Professional and concise',
+    persona: 'Technical product expert',
+    languageStyle: 'Use precise technical wording and include concrete troubleshooting steps.',
+    escalationPolicy: 'Escalate production incidents, data integrity concerns, and unresolved infrastructure issues.',
+    prohibitedTopics: 'Speculative root causes, unsupported workarounds, security bypasses, irreversible actions without warning',
+    extraDetails: 'Request environment/version details before advanced fixes. Prefer safest reversible steps first and state expected outcome per step.',
+    creativity: 25,
+    verbosity: 70,
+    cardClass: 'border-cyan-500/25 bg-cyan-500/8 hover:border-cyan-400/40',
+    selectedCardClass: 'border-cyan-400/50 bg-cyan-500/15',
+  },
+] as const;
+
+const GUIDED_STEPS = [
+  { id: 1, label: 'Basics' },
+  { id: 2, label: 'Policy' },
+  { id: 3, label: 'Style' },
+  { id: 4, label: 'Preview' },
+] as const;
+
+function asNonEmptyString(value: string): string | null {
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function toBoundedNumber(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function buildGuidedPromptPreview(config: AiConfig, botName: string): string {
+  const mission = asNonEmptyString(config.mission ?? '');
+  const agentAlias = asNonEmptyString(config.agentAlias ?? '');
+  const persona = asNonEmptyString(config.persona ?? '');
+  const tone = asNonEmptyString(config.tone ?? '');
+  const languageStyle = asNonEmptyString(config.languageStyle ?? '');
+  const escalationPolicy = asNonEmptyString(config.escalationPolicy ?? '');
+  const extraDetails = asNonEmptyString(config.extraDetails ?? '');
+  const prohibitedTopics = splitList(config.prohibitedTopics ?? '');
+  const creativity = typeof config.creativity === 'number' ? toBoundedNumber(config.creativity) : null;
+  const verbosity = typeof config.verbosity === 'number' ? toBoundedNumber(config.verbosity) : null;
+
+  const hasGuidedConfig = Boolean(
+    mission ||
+    agentAlias ||
+    persona ||
+    tone ||
+    languageStyle ||
+    escalationPolicy ||
+    extraDetails ||
+    prohibitedTopics.length ||
+    creativity !== null ||
+    verbosity !== null,
+  );
+
+  if (!hasGuidedConfig) return 'Guided preview will appear once you add at least one field.';
+
+  const lines: string[] = [
+    `You are ${agentAlias ?? botName}, a customer support AI assistant.`,
+    'Follow these operating instructions:',
+  ];
+
+  if (agentAlias) lines.push(`- Agent name to use when introducing yourself: ${agentAlias}`);
+  if (mission) lines.push(`- Mission: ${mission}`);
+  if (persona) lines.push(`- Persona: ${persona}`);
+  if (tone) lines.push(`- Tone: ${tone}`);
+  if (languageStyle) lines.push(`- Language style: ${languageStyle}`);
+  if (escalationPolicy) lines.push(`- Escalation policy: ${escalationPolicy}`);
+  if (creativity !== null) {
+    if (creativity <= 33) lines.push('- Creativity: low. Prioritize factual, direct responses over brainstorming.');
+    else if (creativity <= 66) lines.push('- Creativity: balanced. Offer one useful alternative when relevant.');
+    else lines.push('- Creativity: high. Provide creative alternatives while staying accurate and safe.');
+  }
+  if (verbosity !== null) {
+    if (verbosity <= 33) lines.push('- Response depth: brief. Keep replies short and action-focused.');
+    else if (verbosity <= 66) lines.push('- Response depth: medium. Keep explanations clear and compact.');
+    else lines.push('- Response depth: detailed. Include richer context and step-by-step guidance when helpful.');
+  }
+  if (prohibitedTopics.length > 0) {
+    lines.push(`- Do not handle these topics directly: ${prohibitedTopics.join(', ')}`);
+    lines.push('- If any prohibited topic appears, ask clarifying questions only if needed and escalate to a human.');
+  }
+  if (extraDetails) lines.push(`- Additional instructions: ${extraDetails}`);
+  lines.push('- Never fabricate facts, policies, prices, timelines, or account details.');
+  lines.push('- If information is uncertain or missing, say what is unknown, ask a clarifying question when useful, and escalate when appropriate.');
+  lines.push('- Keep responses concise, helpful, and context-aware.');
+  return lines.join('\n');
+}
+
+function PresetDropdown({
+  label,
+  value,
+  options,
+  onSelect,
+}: {
+  label: string;
+  value: string;
+  options: readonly string[];
+  onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    function onClickOutside(event: MouseEvent) {
+      if (!rootRef.current) return;
+      if (!rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">{label}</label>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`w-full h-9 rounded-xl border px-3 text-sm transition-colors flex items-center justify-between ${
+          open
+            ? 'bg-zinc-900 border-blue-500/50 text-white'
+            : 'bg-zinc-950 border-zinc-800 text-zinc-200 hover:border-zinc-700'
+        }`}
+      >
+        <span className="truncate">{value}</span>
+        <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute z-30 mt-2 w-full rounded-xl border border-zinc-800 bg-zinc-950 shadow-2xl overflow-hidden">
+          {options.map((option) => {
+            const selected = option === value;
+            return (
+              <button
+                key={option}
+                type="button"
+                onClick={() => {
+                  onSelect(option);
+                  setOpen(false);
+                }}
+                className={`w-full px-3 py-2 text-left text-sm transition-colors flex items-center justify-between ${
+                  selected
+                    ? 'bg-blue-600/15 text-blue-300'
+                    : 'text-zinc-300 hover:bg-zinc-900 hover:text-white'
+                }`}
+              >
+                <span>{option}</span>
+                {selected && <Check className="w-3.5 h-3.5" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface BotRecord {
   id: string;
@@ -19,7 +262,7 @@ interface BotRecord {
   isActive: boolean;
   webhookSet: boolean;
   createdAt: string;
-  aiConfig: Record<string, string> | null;
+  aiConfig: AiConfig | null;
   routeToRoles: string[];
 }
 
@@ -44,12 +287,31 @@ export default function BotsPage() {
   const [createTelegramToken, setCreateTelegramToken] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
+  const [editPromptMode, setEditPromptMode] = useState<PromptMode>('guided');
   const [editSystemPrompt, setEditSystemPrompt] = useState('');
+  const [editAgentAlias, setEditAgentAlias] = useState('');
+  const [editMission, setEditMission] = useState('');
+  const [editPersona, setEditPersona] = useState('Helpful support specialist');
+  const [editPersonaCustom, setEditPersonaCustom] = useState('');
+  const [editTone, setEditTone] = useState('Professional and concise');
+  const [editToneCustom, setEditToneCustom] = useState('');
+  const [editLanguageStyle, setEditLanguageStyle] = useState('');
+  const [editEscalationPolicy, setEditEscalationPolicy] = useState('');
+  const [editProhibitedTopics, setEditProhibitedTopics] = useState('');
+  const [editExtraDetails, setEditExtraDetails] = useState('');
+  const [editCreativity, setEditCreativity] = useState(45);
+  const [editVerbosity, setEditVerbosity] = useState(50);
+  const [selectedGuidedPreset, setSelectedGuidedPreset] = useState<string | null>(null);
+  const [guidedStep, setGuidedStep] = useState(1);
+  const [showPresetAgentNameModal, setShowPresetAgentNameModal] = useState(false);
+  const [pendingGuidedPreset, setPendingGuidedPreset] = useState<(typeof GUIDED_PACK_PRESETS)[number] | null>(null);
+  const [presetAgentNameDraft, setPresetAgentNameDraft] = useState('');
+  const [settingsValidationError, setSettingsValidationError] = useState<string | null>(null);
   const [editRouteToRoles, setEditRouteToRoles] = useState<string[]>(['AGENT']);
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'routing' | 'widget' | 'email' | 'telegram'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram'>('ai');
   const [saving, setSaving] = useState(false);
   const [emailLocalPart, setEmailLocalPart] = useState('');
   const [emailSaving, setEmailSaving] = useState(false);
@@ -72,6 +334,49 @@ export default function BotsPage() {
     if (!settingsBot) return '';
     return `You are ${settingsBot.name}, a helpful and friendly support assistant.\n\nYour role is to:\n- Answer customer questions clearly and professionally\n- Escalate complex issues to a human agent when needed\n- Stay on-topic and avoid discussing unrelated subjects\n\nTone: Professional yet approachable.`;
   }, [settingsBot]);
+
+  const effectiveTone = useMemo(
+    () => (editTone === 'Custom' ? editToneCustom.trim() : editTone),
+    [editTone, editToneCustom],
+  );
+
+  const effectivePersona = useMemo(
+    () => (editPersona === 'Custom' ? editPersonaCustom.trim() : editPersona),
+    [editPersona, editPersonaCustom],
+  );
+
+  const guidedPromptPreview = useMemo(
+    () => buildGuidedPromptPreview(
+      {
+        mission: editMission,
+        agentAlias: editAgentAlias,
+        persona: effectivePersona,
+        tone: effectiveTone,
+        languageStyle: editLanguageStyle,
+        escalationPolicy: editEscalationPolicy,
+        prohibitedTopics: editProhibitedTopics,
+        extraDetails: editExtraDetails,
+        creativity: editCreativity,
+        verbosity: editVerbosity,
+      },
+      settingsBot?.name ?? 'Support Assistant',
+    ),
+    [
+      editMission,
+      editAgentAlias,
+      effectivePersona,
+      effectiveTone,
+      editLanguageStyle,
+      editEscalationPolicy,
+      editProhibitedTopics,
+      editExtraDetails,
+      editCreativity,
+      editVerbosity,
+      settingsBot?.name,
+    ],
+  );
+
+  const isOverridePromptMissing = editPromptMode === 'override' && editSystemPrompt.trim().length === 0;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -300,7 +605,44 @@ onBeforeUnmount(() => {
 
   const openSettings = (bot: BotRecord) => {
     setSettingsBot(bot);
-    setEditSystemPrompt(bot.aiConfig?.systemPrompt ?? '');
+    const aiConfig = bot.aiConfig ?? {};
+    const nextMode: PromptMode = aiConfig.promptMode
+      ? aiConfig.promptMode
+      : aiConfig.systemPrompt
+        ? 'override'
+        : 'guided';
+    setEditPromptMode(nextMode);
+    setEditSystemPrompt(aiConfig.systemPrompt ?? '');
+    setEditAgentAlias(aiConfig.agentAlias ?? '');
+    setEditMission(aiConfig.mission ?? '');
+    const personaValue = aiConfig.persona ?? 'Helpful support specialist';
+    const toneValue = aiConfig.tone ?? 'Professional and concise';
+
+    if (PERSONA_PRESETS.some((option) => option === personaValue)) {
+      setEditPersona(personaValue);
+      setEditPersonaCustom('');
+    } else {
+      setEditPersona('Custom');
+      setEditPersonaCustom(aiConfig.persona ?? '');
+    }
+
+    if (TONE_PRESETS.some((option) => option === toneValue)) {
+      setEditTone(toneValue);
+      setEditToneCustom('');
+    } else {
+      setEditTone('Custom');
+      setEditToneCustom(aiConfig.tone ?? '');
+    }
+
+    setEditLanguageStyle(aiConfig.languageStyle ?? '');
+    setEditEscalationPolicy(aiConfig.escalationPolicy ?? '');
+    setEditProhibitedTopics(aiConfig.prohibitedTopics ?? '');
+    setEditExtraDetails(aiConfig.extraDetails ?? '');
+    setSelectedGuidedPreset(typeof aiConfig.guidedPreset === 'string' && aiConfig.guidedPreset ? aiConfig.guidedPreset : null);
+    setGuidedStep(1);
+    setSettingsValidationError(null);
+    setEditCreativity(typeof aiConfig.creativity === 'number' ? Math.max(0, Math.min(100, Math.round(aiConfig.creativity))) : 45);
+    setEditVerbosity(typeof aiConfig.verbosity === 'number' ? Math.max(0, Math.min(100, Math.round(aiConfig.verbosity))) : 50);
     setEditRouteToRoles(bot.routeToRoles?.length ? bot.routeToRoles : ['AGENT']);
     setEditWidgetEnabled(Boolean(bot.webWidgetEnabled));
     setEditWidgetDomains((bot.webWidgetAllowedDomains ?? []).join('\n'));
@@ -321,6 +663,14 @@ onBeforeUnmount(() => {
 
   const handleSaveSettings = async () => {
     if (!orgId || !settingsBot) return;
+
+    const validationError = validateAiConfig();
+    if (validationError) {
+      setSettingsValidationError(validationError);
+      toast.error(validationError);
+      return;
+    }
+
     setSaving(true);
     try {
       const allowedDomains = editWidgetDomains
@@ -328,14 +678,32 @@ onBeforeUnmount(() => {
         .map((d) => d.trim())
         .filter(Boolean);
 
+      const nextAiConfig: AiConfig = {
+        ...(settingsBot.aiConfig ?? {}),
+        promptMode: editPromptMode,
+        systemPrompt: editSystemPrompt,
+        agentAlias: editAgentAlias,
+        guidedPreset: selectedGuidedPreset,
+        mission: editMission,
+        persona: effectivePersona,
+        tone: effectiveTone,
+        languageStyle: editLanguageStyle,
+        escalationPolicy: editEscalationPolicy,
+        prohibitedTopics: editProhibitedTopics,
+        extraDetails: editExtraDetails,
+        creativity: editCreativity,
+        verbosity: editVerbosity,
+      };
+
       const res = await botsApi.update(orgId, settingsBot.id, {
-        aiConfig: { ...(settingsBot.aiConfig ?? {}), systemPrompt: editSystemPrompt },
+        aiConfig: nextAiConfig,
         routeToRoles: editRouteToRoles,
         webWidgetEnabled: editWidgetEnabled,
         webWidgetAllowedDomains: allowedDomains,
       });
       setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? res.data : b)));
       setSettingsBot(res.data);
+      setSettingsValidationError(null);
       toast.success('Settings saved');
     } catch { toast.error('Failed to save settings'); } finally { setSaving(false); }
   };
@@ -406,6 +774,106 @@ onBeforeUnmount(() => {
     } catch { toast.error('Failed to set webhook'); }
   };
 
+  const applyStylePreset = (creativity: number, verbosity: number) => {
+    setEditCreativity(creativity);
+    setEditVerbosity(verbosity);
+    setSelectedGuidedPreset(null);
+  };
+
+  const applyGuidedPack = (preset: (typeof GUIDED_PACK_PRESETS)[number]) => {
+    setEditMission(preset.mission);
+    setEditTone(preset.tone);
+    setEditToneCustom('');
+    setEditPersona(preset.persona);
+    setEditPersonaCustom('');
+    setEditLanguageStyle(preset.languageStyle);
+    setEditEscalationPolicy(preset.escalationPolicy);
+    setEditProhibitedTopics(preset.prohibitedTopics);
+    setEditExtraDetails(preset.extraDetails);
+    setEditCreativity(preset.creativity);
+    setEditVerbosity(preset.verbosity);
+    setSelectedGuidedPreset(preset.label);
+  };
+
+  const startGuidedPackFlow = (preset: (typeof GUIDED_PACK_PRESETS)[number]) => {
+    setPendingGuidedPreset(preset);
+    setPresetAgentNameDraft(editAgentAlias.trim() || `${settingsBot?.name ?? 'Support'} Assistant`);
+    setShowPresetAgentNameModal(true);
+  };
+
+  const confirmGuidedPackFlow = () => {
+    if (!pendingGuidedPreset) return;
+    applyGuidedPack(pendingGuidedPreset);
+    setEditAgentAlias(presetAgentNameDraft.trim());
+    setGuidedStep(4);
+    setShowPresetAgentNameModal(false);
+    setPendingGuidedPreset(null);
+    setSettingsValidationError(null);
+  };
+
+  const closeGuidedPackFlow = () => {
+    setShowPresetAgentNameModal(false);
+    setPendingGuidedPreset(null);
+  };
+
+  const resetToRecommended = () => {
+    applyGuidedPack(GUIDED_PACK_PRESETS[0]);
+  };
+
+  const resetGuidedForm = () => {
+    setEditAgentAlias('');
+    setEditMission('');
+    setEditTone('Professional and concise');
+    setEditToneCustom('');
+    setEditPersona('Helpful support specialist');
+    setEditPersonaCustom('');
+    setEditLanguageStyle('');
+    setEditEscalationPolicy('');
+    setEditProhibitedTopics('');
+    setEditExtraDetails('');
+    setEditCreativity(45);
+    setEditVerbosity(50);
+    setSelectedGuidedPreset(null);
+    setGuidedStep(1);
+    setSettingsValidationError(null);
+  };
+
+  const validateAiConfig = (): string | null => {
+    if (editPromptMode === 'override' && editSystemPrompt.trim().length === 0) {
+      return 'Prompt Override is selected but the override text is empty. Add text or switch back to Guided Config.';
+    }
+
+    if (editExtraDetails.length > 1000) {
+      return 'Extra Details is too long. Keep it under 1000 characters.';
+    }
+
+    if (editProhibitedTopics.length > 300) {
+      return 'Prohibited Topics is too long. Keep it under 300 characters.';
+    }
+
+    const topics = splitList(editProhibitedTopics);
+    if (topics.length > 12) {
+      return 'Use up to 12 prohibited topics for clarity.';
+    }
+    if (topics.some((topic) => topic.length > 60)) {
+      return 'Each prohibited topic should be 60 characters or less.';
+    }
+    if (topics.some((topic) => /[<>]/.test(topic))) {
+      return 'Prohibited Topics contains unsupported characters.';
+    }
+
+    const broadTopic = topics.some((topic) => /^(all|everything|anything|any topic)$/i.test(topic));
+    if (broadTopic) {
+      return 'Prohibited topics cannot be set to broad values like "all" or "everything".';
+    }
+
+    if (topics.length > 0 && /never\s+escalate/i.test(editEscalationPolicy)) {
+      return 'Escalation Policy conflicts with Prohibited Topics. Remove "never escalate" or adjust prohibited topics.';
+    }
+
+    return null;
+  };
+
   // ── Settings step (full-page inline view) ─────────────────────────────────
   if (settingsBot) {
     return (
@@ -423,7 +891,17 @@ onBeforeUnmount(() => {
           <span className="text-sm text-white font-medium">{settingsBot.name}</span>
           <ChevronRight className="w-3 h-3 text-zinc-700" />
           <span className="text-sm text-zinc-500">
-            {settingsTab === 'ai' ? 'AI Settings' : settingsTab === 'routing' ? 'Escalation Routing' : settingsTab === 'email' ? 'Email Channel' : settingsTab === 'telegram' ? 'Telegram Channel' : 'Website Widget'}
+            {settingsTab === 'ai'
+              ? 'AI Settings'
+              : settingsTab === 'knowledge'
+                ? 'Knowledge Packs'
+                : settingsTab === 'routing'
+                  ? 'Escalation Routing'
+                  : settingsTab === 'email'
+                    ? 'Email Channel'
+                    : settingsTab === 'telegram'
+                      ? 'Telegram Channel'
+                      : 'Website Widget'}
           </span>
         </div>
 
@@ -431,6 +909,7 @@ onBeforeUnmount(() => {
           <div className="inline-flex rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
             {([
               { key: 'ai', label: 'AI' },
+              { key: 'knowledge', label: 'Knowledge' },
               { key: 'routing', label: 'Routing' },
               { key: 'widget', label: 'Widget' },
               { key: 'email', label: 'Email' },
@@ -462,27 +941,379 @@ onBeforeUnmount(() => {
                 <div className="w-8 h-8 rounded-lg bg-blue-600/15 border border-blue-500/20 flex items-center justify-center shrink-0">
                   <Sparkles className="w-4 h-4 text-blue-400" />
                 </div>
-                <div>
-                  <h2 className="text-sm font-semibold text-white">System Prompt</h2>
-                  <p className="text-xs text-zinc-500 font-light">Define the bot&apos;s personality, tone, and capabilities.</p>
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-white">AI Configuration</h2>
+                  <p className="text-xs text-zinc-500 font-light">Choose either guided controls or a raw system prompt override.</p>
+                </div>
+                <div className="ml-auto rounded-lg border border-zinc-800 bg-zinc-900/70 px-2.5 py-1 text-[11px] text-zinc-400">
+                  Active mode: <span className="text-white font-medium">{editPromptMode === 'guided' ? 'Guided Config' : 'Prompt Override'}</span>
                 </div>
               </div>
-              <textarea
-                rows={24}
-                value={editSystemPrompt}
-                onChange={(e) => setEditSystemPrompt(e.target.value)}
-                className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50 transition-colors font-light leading-relaxed"
-                placeholder={systemPromptPlaceholder}
-              />
-              <div className="flex items-center justify-between mt-2.5">
-                <p className="text-[11px] text-zinc-600 font-light">
-                  Leave blank to use the default prompt. Plain text only.
-                </p>
-                <span className="text-[11px] text-zinc-700 tabular-nums font-light">
-                  {editSystemPrompt.length.toLocaleString()} chars
-                </span>
+
+              <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-1 inline-flex">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditPromptMode('guided');
+                    setGuidedStep(1);
+                    setSettingsValidationError(null);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    editPromptMode === 'guided' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-1">
+                    Guided Config
+                    <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">Recommended</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditPromptMode('override');
+                    setSettingsValidationError(null);
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    editPromptMode === 'override' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-white'
+                  }`}
+                >
+                  Prompt Override
+                </button>
               </div>
+
+              {editPromptMode === 'guided' ? (
+                <>
+                  <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                      {GUIDED_STEPS.map((step) => {
+                        const active = guidedStep === step.id;
+                        const complete = guidedStep > step.id;
+                        return (
+                          <button
+                            key={step.id}
+                            type="button"
+                            onClick={() => setGuidedStep(step.id)}
+                            className={`px-2 py-1.5 rounded-lg text-xs transition-colors ${
+                              active
+                                ? 'bg-blue-600 text-white'
+                                : complete
+                                  ? 'bg-zinc-800 text-zinc-300'
+                                  : 'text-zinc-500 hover:text-white hover:bg-zinc-800'
+                            }`}
+                          >
+                            {step.id}. {step.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={resetToRecommended}
+                        className="text-[11px] text-blue-400 hover:text-blue-300"
+                      >
+                        Reset to recommended
+                      </button>
+                      <span className="text-zinc-700">•</span>
+                      <button
+                        type="button"
+                        onClick={resetGuidedForm}
+                        className="text-[11px] text-zinc-400 hover:text-white"
+                      >
+                        Reset whole form
+                      </button>
+                    </div>
+                  </div>
+
+                  {guidedStep === 1 && (
+                    <div className="space-y-3">
+                      <div>
+                        <p className="text-xs text-zinc-400 font-medium mb-1.5">Quick-start packs</p>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                          {GUIDED_PACK_PRESETS.map((preset) => {
+                            const selected = selectedGuidedPreset === preset.label;
+                            return (
+                              <button
+                                key={preset.label}
+                                type="button"
+                                onClick={() => startGuidedPackFlow(preset)}
+                                className={`text-left p-3 rounded-xl border transition-colors ${
+                                  selected
+                                    ? preset.selectedCardClass
+                                    : preset.cardClass
+                                }`}
+                              >
+                                <p className="text-xs font-semibold text-white">{preset.label}</p>
+                                <p className="text-[11px] text-zinc-500 mt-1 leading-relaxed">{preset.description}</p>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center gap-1.5 mb-1.5">
+                          <label className="block text-xs text-zinc-400 font-medium">Agent Name (what customers see)</label>
+                          <span
+                            className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-700 text-[10px] text-zinc-500"
+                            title="This only affects how the assistant introduces itself in chat responses. It does not rename the bot record."
+                            aria-label="This only affects self-introduction text, not bot record naming"
+                          >
+                            i
+                          </span>
+                        </div>
+                        <input
+                          type="text"
+                          value={editAgentAlias}
+                          onChange={(e) => setEditAgentAlias(e.target.value)}
+                          placeholder={`e.g. ${settingsBot.name} Assistant`}
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Mission</label>
+                        <textarea
+                          rows={2}
+                          value={editMission}
+                          onChange={(e) => setEditMission(e.target.value)}
+                          placeholder="Resolve customer issues quickly while staying accurate and empathetic."
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <PresetDropdown
+                          label="Tone"
+                          value={editTone}
+                          options={TONE_PRESETS}
+                          onSelect={setEditTone}
+                        />
+                        <PresetDropdown
+                          label="Persona"
+                          value={editPersona}
+                          options={PERSONA_PRESETS}
+                          onSelect={setEditPersona}
+                        />
+                      </div>
+
+                      {editTone === 'Custom' && (
+                        <div>
+                          <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Custom Tone</label>
+                          <input
+                            type="text"
+                            value={editToneCustom}
+                            onChange={(e) => setEditToneCustom(e.target.value)}
+                            placeholder="Professional, calm, concise"
+                            className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                          />
+                        </div>
+                      )}
+
+                      {editPersona === 'Custom' && (
+                        <div>
+                          <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Custom Persona</label>
+                          <input
+                            type="text"
+                            value={editPersonaCustom}
+                            onChange={(e) => setEditPersonaCustom(e.target.value)}
+                            placeholder="Helpful product specialist"
+                            className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {guidedStep === 2 && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Language Style</label>
+                        <input
+                          type="text"
+                          value={editLanguageStyle}
+                          onChange={(e) => setEditLanguageStyle(e.target.value)}
+                          placeholder="Use plain English; avoid jargon"
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Escalation Policy</label>
+                        <textarea
+                          rows={2}
+                          value={editEscalationPolicy}
+                          onChange={(e) => setEditEscalationPolicy(e.target.value)}
+                          placeholder="Escalate billing disputes, account lockouts, and legal/compliance questions."
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Prohibited Topics</label>
+                        <input
+                          type="text"
+                          value={editProhibitedTopics}
+                          onChange={(e) => setEditProhibitedTopics(e.target.value)}
+                          placeholder="Legal advice, medical advice, refunds above $5000"
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                        />
+                        <p className="text-[11px] text-zinc-600 mt-1.5 font-light">Comma-separated list. These are converted into guardrails in the runtime prompt.</p>
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Extra Details</label>
+                        <textarea
+                          rows={3}
+                          value={editExtraDetails}
+                          onChange={(e) => setEditExtraDetails(e.target.value)}
+                          placeholder="Any extra behavior notes not covered above (industry nuances, response constraints, preferred wording, etc)."
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {guidedStep === 3 && (
+                    <div className="rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900 via-zinc-950 to-zinc-900 p-4 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-sm text-white font-medium">Style Tuning</h3>
+                        <span className="text-[11px] text-zinc-500">Dial personality and detail</span>
+                      </div>
+                      <p className="text-[11px] text-zinc-500 leading-relaxed">
+                        These sliders control how the agent writes, not what it is allowed to do. Guardrails,
+                        prohibited topics, and escalation rules still take priority.
+                      </p>
+                      <div>
+                        <p className="text-[11px] text-zinc-500 mb-1.5">Recommended ranges</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {STYLE_PRESETS.map((preset) => (
+                            <button
+                              key={`shared-style-${preset.label}`}
+                              type="button"
+                              onClick={() => applyStylePreset(preset.creativity, preset.verbosity)}
+                              className="px-2 py-1 rounded-md text-[10px] border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
+                              title={`${preset.label}: creativity ${preset.creativity}, response depth ${preset.verbosity}`}
+                            >
+                              {preset.label}: {preset.creativity}/{preset.verbosity}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs text-zinc-400 font-medium">Creativity</label>
+                          <span className="text-xs text-amber-300 font-semibold">{editCreativity}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={editCreativity}
+                          onChange={(e) => setEditCreativity(Number(e.target.value))}
+                          className="w-full accent-amber-400"
+                        />
+                        <div className="flex items-center justify-between text-[11px] text-zinc-600 mt-1">
+                          <span>Predictable</span>
+                          <span>Inventive</span>
+                        </div>
+                        <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
+                          {editCreativity <= 33
+                            ? 'Low creativity: keeps responses conservative, factual, and less exploratory.'
+                            : editCreativity <= 66
+                              ? 'Balanced creativity: mixes reliability with occasional alternative suggestions.'
+                              : 'High creativity: offers more varied suggestions and phrasing while staying on-policy.'}
+                        </p>
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <label className="text-xs text-zinc-400 font-medium">Response Depth</label>
+                          <span className="text-xs text-cyan-300 font-semibold">{editVerbosity}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          value={editVerbosity}
+                          onChange={(e) => setEditVerbosity(Number(e.target.value))}
+                          className="w-full accent-cyan-400"
+                        />
+                        <div className="flex items-center justify-between text-[11px] text-zinc-600 mt-1">
+                          <span>Brief</span>
+                          <span>Detailed</span>
+                        </div>
+                        <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
+                          {editVerbosity <= 33
+                            ? 'Brief depth: short, action-first answers with minimal explanation.'
+                            : editVerbosity <= 66
+                              ? 'Medium depth: concise answers plus key context when needed.'
+                              : 'Detailed depth: richer explanations, step-by-step guidance, and more context.'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {guidedStep === 4 && (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs text-zinc-300 font-medium">Runtime Prompt Preview</p>
+                        <span className="text-[11px] text-zinc-600">Read-only</span>
+                      </div>
+                      <pre className="w-full overflow-x-auto bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[11px] leading-relaxed text-zinc-400 whitespace-pre-wrap break-words max-h-64">
+{guidedPromptPreview}
+                      </pre>
+                    </div>
+                  )}
+
+                  <div className="mt-4 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => setGuidedStep((s) => Math.max(1, s - 1))}
+                      disabled={guidedStep === 1}
+                      className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600 disabled:opacity-40"
+                    >
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setGuidedStep((s) => Math.min(4, s + 1))}
+                      disabled={guidedStep === 4}
+                      className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">System Prompt Override</label>
+                  <textarea
+                    rows={20}
+                    value={editSystemPrompt}
+                    onChange={(e) => setEditSystemPrompt(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50 transition-colors font-mono leading-relaxed"
+                    placeholder={systemPromptPlaceholder}
+                  />
+                  <div className="flex items-center justify-between mt-2.5">
+                    <p className="text-[11px] text-zinc-600 font-light">
+                      Raw prompt mode bypasses guided controls. Plain text only.
+                    </p>
+                    <span className="text-[11px] text-zinc-700 tabular-nums font-light">
+                      {editSystemPrompt.length.toLocaleString()} chars
+                    </span>
+                  </div>
+                  {isOverridePromptMissing && (
+                    <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
+                      Override is active but empty. Saving is disabled until you add override text or switch back to Guided Config.
+                    </div>
+                  )}
+                </>
+              )}
             </div>
+            )}
+
+            {/* Routing */}
+            {settingsTab === 'knowledge' && orgId && (
+              <BotKnowledgeTab orgId={orgId} botId={settingsBot.id} active={settingsTab === 'knowledge'} />
             )}
 
             {/* Routing */}
@@ -819,14 +1650,19 @@ onBeforeUnmount(() => {
               >
                 ← Back to bots
               </button>
-              <button
-                onClick={handleSaveSettings}
-                disabled={saving}
-                className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-              >
-                {saving ? 'Saving…' : 'Save settings'}
-              </button>
+              {settingsTab !== 'knowledge' && (
+                <button
+                  onClick={handleSaveSettings}
+                  disabled={saving || isOverridePromptMissing}
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                >
+                  {saving ? 'Saving…' : 'Save settings'}
+                </button>
+              )}
             </div>
+            {settingsValidationError && (
+              <p className="text-xs text-amber-300 mt-2">{settingsValidationError}</p>
+            )}
           </div>
 
           {/* Right: bot info sidebar */}
@@ -874,7 +1710,7 @@ onBeforeUnmount(() => {
                   <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
                     settingsBot.aiConfig?.systemPrompt ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-800 text-zinc-600'
                   }`}>
-                    {settingsBot.aiConfig?.systemPrompt ? 'Custom' : 'Default'}
+                    {settingsBot.aiConfig?.promptMode === 'guided' ? 'Guided' : settingsBot.aiConfig?.systemPrompt ? 'Override' : 'Default'}
                   </span>
                 </div>
                 <div className="flex items-start justify-between gap-2">
@@ -984,6 +1820,46 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+
+        {showPresetAgentNameModal && pendingGuidedPreset && (
+          <Modal onClose={closeGuidedPackFlow}>
+            <div className="w-[92vw] max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
+              <h3 className="text-sm font-semibold text-white">Set Agent Name</h3>
+              <p className="text-xs text-zinc-500 mt-1">
+                "{pendingGuidedPreset.label}" preset will be applied. Choose how the agent introduces itself.
+              </p>
+
+              <div className="mt-4">
+                <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Agent Name</label>
+                <input
+                  type="text"
+                  value={presetAgentNameDraft}
+                  onChange={(e) => setPresetAgentNameDraft(e.target.value)}
+                  placeholder={`e.g. ${settingsBot.name} Assistant`}
+                  className="w-full h-9 bg-zinc-900 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                />
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeGuidedPackFlow}
+                  className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmGuidedPackFlow}
+                  disabled={!presetAgentNameDraft.trim()}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
+                >
+                  Apply and go to Preview
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
       </div>
     );
   }

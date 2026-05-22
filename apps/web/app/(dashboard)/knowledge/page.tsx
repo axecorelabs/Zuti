@@ -16,7 +16,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { api, knowledgeApi, orgsApi } from '@/lib/api';
+import { api, botsApi, knowledgeApi, orgsApi } from '@/lib/api';
 
 type IngestTab = 'url' | 'text';
 type PageTab = 'sources' | 'suggestions' | 'gaps';
@@ -27,8 +27,15 @@ type KnowledgeItem = {
   name: string;
   source_type: 'url' | 'text' | 'file' | string;
   source_url?: string | null;
+  bot_id?: string | null;
+  scope?: 'shared' | 'agent' | string;
   chunk_count: number;
   ingested_at: string;
+};
+
+type BotOption = {
+  id: string;
+  name: string;
 };
 
 type KnowledgeSuggestion = {
@@ -63,6 +70,8 @@ export default function KnowledgePage() {
   const pageTab: PageTab = rawTab === 'suggestions' || rawTab === 'gaps' ? rawTab : 'sources';
 
   const [orgId, setOrgId] = useState<string | null>(null);
+  const [bots, setBots] = useState<BotOption[]>([]);
+  const [knowledgeScopeBotId, setKnowledgeScopeBotId] = useState<string>('shared');
   const [ingestTab, setIngestTab] = useState<IngestTab>('url');
 
   const [url, setUrl] = useState('');
@@ -97,15 +106,25 @@ export default function KnowledgePage() {
     router.replace(q ? `/knowledge?${q}` : '/knowledge');
   };
 
-  const loadItems = async (targetOrgId: string) => {
+  const loadItems = async (targetOrgId: string, scopeBotId = knowledgeScopeBotId) => {
     setItemsLoading(true);
     try {
-      const res = await api.get(`/organizations/${targetOrgId}/knowledge`);
+      const params = scopeBotId === 'shared' ? undefined : { botId: scopeBotId };
+      const res = await api.get(`/organizations/${targetOrgId}/knowledge`, { params });
       setItems(res.data ?? []);
     } catch {
       toast.error('Failed to load knowledge items');
     } finally {
       setItemsLoading(false);
+    }
+  };
+
+  const loadBots = async (targetOrgId: string) => {
+    try {
+      const res = await botsApi.list(targetOrgId);
+      setBots((res.data ?? []).map((bot: { id: string; name: string }) => ({ id: bot.id, name: bot.name })));
+    } catch {
+      setBots([]);
     }
   };
 
@@ -139,13 +158,19 @@ export default function KnowledgePage() {
         if (res.data.length > 0) {
           const firstOrgId = res.data[0].id;
           setOrgId(firstOrgId);
-          loadItems(firstOrgId);
+          loadItems(firstOrgId, 'shared');
+          loadBots(firstOrgId);
           loadSuggestions(firstOrgId);
           loadGaps(firstOrgId);
         }
       })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!orgId) return;
+    loadItems(orgId, knowledgeScopeBotId);
+  }, [orgId, knowledgeScopeBotId]);
 
   const handleIngestUrl = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -155,6 +180,7 @@ export default function KnowledgePage() {
       await api.post(`/organizations/${orgId}/knowledge/ingest/url`, {
         url,
         name: urlName || url,
+        ...(knowledgeScopeBotId !== 'shared' ? { botId: knowledgeScopeBotId } : {}),
       });
       toast.success('URL ingested successfully');
       setUrl('');
@@ -175,6 +201,7 @@ export default function KnowledgePage() {
       await api.post(`/organizations/${orgId}/knowledge/ingest/text`, {
         name: textName || 'Company writeup',
         text: textContent,
+        ...(knowledgeScopeBotId !== 'shared' ? { botId: knowledgeScopeBotId } : {}),
       });
       toast.success('Text ingested successfully');
       setTextName('');
@@ -336,6 +363,23 @@ export default function KnowledgePage() {
 
       {pageTab === 'sources' ? (
         <>
+          <div className="mb-4 card p-4">
+            <label className="block text-xs text-zinc-500 mb-1.5 font-normal">Knowledge scope</label>
+            <select
+              value={knowledgeScopeBotId}
+              onChange={(e) => setKnowledgeScopeBotId(e.target.value)}
+              className="input-base"
+            >
+              <option value="shared">Shared across all agents</option>
+              {bots.map((bot) => (
+                <option key={bot.id} value={bot.id}>Agent pack: {bot.name}</option>
+              ))}
+            </select>
+            <p className="text-[11px] text-zinc-600 mt-1.5">
+              In this scope, new sources are added to the selected pack. Chat retrieval uses shared knowledge plus each agent's own pack.
+            </p>
+          </div>
+
           <div className="grid lg:grid-cols-2 gap-6">
             <div className="card p-6">
               <h2 className="font-brand font-semibold text-base tracking-tight text-white mb-4">Add source</h2>
@@ -459,6 +503,9 @@ export default function KnowledgePage() {
                           <div className="mt-1 flex items-center gap-2 text-[11px] text-zinc-500">
                             <span className="px-1.5 py-0.5 rounded-md border border-zinc-800 text-zinc-400">
                               {sourceTypeLabel(item.source_type)}
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded-md border border-zinc-800 text-zinc-400">
+                              {item.scope === 'agent' ? 'Agent pack' : 'Shared'}
                             </span>
                             <span>{item.chunk_count} chunks</span>
                             <span>•</span>

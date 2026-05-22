@@ -3,6 +3,7 @@ import {
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
@@ -16,6 +17,41 @@ export class KnowledgeService {
 
   private get aiUrl() {
     return this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+  }
+
+  private get aiTimeoutMs() {
+    const configured = Number(this.config.get<string>('AI_SERVICE_TIMEOUT_MS') ?? '10000');
+    if (Number.isNaN(configured) || configured <= 0) return 10000;
+    return configured;
+  }
+
+  private get fileIngestEnabled() {
+    return this.config.get<string>('KNOWLEDGE_FILE_INGEST_ENABLED') === 'true';
+  }
+
+  private async fetchAi(path: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.aiTimeoutMs);
+
+    try {
+      return await fetch(`${this.aiUrl}${path}`, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (error: unknown) {
+      const reason =
+        error instanceof Error && error.name === 'AbortError'
+          ? `timed out after ${this.aiTimeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : 'unknown network error';
+
+      throw new ServiceUnavailableException(
+        `AI service unreachable at ${this.aiUrl} (${reason}). Ensure the ai-service is running and AI_SERVICE_URL is correct.`,
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async parseResponse(res: Response): Promise<unknown> {
@@ -38,7 +74,7 @@ export class KnowledgeService {
   }
 
   private async request(path: string, init: RequestInit): Promise<unknown> {
-    const res = await fetch(`${this.aiUrl}${path}`, init);
+    const res = await this.fetchAi(path, init);
     return this.parseResponse(res);
   }
 
@@ -50,29 +86,32 @@ export class KnowledgeService {
     });
   }
 
-  async list(organizationId: string) {
-    return this.request(`/api/v1/knowledge/${organizationId}/items`, {
+  async list(organizationId: string, botId?: string) {
+    const suffix = botId ? `?bot_id=${encodeURIComponent(botId)}` : '';
+    return this.request(`/api/v1/knowledge/${organizationId}/items${suffix}`, {
       method: 'GET',
     });
   }
 
-  async ingestUrl(organizationId: string, url: string, name: string) {
+  async ingestUrl(organizationId: string, url: string, name: string, botId?: string) {
     const knowledgeFileId = `kf_${organizationId}_${Date.now()}`;
     return this.post('/api/v1/knowledge/ingest/url', {
       organization_id: organizationId,
       knowledge_file_id: knowledgeFileId,
       url,
       name,
+      bot_id: botId,
     });
   }
 
-  async ingestText(organizationId: string, name: string, text: string) {
+  async ingestText(organizationId: string, name: string, text: string, botId?: string) {
     const knowledgeFileId = `kf_${organizationId}_${Date.now()}`;
     return this.post('/api/v1/knowledge/ingest/text', {
       organization_id: organizationId,
       knowledge_file_id: knowledgeFileId,
       name,
       text,
+      bot_id: botId,
     });
   }
 
@@ -82,14 +121,20 @@ export class KnowledgeService {
     buffer: Buffer,
     originalname: string,
     mimetype: string,
+    botId?: string,
   ) {
+    if (!this.fileIngestEnabled) {
+      throw new BadRequestException('Knowledge file ingest is disabled. Use URL or text ingestion for now.');
+    }
+
     const knowledgeFileId = `kf_${organizationId}_${Date.now()}`;
     const form = new FormData();
     form.append('organization_id', organizationId);
     form.append('knowledge_file_id', knowledgeFileId);
+    if (botId) form.append('bot_id', botId);
     form.append('file', new Blob([new Uint8Array(buffer)], { type: mimetype }), originalname);
 
-    const res = await fetch(`${this.aiUrl}/api/v1/knowledge/ingest/file`, {
+    const res = await this.fetchAi('/api/v1/knowledge/ingest/file', {
       method: 'POST',
       body: form,
     });

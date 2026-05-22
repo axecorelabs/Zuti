@@ -15,6 +15,7 @@ import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
+import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
@@ -209,7 +210,6 @@ export class TelegramProcessor {
           channel: 'TELEGRAM',
           userReply: message.text.trim(),
           lastAssistantMessage: lastAssistantMessage?.content ?? null,
-          model: typeof aiConfig.model === 'string' ? aiConfig.model : null,
         });
         if (rating === 'positive') {
           await this.prisma.conversation.update({
@@ -243,9 +243,10 @@ export class TelegramProcessor {
       }
       const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
       const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
+      const systemPrompt = buildAgentSystemPrompt(aiConfig, bot?.name ?? 'Assistant');
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
-        bot?.name ?? 'Assistant', aiConfig.systemPrompt ?? null, org?.name ?? null, userMessage.id,
+        bot?.name ?? 'Assistant', systemPrompt, org?.name ?? null, userMessage.id,
       );
     }
   }

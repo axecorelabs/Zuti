@@ -68,6 +68,7 @@ class IngestionService:
         knowledge_file_id: str,
         url: str,
         name: str,
+        bot_id: str | None = None,
     ) -> int:
         self._validate_public_url(url)
         async with httpx.AsyncClient(follow_redirects=True, timeout=30) as http:
@@ -84,6 +85,7 @@ class IngestionService:
                 "source_type": "url",
                 "source_name": name,
                 "source_url": url,
+                "bot_id": bot_id,
             },
         )
 
@@ -93,6 +95,7 @@ class IngestionService:
         knowledge_file_id: str,
         name: str,
         text: str,
+        bot_id: str | None = None,
     ) -> int:
         self._validate_text_safety(text)
         return await self._ingest_text(
@@ -103,6 +106,7 @@ class IngestionService:
                 "source_type": "text",
                 "source_name": name,
                 "source_url": None,
+                "bot_id": bot_id,
             },
         )
 
@@ -113,6 +117,7 @@ class IngestionService:
         content: bytes,
         filename: str,
         content_type: str,
+        bot_id: str | None = None,
     ) -> int:
         text = self._extract_text(content, filename, content_type)
         self._validate_file_safety(filename)
@@ -125,6 +130,7 @@ class IngestionService:
                 "source_type": "file",
                 "source_name": filename,
                 "source_url": None,
+                "bot_id": bot_id,
             },
         )
 
@@ -144,6 +150,8 @@ class IngestionService:
 
         from qdrant_client.models import PointStruct
         ingested_at = datetime.now(timezone.utc).isoformat()
+        bot_id = metadata.get("bot_id")
+        bot_scope = f"bot_{bot_id}" if bot_id else "__shared__"
         points = [
             PointStruct(
                 id=str(uuid.uuid4()),
@@ -156,6 +164,8 @@ class IngestionService:
                     "source_type": metadata.get("source_type", "text"),
                     "source_name": metadata.get("source_name") or knowledge_file_id,
                     "source_url": metadata.get("source_url"),
+                    "bot_id": bot_id,
+                    "bot_scope": bot_scope,
                     "ingested_at": ingested_at,
                 },
             )
@@ -199,7 +209,7 @@ class IngestionService:
         client = AsyncQdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
         await client.delete_collection(_collection(organization_id))
 
-    async def list_knowledge_items(self, organization_id: str) -> list[dict]:
+    async def list_knowledge_items(self, organization_id: str, bot_id: str | None = None) -> list[dict]:
         from qdrant_client import AsyncQdrantClient
         from qdrant_client.http.exceptions import UnexpectedResponse
 
@@ -216,6 +226,10 @@ class IngestionService:
         offset = None
         items: dict[str, dict] = {}
 
+        target_scopes = {"__shared__"}
+        if bot_id:
+            target_scopes.add(f"bot_{bot_id}")
+
         while True:
             points, next_offset = await client.scroll(
                 collection_name=collection,
@@ -231,12 +245,18 @@ class IngestionService:
                 if not knowledge_file_id:
                     continue
 
+                bot_scope = str(payload.get("bot_scope") or "__shared__")
+                if bot_id and bot_scope not in target_scopes:
+                    continue
+
                 if knowledge_file_id not in items:
                     items[knowledge_file_id] = {
                         "knowledge_file_id": knowledge_file_id,
                         "name": payload.get("source_name") or knowledge_file_id,
                         "source_type": payload.get("source_type") or "text",
                         "source_url": payload.get("source_url"),
+                        "bot_id": payload.get("bot_id"),
+                        "scope": "agent" if bot_scope != "__shared__" else "shared",
                         "chunk_count": 0,
                         "ingested_at": payload.get("ingested_at") or "",
                     }

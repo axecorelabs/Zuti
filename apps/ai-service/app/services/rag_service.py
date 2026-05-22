@@ -55,17 +55,26 @@ class RagService:
                 api_key=settings.QDRANT_API_KEY or None,
             )
             collection = _collection(organization_id)
+            bot_scope = f"bot_{bot_id}"
 
             response = await client.query_points(
                 collection_name=collection,
                 query=query_vector,
-                limit=top_k,
+                limit=max(top_k * 4, top_k),
                 score_threshold=0.5,
             )
 
+            allowed_scopes = {"", "__shared__", bot_scope}
             for hit in response.points:
                 payload = hit.payload or {}
+                point_scope = str(payload.get("bot_scope") or "")
+                point_bot_id = str(payload.get("bot_id") or "")
+                # Backward compatible: unscoped legacy chunks are treated as shared.
+                if point_scope not in allowed_scopes and point_bot_id not in {"", bot_id}:
+                    continue
                 sources.append({"content": payload.get("content", ""), "score": hit.score})
+                if len(sources) >= top_k:
+                    break
 
             context = "\n\n".join(s["content"] for s in sources)
         except Exception as e:

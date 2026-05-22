@@ -18,6 +18,7 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
+import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -419,7 +420,6 @@ export class BotsService {
         channel: 'WIDGET',
         userReply: userText.trim(),
         lastAssistantMessage: lastAssistantMessage?.content ?? null,
-        model: typeof aiConfig.model === 'string' ? aiConfig.model : null,
       });
       if (rating === 'positive') {
         await this.prisma.conversation.update({
@@ -533,7 +533,7 @@ export class BotsService {
           history,
           bot_name: bot.name,
           org_name: bot.organization?.name,
-          system_prompt: aiConfig.systemPrompt ?? null,
+          system_prompt: buildAgentSystemPrompt(aiConfig, bot.name),
           customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(bot.organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
@@ -563,7 +563,6 @@ export class BotsService {
         conversationId: conversation.id,
         usageType: 'CUSTOMER_REPLY',
         provider: 'openrouter',
-        model: typeof aiConfig.model === 'string' ? aiConfig.model : undefined,
         promptTokens,
         completionTokens,
         metadata: {
@@ -578,7 +577,6 @@ export class BotsService {
         conversationId: conversation.id,
         usageType: 'ESCALATION_ANALYSIS',
         provider: 'openrouter',
-        model: typeof aiConfig.model === 'string' ? aiConfig.model : undefined,
         promptTokens: 0,
         completionTokens: 0,
         metadata: {

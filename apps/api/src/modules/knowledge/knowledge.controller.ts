@@ -23,11 +23,13 @@ import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 class IngestUrlDto {
   @IsString() @IsNotEmpty() url: string;
   @IsString() @IsNotEmpty() name: string;
+  @IsOptional() @IsString() botId?: string;
 }
 
 class IngestTextDto {
   @IsString() @IsNotEmpty() name: string;
   @IsString() @IsNotEmpty() text: string;
+  @IsOptional() @IsString() botId?: string;
 }
 
 class UpdateSuggestionDto {
@@ -53,8 +55,8 @@ export class KnowledgeController {
   constructor(private readonly knowledge: KnowledgeService) {}
 
   @Get()
-  list(@Param('id') orgId: string) {
-    return this.knowledge.list(orgId);
+  list(@Param('id') orgId: string, @Query('botId') botId?: string) {
+    return this.knowledge.list(orgId, botId);
   }
 
   @Get('suggestions')
@@ -109,12 +111,12 @@ export class KnowledgeController {
 
   @Post('ingest/url')
   ingestUrl(@Param('id') orgId: string, @Body() dto: IngestUrlDto) {
-    return this.knowledge.ingestUrl(orgId, dto.url, dto.name);
+    return this.knowledge.ingestUrl(orgId, dto.url, dto.name, dto.botId);
   }
 
   @Post('ingest/text')
   ingestText(@Param('id') orgId: string, @Body() dto: IngestTextDto) {
-    return this.knowledge.ingestText(orgId, dto.name, dto.text);
+    return this.knowledge.ingestText(orgId, dto.name, dto.text, dto.botId);
   }
 
   @Post('ingest/file')
@@ -122,6 +124,7 @@ export class KnowledgeController {
   ingestFile(
     @Param('id') orgId: string,
     @Body('name') name: string,
+    @Body('botId') botId: string | undefined,
     @UploadedFile() file: { buffer: Buffer; originalname: string; mimetype: string },
   ) {
     return this.knowledge.ingestFile(
@@ -130,6 +133,7 @@ export class KnowledgeController {
       file.buffer,
       file.originalname,
       file.mimetype,
+      botId,
     );
   }
 

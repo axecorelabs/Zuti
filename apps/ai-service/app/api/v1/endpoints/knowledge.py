@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
+from app.core.config import settings
 from app.services.ingestion_service import ingestion_service
 
 router = APIRouter()
@@ -10,6 +11,7 @@ class IngestUrlRequest(BaseModel):
     knowledge_file_id: str
     url: str
     name: str
+    bot_id: str | None = None
 
 
 class IngestTextRequest(BaseModel):
@@ -17,6 +19,7 @@ class IngestTextRequest(BaseModel):
     knowledge_file_id: str
     name: str
     text: str
+    bot_id: str | None = None
 
 
 class IngestStatusResponse(BaseModel):
@@ -30,6 +33,8 @@ class KnowledgeItemResponse(BaseModel):
     name: str
     source_type: str
     source_url: str | None = None
+    bot_id: str | None = None
+    scope: str | None = None
     chunk_count: int
     ingested_at: str
 
@@ -42,6 +47,7 @@ async def ingest_url(request: IngestUrlRequest):
             knowledge_file_id=request.knowledge_file_id,
             url=request.url,
             name=request.name,
+            bot_id=request.bot_id,
         )
         return IngestStatusResponse(
             knowledge_file_id=request.knowledge_file_id,
@@ -62,6 +68,7 @@ async def ingest_text(request: IngestTextRequest):
             knowledge_file_id=request.knowledge_file_id,
             name=request.name,
             text=request.text,
+            bot_id=request.bot_id,
         )
         return IngestStatusResponse(
             knowledge_file_id=request.knowledge_file_id,
@@ -79,7 +86,11 @@ async def ingest_file(
     file: UploadFile = File(...),
     organization_id: str = Form(...),
     knowledge_file_id: str = Form(...),
+    bot_id: str | None = Form(default=None),
 ):
+    if not settings.KNOWLEDGE_FILE_INGEST_ENABLED:
+        raise HTTPException(status_code=400, detail="Knowledge file ingest is disabled. Use URL or text ingestion for now.")
+
     try:
         content = await file.read()
         chunk_count = await ingestion_service.ingest_bytes(
@@ -88,6 +99,7 @@ async def ingest_file(
             content=content,
             filename=file.filename or "upload",
             content_type=file.content_type or "application/octet-stream",
+            bot_id=bot_id,
         )
         return IngestStatusResponse(
             knowledge_file_id=knowledge_file_id,
@@ -101,9 +113,9 @@ async def ingest_file(
 
 
 @router.get("/{organization_id}/items", response_model=list[KnowledgeItemResponse])
-async def list_knowledge_items(organization_id: str):
+async def list_knowledge_items(organization_id: str, bot_id: str | None = None):
     try:
-        return await ingestion_service.list_knowledge_items(organization_id)
+        return await ingestion_service.list_knowledge_items(organization_id, bot_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

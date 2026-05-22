@@ -19,6 +19,7 @@ import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
+import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -166,7 +167,6 @@ export class EmailProcessor {
         channel: 'EMAIL',
         userReply: bodyText.trim(),
         lastAssistantMessage: lastAssistantMessage?.content ?? null,
-        model: typeof aiConfig2.model === 'string' ? aiConfig2.model : null,
       });
       const fromAddress2 = bot.organization?.slug
         ? `${bot.organization.slug}@bords.app`
@@ -197,9 +197,10 @@ export class EmailProcessor {
     }
 
     const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
+    const systemPrompt = buildAgentSystemPrompt(aiConfig, bot.name);
     await this.callAiAndRespond(
       conversation, botId, toAddress, fromEmail, organizationId,
-      bodyText.trim(), bot.name, aiConfig.systemPrompt ?? null,
+      bodyText.trim(), bot.name, systemPrompt,
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
       userMessage.id,

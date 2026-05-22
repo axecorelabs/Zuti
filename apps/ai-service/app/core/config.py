@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     R2_SECRET_ACCESS_KEY: str = ""
     R2_BUCKET_NAME: str = ""
 
+    # Knowledge ingest controls
+    KNOWLEDGE_FILE_INGEST_ENABLED: bool = False
+
     class Config:
         env_file = "../../.env"
         extra = "ignore"
