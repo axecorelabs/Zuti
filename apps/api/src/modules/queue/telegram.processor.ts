@@ -197,7 +197,7 @@ export class TelegramProcessor {
     if (conversation.mode === 'AI') {
       // CSAT collection: if conversation is awaiting satisfaction response, handle it
       const convMeta = (conversation.metadata as Record<string, unknown>) ?? {};
-      const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true } });
+      const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true, routeToRoles: true } });
       if (conversation.status === 'PENDING' && convMeta.awaitingCsat === true) {
         const lastAssistantMessage = await this.prisma.message.findFirst({
           where: { conversationId: conversation.id, role: 'ASSISTANT' },
@@ -264,9 +264,12 @@ export class TelegramProcessor {
       const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
       const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
       const systemPrompt = buildAgentSystemPrompt(aiConfig, bot?.name ?? 'Assistant');
+      const routeToRoles = Array.isArray(bot?.routeToRoles) && bot.routeToRoles.length > 0
+        ? bot.routeToRoles
+        : ['AGENT'];
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
-        bot?.name ?? 'Assistant', systemPrompt, org?.name ?? null, userMessage.id,
+        bot?.name ?? 'Assistant', systemPrompt, org?.name ?? null, routeToRoles, userMessage.id,
       );
     }
   }
@@ -281,6 +284,7 @@ export class TelegramProcessor {
     botName: string = 'Assistant',
     systemPrompt: string | null = null,
     orgName: string | null = null,
+    routeToRoles: string[] = ['AGENT'],
     inboundMessageId?: string,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
@@ -298,7 +302,7 @@ export class TelegramProcessor {
     const userRequestsHuman = humanRequestPhrases.some((p) => lowerUserText.includes(p));
 
     if (userRequestsHuman) {
-      const bestAgent = await this.orgs.findBestAgent(organizationId);
+      const bestAgent = await this.orgs.findBestAgent(organizationId, undefined, routeToRoles);
       await this.prisma.conversation.update({
         where: { id: conversationId },
         data: {
@@ -479,7 +483,7 @@ export class TelegramProcessor {
 
       if (shouldEscalate) {
         const topic = response.data?.escalation_topic || undefined;
-        const bestAgent = await this.orgs.findBestAgent(organizationId, topic);
+        const bestAgent = await this.orgs.findBestAgent(organizationId, topic, routeToRoles);
         await this.prisma.conversation.update({
           where: { id: conversationId },
           data: {
@@ -513,6 +517,7 @@ export class TelegramProcessor {
             source: 'telegram_ai_uncertainty',
             answerability: response.data?.answerability,
             confidence: response.data?.confidence,
+            routeToRoles,
           },
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }

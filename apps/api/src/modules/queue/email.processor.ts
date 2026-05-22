@@ -246,11 +246,15 @@ export class EmailProcessor {
 
     const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
     const systemPrompt = buildAgentSystemPrompt(aiConfig, bot.name);
+    const routeToRoles = Array.isArray(bot.routeToRoles) && bot.routeToRoles.length > 0
+      ? bot.routeToRoles
+      : ['AGENT'];
     await this.callAiAndRespond(
       conversation, botId, toAddress, fromEmail, organizationId,
       bodyText.trim(), bot.name, systemPrompt,
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
+      routeToRoles,
       userMessage.id,
     );
   }
@@ -266,6 +270,7 @@ export class EmailProcessor {
     systemPrompt: string | null,
     orgName: string | null,
     orgSlug: string | null,
+    routeToRoles: string[] = ['AGENT'],
     inboundMessageId?: string,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
@@ -282,7 +287,7 @@ export class EmailProcessor {
       'escalate', 'transfer me', 'transfer to human',
     ];
     if (humanRequestPhrases.some((p) => userText.toLowerCase().includes(p))) {
-      const bestAgent = await this.orgs.findBestAgent(organizationId);
+      const bestAgent = await this.orgs.findBestAgent(organizationId, undefined, routeToRoles);
       await this.prisma.conversation.update({
         where: { id: conversation.id },
         data: {
@@ -463,7 +468,7 @@ export class EmailProcessor {
 
       if (shouldEscalate) {
         const topic = response.data?.escalation_topic || undefined;
-        const bestAgent = await this.orgs.findBestAgent(organizationId, topic);
+        const bestAgent = await this.orgs.findBestAgent(organizationId, topic, routeToRoles);
         await this.prisma.conversation.update({
           where: { id: conversation.id },
           data: {
@@ -497,6 +502,7 @@ export class EmailProcessor {
             source: 'email_ai_uncertainty',
             answerability: response.data?.answerability,
             confidence: response.data?.confidence,
+            routeToRoles,
           },
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }

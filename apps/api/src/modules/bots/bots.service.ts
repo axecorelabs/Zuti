@@ -618,24 +618,35 @@ export class BotsService {
 
       if (shouldEscalate) {
         const topic = response.data?.escalation_topic || undefined;
+        const routeToRoles = Array.isArray(bot.routeToRoles) && bot.routeToRoles.length > 0
+          ? bot.routeToRoles
+          : ['AGENT'];
+        const bestAgent = await this.orgs.findBestAgent(bot.organizationId, topic, routeToRoles);
         await this.prisma.conversation.update({
           where: { id: conversation.id },
-          data: { status: 'ESCALATED', mode: 'HUMAN' },
+          data: {
+            status: 'ESCALATED',
+            mode: 'HUMAN',
+            ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+          },
         });
         this.events.emitConversationUpdate(bot.organizationId, {
           conversationId: conversation.id,
           status: 'ESCALATED',
           mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
         });
         await this.teamChat.ensureKnowledgeGapThread(bot.organizationId, {
           conversationId: conversation.id,
           question: userText.trim(),
           topic,
-          senderId: await this.findOrgSystemSender(bot.organizationId),
+          assignedUserId: bestAgent?.userId,
+          senderId: bestAgent?.userId ?? (await this.findOrgSystemSender(bot.organizationId)),
           metadata: {
             source: 'widget_ai_uncertainty',
             answerability: response.data?.answerability,
             confidence: response.data?.confidence,
+            routeToRoles,
           },
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
