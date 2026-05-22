@@ -312,8 +312,8 @@ export default function TeamPage() {
                         )}
                       </div>
                       <RoleBadge role={m.role} />
-                      {/* Availability toggle (AGENT only) */}
-                      {m.role === 'AGENT' && (myRole === 'OWNER' || myRole === 'ADMIN' || isMe) && (
+                      {/* Availability toggle for any routable role */}
+                      {(myRole === 'OWNER' || myRole === 'ADMIN' || isMe) && (
                         <button
                           onClick={() => handleAvailabilityToggle(m)}
                           title={(m.isAvailable ?? true) ? 'Mark unavailable' : 'Mark available'}

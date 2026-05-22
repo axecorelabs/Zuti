@@ -1,8 +1,15 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Calendar, Gauge, RefreshCw, Repeat, Wallet } from 'lucide-react';
+import { AlertTriangle, Calendar, CheckCircle2, Gauge, RefreshCw, Repeat, Wallet, XCircle } from 'lucide-react';
 import { aiUsageApi, billingApi, orgsApi, pricingApi } from '@/lib/api';
+
+type PaymentModalState = {
+  open: boolean;
+  phase: 'verifying' | 'success' | 'failed';
+  title: string;
+  message: string;
+};
 
 interface Org {
   id: string;
@@ -146,6 +153,12 @@ export default function BillingUsagePage() {
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'BUY_CREDITS'>('OVERVIEW');
+  const [paymentModal, setPaymentModal] = useState<PaymentModalState>({
+    open: false,
+    phase: 'verifying',
+    title: '',
+    message: '',
+  });
 
   const loadWallet = async (orgId: string) => {
     try {
@@ -225,13 +238,45 @@ export default function BillingUsagePage() {
     const reference = params.get('reference');
     if (!reference) return;
 
+    setPaymentModal({
+      open: true,
+      phase: 'verifying',
+      title: 'Verifying Payment',
+      message: 'Please wait while we confirm your transaction and update your wallet.',
+    });
     setBillingNotice('Verifying payment...');
     billingApi.verifyCheckout(org.id, reference)
-      .then(async () => {
-        await loadWallet(org.id);
-        setBillingNotice('Payment verified and credits updated.');
+      .then(async (res) => {
+        const ok = Boolean(res?.data?.ok);
+        if (ok) {
+          await loadWallet(org.id);
+          setBillingNotice('Payment verified and credits updated.');
+          setPaymentModal({
+            open: true,
+            phase: 'success',
+            title: 'Payment Successful',
+            message: 'Your payment was verified and your credits have been updated.',
+          });
+          return;
+        }
+
+        setBillingNotice('Payment verification failed. Please retry from Billing.');
+        setPaymentModal({
+          open: true,
+          phase: 'failed',
+          title: 'Payment Failed',
+          message: 'We could not verify this payment. If you were charged, contact support with your payment reference.',
+        });
       })
-      .catch(() => setBillingNotice('Payment verification failed. Please retry from Billing.'))
+      .catch(() => {
+        setBillingNotice('Payment verification failed. Please retry from Billing.');
+        setPaymentModal({
+          open: true,
+          phase: 'failed',
+          title: 'Payment Verification Error',
+          message: 'We could not verify this payment right now. Please retry from Billing in a moment.',
+        });
+      })
       .finally(() => {
         params.delete('reference');
         params.delete('org');
@@ -340,6 +385,48 @@ export default function BillingUsagePage() {
 
   return (
     <div className="p-5 md:p-10">
+      {paymentModal.open ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
+            <div className="flex items-start gap-3">
+              <div
+                className={`mt-0.5 w-9 h-9 rounded-lg border flex items-center justify-center ${
+                  paymentModal.phase === 'success'
+                    ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-300'
+                    : paymentModal.phase === 'failed'
+                      ? 'bg-rose-500/15 border-rose-500/30 text-rose-300'
+                      : 'bg-blue-500/15 border-blue-500/30 text-blue-300'
+                }`}
+              >
+                {paymentModal.phase === 'success' ? (
+                  <CheckCircle2 className="w-5 h-5" />
+                ) : paymentModal.phase === 'failed' ? (
+                  <XCircle className="w-5 h-5" />
+                ) : (
+                  <RefreshCw className="w-5 h-5 animate-spin" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <h2 className="text-base font-semibold text-white">{paymentModal.title}</h2>
+                <p className="text-sm text-zinc-400 mt-1">{paymentModal.message}</p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              {paymentModal.phase === 'verifying' ? null : (
+                <button
+                  type="button"
+                  onClick={() => setPaymentModal((prev) => ({ ...prev, open: false }))}
+                  className="px-3.5 py-2 rounded-lg text-xs border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 transition-colors"
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="mx-auto max-w-6xl space-y-8">
         <section className="rounded-2xl border border-zinc-800 bg-zinc-950 p-6 md:p-7">
           <div className="flex items-start justify-between gap-4 flex-wrap">

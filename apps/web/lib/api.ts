@@ -7,6 +7,38 @@ export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+type RetryableConfig = {
+  _retry?: boolean;
+  headers?: Record<string, string>;
+};
+
+let refreshPromise: Promise<string | null> | null = null;
+
+async function refreshAccessToken(): Promise<string | null> {
+  if (refreshPromise) return refreshPromise;
+
+  const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
+  if (!refreshToken) return null;
+
+  refreshPromise = api
+    .post('/auth/refresh', { refreshToken })
+    .then((res) => {
+      const nextAccess = String(res.data?.accessToken ?? '');
+      const nextRefresh = String(res.data?.refreshToken ?? '');
+      if (!nextAccess || !nextRefresh) return null;
+
+      localStorage.setItem('accessToken', nextAccess);
+      localStorage.setItem('refreshToken', nextRefresh);
+      return nextAccess;
+    })
+    .catch(() => null)
+    .finally(() => {
+      refreshPromise = null;
+    });
+
+  return refreshPromise;
+}
+
 // Attach token from localStorage
 api.interceptors.request.use((config) => {
   if (typeof window !== 'undefined') {
@@ -19,15 +51,26 @@ api.interceptors.request.use((config) => {
 // Auto-redirect on 401
 api.interceptors.response.use(
   (res) => res,
-  (err) => {
+  async (err) => {
     const requestUrl = String(err?.config?.url ?? '');
     const isAuthEndpoint = requestUrl.includes('/auth/');
+    const status = err?.response?.status;
+    const original = (err?.config ?? {}) as RetryableConfig;
 
-    if (err.response?.status === 401 && typeof window !== 'undefined' && !isAuthEndpoint) {
+    if (status === 401 && typeof window !== 'undefined' && !isAuthEndpoint && !original._retry) {
+      original._retry = true;
+      const nextAccess = await refreshAccessToken();
+      if (nextAccess) {
+        original.headers = original.headers ?? {};
+        original.headers.Authorization = `Bearer ${nextAccess}`;
+        return api.request(original as any);
+      }
+
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
       window.location.href = '/login';
     }
+
     return Promise.reject(err);
   },
 );
@@ -38,6 +81,8 @@ export const authApi = {
     api.post('/auth/register', { name, email, password }),
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }),
+  refresh: (refreshToken: string) =>
+    api.post('/auth/refresh', { refreshToken }),
   verifyEmail: (token: string) =>
     api.post('/auth/verify-email', { token }),
   resendVerification: (email: string) =>

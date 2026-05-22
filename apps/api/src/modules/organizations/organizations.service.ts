@@ -216,14 +216,16 @@ export class OrganizationsService {
     });
     if (!agents.length) return null;
 
-    // Count each agent's current open (non-resolved) conversations
+    // Count only actively handled human workloads.
+    // PENDING often represents post-resolution states (e.g. awaiting CSAT) and should not consume live capacity.
     const withLoad = await Promise.all(
       agents.map(async (a) => {
         const load = await this.prisma.conversation.count({
           where: {
             organizationId: orgId,
             assignedAgentId: a.userId,
-            status: { not: 'RESOLVED' as any },
+            mode: 'HUMAN',
+            status: { in: ['OPEN', 'ESCALATED'] as any[] },
           },
         });
         return { ...a, load };

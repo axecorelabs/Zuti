@@ -151,12 +151,42 @@ export class AuthService {
     return this.signTokens(user.id, user.email);
   }
 
+  async refreshFromToken(refreshToken: string) {
+    const secret = this.config.get<string>('JWT_REFRESH_SECRET');
+    if (!secret) {
+      throw new UnauthorizedException('Refresh token secret is not configured');
+    }
+
+    let payload: { sub: string; email: string };
+    try {
+      payload = await this.jwt.verifyAsync(refreshToken, { secret });
+    } catch {
+      throw new UnauthorizedException('Invalid or expired refresh token');
+    }
+
+    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user || !user.emailVerifiedAt) {
+      throw new UnauthorizedException('User is not eligible for refresh');
+    }
+
+    const tokens = await this.signTokens(user.id, user.email);
+    return {
+      user: { id: user.id, email: user.email, name: user.name },
+      ...tokens,
+    };
+  }
+
   private async signTokens(userId: string, email: string) {
     const payload = { sub: userId, email };
+    const refreshSecret = this.config.get<string>('JWT_REFRESH_SECRET');
+    if (!refreshSecret) {
+      throw new UnauthorizedException('Refresh token secret is not configured');
+    }
+
     const [accessToken, refreshToken] = await Promise.all([
       this.jwt.signAsync(payload, { expiresIn: '15m' }),
       this.jwt.signAsync(payload, {
-        secret: process.env.JWT_REFRESH_SECRET,
+        secret: refreshSecret,
         expiresIn: '7d',
       }),
     ]);

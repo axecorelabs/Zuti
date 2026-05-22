@@ -2,7 +2,7 @@ import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, VerifyEmailDto, ResendVerificationDto } from './dto/auth.dto';
+import { RegisterDto, LoginDto, VerifyEmailDto, ResendVerificationDto, RefreshTokenDto } from './dto/auth.dto';
 import { Public } from '../../common/decorators/public.decorator';
 
 @ApiTags('auth')
@@ -43,5 +43,14 @@ export class AuthController {
   @ApiOperation({ summary: 'Resend email verification link' })
   resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerification(dto.email);
+  }
+
+  @Post('refresh')
+  @Public()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Refresh access token using a valid refresh token' })
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refreshFromToken(dto.refreshToken);
   }
 }
