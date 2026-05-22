@@ -16,6 +16,7 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import { ActivityAction, ActivityService } from '../activity/activity.service';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
@@ -104,6 +105,7 @@ export class TelegramProcessor {
     private readonly aiUsage: AiUsageService,
     private readonly csatClassifier: CsatClassifierService,
     private readonly billing: BillingService,
+    private readonly activity: ActivityService,
   ) {}
 
   @Process()
@@ -145,7 +147,7 @@ export class TelegramProcessor {
         bot: { id: botId, name: '' },
         messages: [],
       });
-    } else if (existing.status === 'RESOLVED') {
+    } else if (existing.status === 'RESOLVED' && (existing.metadata as Record<string, unknown> | null)?.awaitingCsat !== true) {
       // Customer re-opened after resolution — create a fresh conversation
       conversation = await this.prisma.conversation.create({
         data: {
@@ -216,6 +218,15 @@ export class TelegramProcessor {
             where: { id: conversation.id },
             data: { status: 'RESOLVED', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'positive' } },
           });
+          await this.activity.log(
+            organizationId,
+            null,
+            'CSAT System',
+            ActivityAction.CSAT_RECORDED_POSITIVE,
+            'conversation',
+            conversation.id,
+            { channel: 'TELEGRAM', rating: 'positive' },
+          ).catch(() => null);
           this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
           // Thank them naturally
           await firstValueFrom(
@@ -230,6 +241,15 @@ export class TelegramProcessor {
             where: { id: conversation.id },
             data: { status: 'OPEN', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'negative' } },
           });
+          await this.activity.log(
+            organizationId,
+            null,
+            'CSAT System',
+            ActivityAction.CSAT_RECORDED_NEGATIVE,
+            'conversation',
+            conversation.id,
+            { channel: 'TELEGRAM', rating: 'negative' },
+          ).catch(() => null);
           this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
           // Re-engage AI for the follow-up
         } else {
@@ -525,18 +545,15 @@ export class TelegramProcessor {
       );
 
       // Auto-resolve: AI signalled the conversation is done and no escalation is needed.
+      // Keep in PENDING awaiting CSAT so the next reply is classified on this same conversation.
       if (shouldResolve && !shouldEscalate) {
         const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
-        const { awaitingCsat, ...metaWithoutAwaitingCsat } = currentMeta;
-        await this.prisma.escalation.updateMany({
-          where: { conversationId, resolvedAt: null },
-          data: { resolvedAt: new Date() },
-        });
+        const { csatRating, ...metaWithoutCstatRating } = currentMeta;
         await this.prisma.conversation.update({
           where: { id: conversationId },
-          data: { status: 'RESOLVED', metadata: metaWithoutAwaitingCsat },
+          data: { status: 'PENDING', metadata: { ...metaWithoutCstatRating, awaitingCsat: true } },
         });
-        this.events.emitConversationUpdate(organizationId, { conversationId, status: 'RESOLVED' });
+        this.events.emitConversationUpdate(organizationId, { conversationId, status: 'PENDING' });
       }
 
       // If escalated, send a follow-up notice to the user

@@ -20,6 +20,7 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import { ActivityAction, ActivityService } from '../activity/activity.service';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -60,6 +61,7 @@ export class EmailProcessor {
     private readonly aiUsage: AiUsageService,
     private readonly csatClassifier: CsatClassifierService,
     private readonly billing: BillingService,
+    private readonly activity: ActivityService,
   ) {}
 
   @Process()
@@ -84,7 +86,13 @@ export class EmailProcessor {
         organizationId,
         channel: 'EMAIL',
         customerEmail: fromEmail.toLowerCase(),
-        status: { not: 'RESOLVED' },
+        OR: [
+          { status: { not: 'RESOLVED' } },
+          {
+            status: 'RESOLVED',
+            metadata: { path: ['awaitingCsat'], equals: true },
+          },
+        ],
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -111,7 +119,7 @@ export class EmailProcessor {
         bot: { id: botId, name: bot.name },
         messages: [],
       });
-    } else if (existing.status === 'RESOLVED') {
+    } else if (existing.status === 'RESOLVED' && (existing.metadata as Record<string, unknown> | null)?.awaitingCsat !== true) {
       conversation = await this.prisma.conversation.create({
         data: {
           organizationId,
@@ -176,6 +184,15 @@ export class EmailProcessor {
           where: { id: conversation.id },
           data: { status: 'RESOLVED', metadata: { ...existingMeta, awaitingCsat: false, csatRating: 'positive' } },
         });
+        await this.activity.log(
+          organizationId,
+          null,
+          'CSAT System',
+          ActivityAction.CSAT_RECORDED_POSITIVE,
+          'conversation',
+          conversation.id,
+          { channel: 'EMAIL', rating: 'positive' },
+        ).catch(() => null);
         this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
         await this.sendEmail(fromAddress2, toAddress, fromEmail, `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
           'Great, glad I could help! Feel free to reach out any time.', conversation.emailThreadId, bot.name, bot.organization?.name ?? '');
@@ -185,6 +202,15 @@ export class EmailProcessor {
           where: { id: conversation.id },
           data: { status: 'OPEN', metadata: { ...existingMeta, awaitingCsat: false, csatRating: 'negative' } },
         });
+        await this.activity.log(
+          organizationId,
+          null,
+          'CSAT System',
+          ActivityAction.CSAT_RECORDED_NEGATIVE,
+          'conversation',
+          conversation.id,
+          { channel: 'EMAIL', rating: 'negative' },
+        ).catch(() => null);
         this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'OPEN' });
         // Fall through — re-engage AI
       } else {
@@ -477,19 +503,16 @@ export class EmailProcessor {
       );
 
       // Auto-resolve: AI signalled done and no escalation is needed.
+      // Keep in PENDING awaiting CSAT so the next reply is classified on this thread.
       if (shouldResolve) {
         if (!shouldEscalate) {
           const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
-          const { awaitingCsat, ...metaWithoutAwaitingCsat } = currentMeta;
-          await this.prisma.escalation.updateMany({
-            where: { conversationId: conversation.id, resolvedAt: null },
-            data: { resolvedAt: new Date() },
-          });
+          const { csatRating, ...metaWithoutCstatRating } = currentMeta;
           await this.prisma.conversation.update({
             where: { id: conversation.id },
-            data: { status: 'RESOLVED', metadata: metaWithoutAwaitingCsat },
+            data: { status: 'PENDING', metadata: { ...metaWithoutCstatRating, awaitingCsat: true } },
           });
-          this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
+          this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'PENDING' });
         }
       }
     } catch (err) {

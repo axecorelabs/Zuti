@@ -19,6 +19,7 @@ import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import { ActivityAction, ActivityService } from '../activity/activity.service';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -42,6 +43,7 @@ export class BotsService {
     private readonly csatClassifier: CsatClassifierService,
     private readonly teamChat: TeamChatService,
     private readonly billing: BillingService,
+    private readonly activity: ActivityService,
   ) {}
 
   async create(organizationId: string, dto: CreateBotDto) {
@@ -349,7 +351,13 @@ export class BotsService {
             // Never match Telegram-only conversations (they have null widget fields)
             NOT: { widgetVisitorId: null, widgetVisitorEmail: null },
             OR: visitorConditions,
-            status: { not: 'RESOLVED' },
+            OR: [
+              { status: { not: 'RESOLVED' } },
+              {
+                status: 'RESOLVED',
+                metadata: { path: ['awaitingCsat'], equals: true },
+              },
+            ],
           },
           orderBy: { createdAt: 'desc' },
         });
@@ -426,6 +434,15 @@ export class BotsService {
           where: { id: conversation.id },
           data: { status: 'RESOLVED', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'positive' } },
         });
+        await this.activity.log(
+          bot.organizationId,
+          null,
+          'CSAT System',
+          ActivityAction.CSAT_RECORDED_POSITIVE,
+          'conversation',
+          conversation.id,
+          { channel: 'WIDGET', rating: 'positive' },
+        ).catch(() => null);
         this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
         const thankMsg = await this.prisma.message.create({
           data: { conversationId: conversation.id, role: 'ASSISTANT', content: 'Great, glad I could help! Feel free to reach out any time.' },
@@ -440,6 +457,15 @@ export class BotsService {
           where: { id: conversation.id },
           data: { status: 'OPEN', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'negative' } },
         });
+        await this.activity.log(
+          bot.organizationId,
+          null,
+          'CSAT System',
+          ActivityAction.CSAT_RECORDED_NEGATIVE,
+          'conversation',
+          conversation.id,
+          { channel: 'WIDGET', rating: 'negative' },
+        ).catch(() => null);
         this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'OPEN' });
         // Fall through — re-engage AI
       } else {
@@ -629,18 +655,16 @@ export class BotsService {
       });
 
       // Auto-resolve: AI signalled done and no escalation is needed.
+      // Keep in PENDING awaiting CSAT so the next customer reply is classified
+      // on the same conversation before final RESOLVED/OPEN transition.
       if (shouldResolve && !shouldEscalate) {
         const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
-        const { awaitingCsat, ...metaWithoutAwaitingCsat } = currentMeta;
-        await this.prisma.escalation.updateMany({
-          where: { conversationId: conversation.id, resolvedAt: null },
-          data: { resolvedAt: new Date() },
-        });
+        const { csatRating, ...metaWithoutCstatRating } = currentMeta;
         await this.prisma.conversation.update({
           where: { id: conversation.id },
-          data: { status: 'RESOLVED', metadata: metaWithoutAwaitingCsat },
+          data: { status: 'PENDING', metadata: { ...metaWithoutCstatRating, awaitingCsat: true } },
         });
-        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
+        this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'PENDING' });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

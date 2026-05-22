@@ -11,6 +11,7 @@ import { CannedResponsesModule } from '../canned-responses/canned-responses.modu
 import { TeamChatModule } from '../team-chat/team-chat.module';
 import { AiUsageModule } from '../ai-usage/ai-usage.module';
 import { BillingModule } from '../billing/billing.module';
+import { ActivityModule } from '../activity/activity.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { BillingModule } from '../billing/billing.module';
     TeamChatModule,
     AiUsageModule,
     BillingModule,
+    ActivityModule,
   ],
   controllers: [WebhooksController],
   providers: [TelegramProcessor, EmailProcessor],

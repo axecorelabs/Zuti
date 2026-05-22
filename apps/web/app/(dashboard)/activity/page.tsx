@@ -34,6 +34,8 @@ const ACTION_LABELS: Record<string, string> = {
   CONVERSATION_ESCALATED: 'escalated a conversation',
   CONVERSATION_ASSIGNED: 'assigned a conversation',
   CONVERSATION_RESOLVED: 'resolved a conversation',
+  CSAT_RECORDED_POSITIVE: 'received positive CSAT',
+  CSAT_RECORDED_NEGATIVE: 'received negative CSAT',
   MEMBER_JOINED: 'joined the workspace',
   MEMBER_REMOVED: 'was removed from the workspace',
   MEMBER_ROLE_CHANGED: 'had their role changed',
@@ -45,6 +47,8 @@ const ACTION_ICONS: Record<string, React.ElementType> = {
   CONVERSATION_ESCALATED: ArrowUpRight,
   CONVERSATION_ASSIGNED: MessageSquare,
   CONVERSATION_RESOLVED: MessageSquare,
+  CSAT_RECORDED_POSITIVE: MessageSquare,
+  CSAT_RECORDED_NEGATIVE: MessageSquare,
   MEMBER_JOINED: UserPlus,
   MEMBER_REMOVED: UserMinus,
   MEMBER_ROLE_CHANGED: ShieldCheck,
@@ -59,6 +63,8 @@ const ACTION_CATEGORY: Record<string, ActivityCategory> = {
   CONVERSATION_ESCALATED: 'ESCALATIONS',
   CONVERSATION_ASSIGNED: 'CONVERSATIONS',
   CONVERSATION_RESOLVED: 'CONVERSATIONS',
+  CSAT_RECORDED_POSITIVE: 'CONVERSATIONS',
+  CSAT_RECORDED_NEGATIVE: 'CONVERSATIONS',
   MEMBER_JOINED: 'ACCESS',
   MEMBER_REMOVED: 'ACCESS',
   MEMBER_ROLE_CHANGED: 'ACCESS',
@@ -126,6 +132,10 @@ function customerEventText(log: ActivityLog) {
       return `${log.actorName} flagged a customer case for specialist help${shortTarget ? ` (${shortTarget})` : ''}.`;
     case 'CONVERSATION_RESOLVED':
       return `${log.actorName} resolved a customer case${shortTarget ? ` (${shortTarget})` : ''}.`;
+    case 'CSAT_RECORDED_POSITIVE':
+      return `Customer gave a positive satisfaction response${shortTarget ? ` (${shortTarget})` : ''}.`;
+    case 'CSAT_RECORDED_NEGATIVE':
+      return `Customer gave a negative satisfaction response${shortTarget ? ` (${shortTarget})` : ''}.`;
     case 'CONVERSATION_ASSIGNED':
       return `${log.actorName} assigned a customer case${shortTarget ? ` (${shortTarget})` : ''}.`;
     case 'AGENT_TOOK_OVER':
