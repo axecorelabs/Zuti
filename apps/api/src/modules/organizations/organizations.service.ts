@@ -3,10 +3,13 @@ import {
   NotFoundException,
   ConflictException,
   ForbiddenException,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { CreditLedgerType } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
+import { CREDIT_UNITS_PER_CREDIT } from '../billing/credit-model';
 
 @Injectable()
 export class OrganizationsService {
@@ -16,6 +19,11 @@ export class OrganizationsService {
   ) {}
 
   async create(userId: string, dto: CreateOrganizationDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    if (!user) {
+      throw new UnauthorizedException('Session is no longer valid. Please sign in again.');
+    }
+
     const slugTaken = await this.prisma.organization.findUnique({ where: { slug: dto.slug } });
     if (slugTaken) throw new ConflictException('Slug already taken');
 
@@ -23,7 +31,8 @@ export class OrganizationsService {
     const existingMembershipCount = await this.prisma.organizationMember.count({
       where: { userId },
     });
-    const starterCreditGrant = existingMembershipCount === 0 ? 200 : 0;
+    const starterCreditGrant = existingMembershipCount === 0 ? 100 : 0;
+    const starterCreditUnits = starterCreditGrant * CREDIT_UNITS_PER_CREDIT;
 
     const org = await this.prisma.$transaction(async (tx) => {
       const createdOrg = await tx.organization.create({
@@ -39,7 +48,7 @@ export class OrganizationsService {
               messageCount: 0,
               // Reusing existing billing capacity fields for startup wallet allocation.
               messageLimit: starterCreditGrant,
-              creditBalanceUnits: starterCreditGrant * 100,
+              creditBalanceUnits: starterCreditUnits,
               committedMonthlyCreditsUnits: 0,
             },
           },
@@ -51,6 +60,59 @@ export class OrganizationsService {
           billing: true,
         },
       });
+
+      if (starterCreditGrant > 0 && createdOrg.billing) {
+        await tx.creditLedger.create({
+          data: {
+            organizationId: createdOrg.id,
+            billingId: createdOrg.billing.id,
+            type: CreditLedgerType.GRANT,
+            creditsDeltaUnits: starterCreditUnits,
+            balanceAfterUnits: starterCreditUnits,
+            description: `Starter credit grant on organization creation (${starterCreditGrant} credits)`,
+            idempotencyKey: `org:${createdOrg.id}:starter-credit-grant`,
+            metadata: {
+              source: 'organization_create',
+              creditsGranted: starterCreditGrant,
+              creditsGrantedUnits: starterCreditUnits,
+            },
+          },
+        });
+
+        await tx.activityLog.create({
+          data: {
+            orgId: createdOrg.id,
+            actorId: userId,
+            actorName: createdOrg.members[0]?.user?.name ?? createdOrg.members[0]?.user?.email ?? 'Organization Owner',
+            action: 'BILLING_CREDIT_GRANTED',
+            targetType: 'billing',
+            targetId: createdOrg.billing.id,
+            metadata: {
+              source: 'organization_create',
+              creditsGranted: starterCreditGrant,
+              creditsGrantedUnits: starterCreditUnits,
+              balanceAfterCredits: starterCreditGrant,
+              balanceAfterUnits: starterCreditUnits,
+            },
+          },
+        });
+
+        await tx.notification.create({
+          data: {
+            orgId: createdOrg.id,
+            type: 'billing_credit_granted',
+            title: 'Starter credits granted',
+            body: `${starterCreditGrant} starter credits were allocated to this organization.`,
+            metadata: {
+              source: 'organization_create',
+              creditsGranted: starterCreditGrant,
+              creditsGrantedUnits: starterCreditUnits,
+            },
+            targetUserId: null,
+          },
+        });
+      }
+
       return createdOrg;
     });
 

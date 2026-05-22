@@ -327,12 +327,16 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         {/* Brand */}
         <div className="px-4 py-5 border-b border-zinc-900">
           <div className="flex items-center justify-between px-1">
-            <div className="flex items-center gap-2.5">
+            <Link
+              href="/"
+              onClick={onClose}
+              className="flex items-center gap-2.5 hover:opacity-90 transition-opacity"
+            >
               <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-blue-600/30">
                 <Leaf className="w-3.5 h-3.5 text-white" />
               </div>
               <span className="font-brand font-semibold text-lg tracking-tight text-white">Zuti Studio</span>
-            </div>
+            </Link>
             {/* Notification bell */}
             <button
               onClick={() => setNotifOpen(true)}

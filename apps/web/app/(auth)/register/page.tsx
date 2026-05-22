@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Leaf } from 'lucide-react';
+import { CheckCircle2, Eye, EyeOff, Leaf } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
@@ -12,10 +12,24 @@ export default function RegisterPage() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const passwordRules = [
+    { label: 'At least 8 characters', passed: password.length >= 8 },
+    { label: 'One uppercase letter', passed: /[A-Z]/.test(password) },
+    { label: 'One lowercase letter', passed: /[a-z]/.test(password) },
+    { label: 'One number', passed: /\d/.test(password) },
+    { label: 'One special character', passed: /[^A-Za-z0-9]/.test(password) },
+  ];
+  const passwordValid = passwordRules.every((r) => r.passed);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!passwordValid) {
+      toast.error('Password does not meet all requirements yet.');
+      return;
+    }
     setLoading(true);
     try {
       await authApi.register(name, email, password);
@@ -133,22 +147,40 @@ export default function RegisterPage() {
 
               <div>
                 <label className="block text-xs text-zinc-400 mb-2 font-normal tracking-wide">Password</label>
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="input-base"
-                  placeholder="Min. 8 characters"
-                  autoComplete="new-password"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={8}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="input-base pr-10"
+                    placeholder="Min. 8 characters"
+                    autoComplete="new-password"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-300"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+                  {passwordRules.map((rule) => (
+                    <div key={rule.label} className={`text-[11px] inline-flex items-center gap-1.5 ${rule.passed ? 'text-emerald-300' : 'text-zinc-600'}`}>
+                      <CheckCircle2 className={`w-3.5 h-3.5 ${rule.passed ? 'text-emerald-300' : 'text-zinc-700'}`} />
+                      {rule.label}
+                    </div>
+                  ))}
+                </div>
               </div>
 
               <div className="pt-2">
                 <button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || !passwordValid}
                   className="w-full py-3 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
                 >
                   {loading ? 'Creating account…' : 'Get started'}
