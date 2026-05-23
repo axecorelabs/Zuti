@@ -592,7 +592,11 @@ export default function BotsPage() {
     const code = data?.code ?? nested?.code;
     if (code !== 'FORWARDING_CONFIG_REQUIRED') return false;
     const messageRaw = nested?.message ?? data?.message;
-    const message = Array.isArray(messageRaw) ? messageRaw[0] : messageRaw;
+    const message = typeof messageRaw === 'string'
+      ? messageRaw
+      : Array.isArray(messageRaw)
+        ? (typeof messageRaw[0] === 'string' ? messageRaw[0] : '')
+        : '';
     const redirectTo = data?.redirectTo ?? nested?.redirectTo;
     toast.error(message || 'Configure forwarding before enabling this skill.');
     router.push(redirectTo || '/settings/forwarding');
@@ -1115,8 +1119,10 @@ onBeforeUnmount(() => {
         skills: editSkills,
         actionForwardingEnabled: editSkills.includes('FORWARDING'),
       });
+      const savedBot = res.data as BotRecord;
       setBots((prev) => prev.map((bot) => (bot.id === settingsBot.id ? res.data : bot)));
-      setSettingsBot((prev) => (prev ? { ...prev, ...res.data } : prev));
+      setSettingsBot(savedBot);
+      setEditSkills(extractSkillsFromBot(savedBot));
       toast.success('Skills saved');
     } catch (err: unknown) {
       if (!handleForwardingConfigRequired(err)) {
@@ -1361,6 +1367,146 @@ onBeforeUnmount(() => {
     return null;
   };
 
+  const intakeKeyForSkillCard = (skill: BotSkill): SkillIntakeKey | null => {
+    if (skill === 'SALES') return 'SALES';
+    if (skill === 'BOOKING') return 'BOOKING';
+    if (skill === 'TECHNICAL' && editSkills.includes('TECHNICAL')) return 'TECHNICAL';
+    if (skill === 'SUPPORT' && editSkills.includes('SUPPORT') && !editSkills.includes('TECHNICAL')) return 'TECHNICAL';
+    return null;
+  };
+
+  const renderSkillIntakePanel = (metaKey: SkillIntakeKey) => {
+    const meta = SKILL_INTAKE_META.find((item) => item.key === metaKey);
+    if (!meta) return null;
+    const config = editSkillIntakeConfig[meta.key] ?? { version: 1, fields: [] };
+    const isExpanded = skillIntakeOpen[meta.key];
+    const coreRequired = SKILL_CORE_REQUIRED_FIELDS[meta.key];
+    const customRequired = config.fields
+      .filter((field) => field.required && normalizeFieldKeyInput(field.key).length > 0)
+      .map((field) => ({
+        key: normalizeFieldKeyInput(field.key),
+        label: field.label.trim() || toDisplayLabelFromKey(normalizeFieldKeyInput(field.key)),
+      }));
+    const mergedRequiredMap = new Map<string, string>();
+    coreRequired.forEach((field) => mergedRequiredMap.set(field.key, field.label));
+    customRequired.forEach((field) => mergedRequiredMap.set(field.key, field.label));
+    const mergedRequiredLabels = Array.from(mergedRequiredMap.values());
+    const previewPrompt = mergedRequiredLabels.length > 0
+      ? `To help with this request, please share: ${mergedRequiredLabels.join(', ')}.`
+      : 'No required fields configured for this workflow.';
+
+    return (
+      <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 space-y-3">
+        <button
+          type="button"
+          onClick={() => setSkillIntakeOpen((prev) => ({ ...prev, [meta.key]: !prev[meta.key] }))}
+          className="w-full flex items-center justify-between gap-3"
+        >
+          <div className="text-left">
+            <p className="text-xs font-semibold text-white">{meta.label}</p>
+            <p className="text-[11px] text-zinc-500 mt-0.5">{meta.description}</p>
+          </div>
+          <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+        </button>
+
+        {isExpanded && (
+          <>
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-zinc-500">Schema version</label>
+              <input
+                type="number"
+                min={1}
+                value={config.version}
+                onChange={(e) => setSkillIntakeVersion(meta.key, Number(e.target.value))}
+                className="w-20 h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+              />
+            </div>
+
+            <div className="space-y-2">
+              {config.fields.length === 0 && (
+                <p className="text-[11px] text-zinc-600">No custom fields yet.</p>
+              )}
+
+              {config.fields.map((field, index) => (
+                <div key={`${meta.key}-field-${index}`} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-zinc-500 mb-1">Field key</label>
+                      <input
+                        type="text"
+                        value={field.key}
+                        onChange={(e) => updateSkillIntakeField(meta.key, index, { key: normalizeFieldKeyInput(e.target.value) })}
+                        placeholder="company_size"
+                        className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-zinc-500 mb-1">Field label</label>
+                      <input
+                        type="text"
+                        value={field.label}
+                        onChange={(e) => updateSkillIntakeField(meta.key, index, { label: e.target.value })}
+                        placeholder="Company Size"
+                        className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-zinc-500 mb-1">Aliases (comma separated)</label>
+                      <input
+                        type="text"
+                        value={field.aliases.join(', ')}
+                        onChange={(e) => updateSkillIntakeField(meta.key, index, {
+                          aliases: e.target.value.split(',').map((alias) => alias.trim()).filter(Boolean),
+                        })}
+                        placeholder="team size, employee count"
+                        className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                      />
+                    </div>
+                    <div className="flex items-end justify-between gap-2">
+                      <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
+                        <input
+                          type="checkbox"
+                          checked={field.required}
+                          onChange={(e) => updateSkillIntakeField(meta.key, index, { required: e.target.checked })}
+                          className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-900 accent-blue-500"
+                        />
+                        Required
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => removeSkillIntakeField(meta.key, index)}
+                        className="px-2 py-1 rounded-md border border-red-500/20 bg-red-500/5 text-[11px] text-red-300 hover:bg-red-500/10"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              <button
+                type="button"
+                onClick={() => addSkillIntakeField(meta.key)}
+                className="px-2.5 py-1.5 rounded-md border border-zinc-700 text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600"
+              >
+                + Add field
+              </button>
+            </div>
+
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-1.5">
+              <p className="text-[11px] text-zinc-400 font-medium">Missing-field prompt preview</p>
+              <p className="text-[11px] text-zinc-500 leading-relaxed">{previewPrompt}</p>
+              <p className="text-[10px] text-zinc-600">Core required fields are always enforced. Custom required fields are appended.</p>
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
   // ── Settings step (full-page inline view) ─────────────────────────────────
   if (settingsBot) {
     return (
@@ -1453,11 +1599,14 @@ onBeforeUnmount(() => {
                 )}
 
                 <div className="space-y-2">
-                  {BOT_SKILL_OPTIONS.map((skill) => (
+                  {BOT_SKILL_OPTIONS.map((skill) => {
+                    const intakeKey = intakeKeyForSkillCard(skill.skill);
+                    const skillEnabled = editSkills.includes(skill.skill);
+                    return (
                     <div
                       key={skill.skill}
                       className={`rounded-xl border px-3 py-3 transition-all duration-200 ${
-                        editSkills.includes(skill.skill)
+                        skillEnabled
                           ? 'border-blue-500/50 bg-blue-500/10 text-white shadow-[0_0_0_1px_rgba(59,130,246,0.12)]'
                           : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
                       }`}
@@ -1469,161 +1618,20 @@ onBeforeUnmount(() => {
                         </div>
                         <button
                           type="button"
-                          aria-label={`${editSkills.includes(skill.skill) ? 'Disable' : 'Enable'} ${skill.name} skill`}
+                          aria-label={`${skillEnabled ? 'Disable' : 'Enable'} ${skill.name} skill`}
                           onClick={() => toggleSkill(skill.skill)}
                           className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                            editSkills.includes(skill.skill) ? 'bg-blue-600' : 'bg-zinc-700'
+                            skillEnabled ? 'bg-blue-600' : 'bg-zinc-700'
                           }`}
                         >
-                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${editSkills.includes(skill.skill) ? 'translate-x-6' : 'translate-x-1'}`} />
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${skillEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                         </button>
                       </div>
+
+                      {intakeKey && skillEnabled && renderSkillIntakePanel(intakeKey)}
                     </div>
-                  ))}
-                </div>
-
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 space-y-3">
-                  <div>
-                    <p className="text-sm text-zinc-200 font-medium">Skill Intake Fields</p>
-                    <p className="text-[11px] text-zinc-500 mt-0.5">
-                      Define extra data fields owners want collected for each workflow. These are merged with core required fields.
-                    </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    {SKILL_INTAKE_META.filter((meta) => isSkillIntakeEnabled(meta.key, editSkills)).map((meta) => {
-                      const config = editSkillIntakeConfig[meta.key] ?? { version: 1, fields: [] };
-                      const isExpanded = skillIntakeOpen[meta.key];
-                      const coreRequired = SKILL_CORE_REQUIRED_FIELDS[meta.key];
-                      const customRequired = config.fields
-                        .filter((field) => field.required && normalizeFieldKeyInput(field.key).length > 0)
-                        .map((field) => ({
-                          key: normalizeFieldKeyInput(field.key),
-                          label: field.label.trim() || toDisplayLabelFromKey(normalizeFieldKeyInput(field.key)),
-                        }));
-                      const mergedRequiredMap = new Map<string, string>();
-                      coreRequired.forEach((field) => mergedRequiredMap.set(field.key, field.label));
-                      customRequired.forEach((field) => mergedRequiredMap.set(field.key, field.label));
-                      const mergedRequiredLabels = Array.from(mergedRequiredMap.values());
-                      const previewPrompt = mergedRequiredLabels.length > 0
-                        ? `To help with this request, please share: ${mergedRequiredLabels.join(', ')}.`
-                        : 'No required fields configured for this workflow.';
-
-                      return (
-                        <div key={meta.key} className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 space-y-3">
-                          <button
-                            type="button"
-                            onClick={() => setSkillIntakeOpen((prev) => ({ ...prev, [meta.key]: !prev[meta.key] }))}
-                            className="w-full flex items-center justify-between gap-3"
-                          >
-                            <div className="text-left">
-                              <p className="text-xs font-semibold text-white">{meta.label}</p>
-                              <p className="text-[11px] text-zinc-500 mt-0.5">{meta.description}</p>
-                            </div>
-                            <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-                          </button>
-
-                          {isExpanded && (
-                            <>
-                              <div className="flex items-center gap-2">
-                                <label className="text-[11px] text-zinc-500">Schema version</label>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  value={config.version}
-                                  onChange={(e) => setSkillIntakeVersion(meta.key, Number(e.target.value))}
-                                  className="w-20 h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                />
-                              </div>
-
-                              <div className="space-y-2">
-                                {config.fields.length === 0 && (
-                                  <p className="text-[11px] text-zinc-600">No custom fields yet.</p>
-                                )}
-
-                                {config.fields.map((field, index) => (
-                                  <div key={`${meta.key}-field-${index}`} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-2">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                      <div>
-                                        <label className="block text-[11px] text-zinc-500 mb-1">Field key</label>
-                                        <input
-                                          type="text"
-                                          value={field.key}
-                                          onChange={(e) => updateSkillIntakeField(meta.key, index, { key: normalizeFieldKeyInput(e.target.value) })}
-                                          placeholder="company_size"
-                                          className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                        />
-                                      </div>
-                                      <div>
-                                        <label className="block text-[11px] text-zinc-500 mb-1">Field label</label>
-                                        <input
-                                          type="text"
-                                          value={field.label}
-                                          onChange={(e) => updateSkillIntakeField(meta.key, index, { label: e.target.value })}
-                                          placeholder="Company Size"
-                                          className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                        />
-                                      </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                      <div>
-                                        <label className="block text-[11px] text-zinc-500 mb-1">Aliases (comma separated)</label>
-                                        <input
-                                          type="text"
-                                          value={field.aliases.join(', ')}
-                                          onChange={(e) => updateSkillIntakeField(meta.key, index, {
-                                            aliases: e.target.value.split(',').map((alias) => alias.trim()).filter(Boolean),
-                                          })}
-                                          placeholder="team size, employee count"
-                                          className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                        />
-                                      </div>
-                                      <div className="flex items-end justify-between gap-2">
-                                        <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
-                                          <input
-                                            type="checkbox"
-                                            checked={field.required}
-                                            onChange={(e) => updateSkillIntakeField(meta.key, index, { required: e.target.checked })}
-                                            className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-900 accent-blue-500"
-                                          />
-                                          Required
-                                        </label>
-                                        <button
-                                          type="button"
-                                          onClick={() => removeSkillIntakeField(meta.key, index)}
-                                          className="px-2 py-1 rounded-md border border-red-500/20 bg-red-500/5 text-[11px] text-red-300 hover:bg-red-500/10"
-                                        >
-                                          Remove
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))}
-
-                                <button
-                                  type="button"
-                                  onClick={() => addSkillIntakeField(meta.key)}
-                                  className="px-2.5 py-1.5 rounded-md border border-zinc-700 text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600"
-                                >
-                                  + Add field
-                                </button>
-                              </div>
-
-                              <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-1.5">
-                                <p className="text-[11px] text-zinc-400 font-medium">Missing-field prompt preview</p>
-                                <p className="text-[11px] text-zinc-500 leading-relaxed">{previewPrompt}</p>
-                                <p className="text-[10px] text-zinc-600">Core required fields are always enforced. Custom required fields are appended.</p>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                    {SKILL_INTAKE_META.every((meta) => !isSkillIntakeEnabled(meta.key, editSkills)) && (
-                      <p className="text-[11px] text-zinc-600">Enable Sales, Booking, Support, or Technical to configure intake fields.</p>
-                    )}
-                  </div>
+                    );
+                  })}
                 </div>
 
                 <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3">
