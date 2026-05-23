@@ -545,6 +545,7 @@ export default function BotsPage() {
   });
   const [showSkillEnableModal, setShowSkillEnableModal] = useState(false);
   const [pendingSkillEnable, setPendingSkillEnable] = useState<(typeof BOT_SKILL_OPTIONS)[number] | null>(null);
+  const [skillsSaving, setSkillsSaving] = useState(false);
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
@@ -655,6 +656,18 @@ export default function BotsPage() {
       settingsBot?.name,
     ],
   );
+
+  const persistedSkills = useMemo(() => (settingsBot ? extractSkillsFromBot(settingsBot) : []), [settingsBot]);
+  const hasUnsavedSkillChanges = useMemo(() => {
+    if (!settingsBot) return false;
+    const current = new Set(editSkills);
+    const persisted = new Set(persistedSkills);
+    if (current.size !== persisted.size) return true;
+    for (const skill of current) {
+      if (!persisted.has(skill)) return true;
+    }
+    return false;
+  }, [editSkills, persistedSkills, settingsBot]);
 
   const isSkillIntakeEnabled = (skill: SkillIntakeKey, skills: BotSkill[]) => {
     if (skill === 'TECHNICAL') {
@@ -1094,6 +1107,26 @@ onBeforeUnmount(() => {
     setPendingSkillEnable(null);
   };
 
+  const handleSaveSkillsOnly = async () => {
+    if (!orgId || !settingsBot) return;
+    setSkillsSaving(true);
+    try {
+      const res = await botsApi.update(orgId, settingsBot.id, {
+        skills: editSkills,
+        actionForwardingEnabled: editSkills.includes('FORWARDING'),
+      });
+      setBots((prev) => prev.map((bot) => (bot.id === settingsBot.id ? res.data : bot)));
+      setSettingsBot((prev) => (prev ? { ...prev, ...res.data } : prev));
+      toast.success('Skills saved');
+    } catch (err: unknown) {
+      if (!handleForwardingConfigRequired(err)) {
+        toast.error('Failed to save skill changes');
+      }
+    } finally {
+      setSkillsSaving(false);
+    }
+  };
+
   const closeSkillEnableModal = () => {
     setShowSkillEnableModal(false);
     setPendingSkillEnable(null);
@@ -1398,10 +1431,26 @@ onBeforeUnmount(() => {
                     <h2 className="text-sm font-semibold text-white">Bot Skills</h2>
                     <p className="text-xs text-zinc-500 font-light">Turn skills on or off any time. You can enable multiple skills on one bot.</p>
                   </div>
-                  <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
-                    Enabled: <span className="text-white font-medium">{editSkills.length}</span>
+                  <div className="flex items-center gap-2">
+                    <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
+                      Enabled: <span className="text-white font-medium">{editSkills.length}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSaveSkillsOnly}
+                      disabled={!hasUnsavedSkillChanges || skillsSaving}
+                      className="text-[11px] px-2.5 py-1 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {skillsSaving ? 'Saving...' : 'Save skill changes'}
+                    </button>
                   </div>
                 </div>
+
+                {hasUnsavedSkillChanges && (
+                  <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                    <p className="text-[11px] text-amber-300">You have unsaved skill changes. Click "Save skill changes" to persist.</p>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   {BOT_SKILL_OPTIONS.map((skill) => (
