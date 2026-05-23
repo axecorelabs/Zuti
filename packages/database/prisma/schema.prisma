@@ -58,6 +58,13 @@ model Organization {
   knowledgeGaps KnowledgeGap[]
   creditLedgerEntries CreditLedger[]
   billingTransactions BillingTransaction[]
+  contactEndpoints ContactEndpoint[]
+  contactPolicies ContactPolicy[]
+  actionTasks ActionTask[]
+  actionDeliveries ActionDelivery[]
+  leads Lead[]
+  salesOrders SalesOrder[]
+  technicalIssues TechnicalIssue[]
 }
 
 model OrganizationMember {
@@ -132,6 +139,9 @@ model Bot {
   isActive       Boolean  @default(true)
   aiConfig       Json     @default("{}")
   routeToRoles   String[] @default(["AGENT"]) // roles the AI may auto-assign escalations to
+  template       BotTemplate @default(GENERAL)
+  capabilities   Json     @default("{}")
+  actionForwardingEnabled Boolean @default(false)
 
   // ── Email channel ─────────────────────────────────────────────────────────
   // Option B: Zuti-hosted address (auto-generated, zero user DNS setup)
@@ -147,6 +157,19 @@ model Bot {
 
   organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   conversations  Conversation[]
+  contactPolicies ContactPolicy[]
+  actionTasks ActionTask[]
+  leads Lead[]
+  salesOrders SalesOrder[]
+  technicalIssues TechnicalIssue[]
+}
+
+enum BotTemplate {
+  GENERAL
+  SALES
+  SUPPORT
+  BOOKING
+  TECHNICAL
 }
 
 enum BotPrimaryChannel {
@@ -265,6 +288,7 @@ model Conversation {
   escalationThreads EscalationThread[]
   knowledgeSuggestions KnowledgeSuggestion[]
   knowledgeGaps KnowledgeGap[]
+  actionTasks ActionTask[]
 
   @@index([botId, telegramChatId])
   @@index([botId, widgetVisitorId])
@@ -291,6 +315,7 @@ model Message {
   createdAt      DateTime    @default(now())
 
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceForActionTasks ActionTask[]
 
   @@index([conversationId, createdAt(sort: Desc)])
   @@index([conversationId, role, createdAt(sort: Desc)])
@@ -320,6 +345,227 @@ enum Priority {
   NORMAL
   HIGH
   URGENT
+}
+
+// ─── Action Forwarding and Internal Storage ─────────────────────────────────
+
+model ContactEndpoint {
+  id             String   @id @default(cuid())
+  orgId          String
+  label          String
+  channel        ContactChannel
+  destination    String
+  userId         String?
+  isActive       Boolean  @default(true)
+  isPrimary      Boolean  @default(false)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  policies       ContactPolicy[]
+  deliveries     ActionDelivery[]
+  assignedActionTasks ActionTask[] @relation("AssignedActionEndpoint")
+
+  @@index([orgId, isActive, channel])
+  @@index([orgId, userId, isActive])
+}
+
+model ContactPolicy {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  botId                 String?
+  name                  String
+  scope                 ContactPolicyScope @default(ORGANIZATION)
+  isDefault             Boolean  @default(false)
+  endpointId            String?
+  rules                 Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot?         @relation(fields: [botId], references: [id], onDelete: Cascade)
+  endpoint              ContactEndpoint? @relation(fields: [endpointId], references: [id], onDelete: SetNull)
+  routedActionTasks     ActionTask[]
+
+  @@index([orgId, scope, isDefault])
+  @@index([orgId, botId])
+}
+
+enum ContactPolicyScope {
+  ORGANIZATION
+  BOT
+}
+
+enum ContactChannel {
+  TELEGRAM
+  EMAIL
+}
+
+model ActionTask {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  botId                 String
+  conversationId        String?
+  sourceMessageId       String?
+  actionType            ActionType
+  status                ActionTaskStatus @default(DETECTED)
+  priority              Priority @default(NORMAL)
+  summary               String
+  payload               Json     @default("{}")
+  confidence            Float?
+  dedupeKey             String?
+  routedPolicyId        String?
+  assignedEndpointId    String?
+  acknowledgedAt        DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  conversation          Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  sourceMessage         Message?      @relation(fields: [sourceMessageId], references: [id], onDelete: SetNull)
+  routedPolicy          ContactPolicy? @relation(fields: [routedPolicyId], references: [id], onDelete: SetNull)
+  assignedEndpoint      ContactEndpoint? @relation("AssignedActionEndpoint", fields: [assignedEndpointId], references: [id], onDelete: SetNull)
+  deliveries            ActionDelivery[]
+  lead                  Lead?
+  salesOrder            SalesOrder?
+  technicalIssue        TechnicalIssue?
+
+  @@unique([orgId, dedupeKey])
+  @@index([orgId, status, createdAt(sort: Desc)])
+  @@index([orgId, actionType, createdAt(sort: Desc)])
+  @@index([orgId, assignedEndpointId, status, createdAt(sort: Desc)])
+}
+
+enum ActionType {
+  MEETING_REQUEST
+  SALES_ORDER_REQUEST
+  OWNER_ATTENTION_NEEDED
+  TECHNICAL_ISSUE
+}
+
+enum ActionTaskStatus {
+  DETECTED
+  PENDING_CONFIRMATION
+  QUEUED
+  ROUTED
+  SENT
+  DELIVERED
+  ACKNOWLEDGED
+  COMPLETED
+  FAILED
+  CONFIGURATION_NEEDED
+}
+
+model ActionDelivery {
+  id                    String   @id @default(cuid())
+  actionTaskId          String
+  orgId                 String
+  endpointId            String?
+  channel               ContactChannel
+  status                ActionDeliveryStatus @default(QUEUED)
+  attempt               Int      @default(1)
+  providerMessageId     String?
+  errorCode             String?
+  errorMessage          String?
+  requestPayload        Json     @default("{}")
+  responsePayload       Json     @default("{}")
+  nextRetryAt           DateTime?
+  sentAt                DateTime?
+  deliveredAt           DateTime?
+  acknowledgedAt        DateTime?
+  createdAt             DateTime @default(now())
+
+  actionTask            ActionTask @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  endpoint              ContactEndpoint? @relation(fields: [endpointId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, createdAt(sort: Desc)])
+  @@index([actionTaskId, attempt])
+  @@index([orgId, channel, status])
+}
+
+enum ActionDeliveryStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  RETRYING
+  ACKNOWLEDGED
+}
+
+model Lead {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  botId                 String
+  actionTaskId          String   @unique
+  fullName              String?
+  email                 String?
+  phone                 String?
+  interest              String?
+  budget                String?
+  notes                 String?
+  metadata              Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  actionTask            ActionTask   @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt(sort: Desc)])
+  @@index([orgId, email])
+}
+
+model SalesOrder {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  botId                 String
+  actionTaskId          String   @unique
+  customerName          String?
+  customerEmail         String?
+  customerPhone         String?
+  product               String?
+  quantity              Int?
+  notes                 String?
+  status                String   @default("NEW")
+  metadata              Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  actionTask            ActionTask   @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, createdAt(sort: Desc)])
+  @@index([orgId, customerEmail])
+}
+
+model TechnicalIssue {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  botId                 String
+  actionTaskId          String   @unique
+  reporterName          String?
+  reporterEmail         String?
+  reporterPhone         String?
+  issueCategory         String?
+  severity              String?
+  summary               String?
+  details               String?
+  status                String   @default("OPEN")
+  metadata              Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  actionTask            ActionTask   @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, severity, status, createdAt(sort: Desc)])
+  @@index([orgId, reporterEmail])
 }
 
 // ─── Escalations ─────────────────────────────────────────────────────────────

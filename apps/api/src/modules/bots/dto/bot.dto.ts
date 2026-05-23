@@ -22,6 +22,34 @@ export class CreateBotDto {
   @IsOptional()
   @IsString()
   telegramToken?: string;
+
+  @ApiPropertyOptional({
+    description: 'Optional skills to enable on the bot',
+    enum: ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'],
+    isArray: true,
+    example: ['BOOKING', 'SUPPORT'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsIn(['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'], { each: true })
+  skills?: Array<'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING'>;
+
+  @ApiPropertyOptional({
+    description: 'Template used to preconfigure the bot capabilities and action forwarding behavior',
+    enum: ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'],
+    example: 'GENERAL',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'])
+  template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+
+  @ApiPropertyOptional({
+    description: 'Explicitly enable or disable action forwarding for this bot',
+  })
+  @IsOptional()
+  @IsBoolean()
+  actionForwardingEnabled?: boolean;
 }
 
 export class UpdateBotDto {
@@ -66,4 +94,32 @@ export class UpdateBotDto {
   @IsArray()
   @IsIn(['AGENT', 'ADMIN', 'OWNER'], { each: true })
   routeToRoles?: string[];
+
+  @ApiPropertyOptional({
+    description: 'Optional skills to enable on the bot',
+    enum: ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'],
+    isArray: true,
+    example: ['SALES', 'TECHNICAL'],
+  })
+  @IsOptional()
+  @IsArray()
+  @IsIn(['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'], { each: true })
+  skills?: Array<'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING'>;
+
+  @ApiPropertyOptional({
+    description: 'Template used to preconfigure the bot capabilities and action forwarding behavior',
+    enum: ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'],
+    example: 'GENERAL',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'])
+  template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+
+  @ApiPropertyOptional({
+    description: 'Explicitly enable or disable action forwarding for this bot',
+  })
+  @IsOptional()
+  @IsBoolean()
+  actionForwardingEnabled?: boolean;
 }

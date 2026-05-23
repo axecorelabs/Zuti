@@ -26,6 +26,7 @@ import {
   Mail,
   Activity,
   BarChart2,
+  Briefcase,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
@@ -74,6 +75,7 @@ const navItems = [
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
   { label: 'Analytics', href: '/analytics', icon: BarChart2, agentVisible: false },
+  { label: 'Operations', href: '/operations', icon: Briefcase, agentVisible: true },
   { label: 'Billing & Usage', href: '/billing-usage', icon: CreditCard, agentVisible: false },
   { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },
   { label: 'Settings', href: '/settings', icon: Settings, agentVisible: true },

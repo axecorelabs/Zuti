@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { Building2, Users, User, Mail, AtSign, Shield } from 'lucide-react';
 import { orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
@@ -125,6 +126,14 @@ export default function SettingsPage() {
                     <p className="text-sm text-zinc-200 font-light mt-0.5">{memberCount} {memberCount === 1 ? 'member' : 'members'}</p>
                   </div>
                 </div>
+              </div>
+              <div className="pt-1">
+                <Link
+                  href="/settings/forwarding"
+                  className="inline-flex items-center rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900 transition-colors"
+                >
+                  Manage Forwarding Settings
+                </Link>
               </div>
             </div>
           )}

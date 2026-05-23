@@ -16,7 +16,12 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import {
+  buildOperationalIntegrityPromptBlock,
+  sanitizeOperationalClaims,
+} from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
+import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
  *  Telegram supports: <b>, <i>, <s>, <u>, <code>, <pre>, <a href="">.
@@ -106,6 +111,7 @@ export class TelegramProcessor {
     private readonly csatClassifier: CsatClassifierService,
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
+    private readonly actionForwarding: ActionForwardingService,
   ) {}
 
   @Process()
@@ -193,11 +199,39 @@ export class TelegramProcessor {
       customerName: conversation.customerName,
     });
 
+    const bot = await this.prisma.bot.findUnique({
+      where: { id: botId },
+      select: { name: true, aiConfig: true, routeToRoles: true, actionForwardingEnabled: true },
+    });
+    let forwardingResult: ActionForwardingResult = {
+      status: 'NO_INTENT',
+      reason: 'SYSTEM_ERROR',
+    };
+    await this.actionForwarding.detectAndQueue({
+      organizationId,
+      botId,
+      conversationId: conversation.id,
+      messageId: userMessage.id,
+      messageText: message.text,
+      channel: 'TELEGRAM',
+      customerName: conversation.customerName,
+      customerEmail: null,
+      actionForwardingEnabled: bot?.actionForwardingEnabled === true,
+    }).then((result) => {
+      forwardingResult = result;
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Action forwarding detect failed (telegram): ${msg}`);
+      forwardingResult = {
+        status: 'NO_INTENT',
+        reason: 'SYSTEM_ERROR',
+      };
+    });
+
     // If in AI mode, call AI service
     if (conversation.mode === 'AI') {
       // CSAT collection: if conversation is awaiting satisfaction response, handle it
       const convMeta = (conversation.metadata as Record<string, unknown>) ?? {};
-      const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { name: true, aiConfig: true, routeToRoles: true } });
       if (conversation.status === 'PENDING' && convMeta.awaitingCsat === true) {
         const lastAssistantMessage = await this.prisma.message.findFirst({
           where: { conversationId: conversation.id, role: 'ASSISTANT' },
@@ -269,7 +303,7 @@ export class TelegramProcessor {
         : ['AGENT'];
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
-        bot?.name ?? 'Assistant', systemPrompt, org?.name ?? null, routeToRoles, userMessage.id,
+        bot?.name ?? 'Assistant', systemPrompt, org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
       );
     }
   }
@@ -284,10 +318,20 @@ export class TelegramProcessor {
     botName: string = 'Assistant',
     systemPrompt: string | null = null,
     orgName: string | null = null,
+    forwardingResult: ActionForwardingResult,
     routeToRoles: string[] = ['AGENT'],
     inboundMessageId?: string,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+    const effectiveSystemPrompt = [
+      systemPrompt,
+      buildOperationalIntegrityPromptBlock(
+        forwardingResult.status,
+        forwardingResult.reason,
+        forwardingResult.missingFields,
+        forwardingResult.blockedCapability,
+      ),
+    ].filter(Boolean).join('\n\n');
 
     // Check if the user is explicitly requesting a human agent
     const humanRequestPhrases = [
@@ -414,7 +458,7 @@ export class TelegramProcessor {
           history,
           bot_name: botName,
           org_name: orgName,
-          system_prompt: systemPrompt,
+          system_prompt: effectiveSystemPrompt,
           customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
@@ -522,12 +566,19 @@ export class TelegramProcessor {
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
 
+      const safeAiText = sanitizeOperationalClaims(aiText, {
+        forwardingStatus: forwardingResult.status,
+        forwardingReason: forwardingResult.reason,
+        missingFields: forwardingResult.missingFields,
+        blockedCapability: forwardingResult.blockedCapability,
+      });
+
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
         data: {
           conversationId,
           role: 'ASSISTANT',
-          content: aiText,
+          content: safeAiText,
         },
       });
 
@@ -544,7 +595,7 @@ export class TelegramProcessor {
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           chat_id: telegramChatId,
-          text: markdownToTelegramHtml(aiText),
+          text: markdownToTelegramHtml(safeAiText),
           parse_mode: 'HTML',
         }),
       );

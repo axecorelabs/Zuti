@@ -19,7 +19,13 @@ import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import {
+  buildOperationalIntegrityPromptBlock,
+  sanitizeOperationalClaims,
+} from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
+import { OrganizationsService } from '../organizations/organizations.service';
+import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -27,6 +33,134 @@ function estimateTokens(value: unknown): number {
 
 function estimateUsageCredits(promptTokens: number, completionTokens: number): number {
   return computeUsageCredits(promptTokens, completionTokens, 1);
+}
+
+type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
+
+const BOT_SKILLS: BotSkill[] = ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'];
+
+function normalizeSkills(input?: string[]): BotSkill[] {
+  if (!input || input.length === 0) return [];
+  const set = new Set<BotSkill>();
+  for (const item of input) {
+    if (BOT_SKILLS.includes(item as BotSkill)) {
+      set.add(item as BotSkill);
+    }
+  }
+  return Array.from(set);
+}
+
+function buildCapabilitiesFromSkills(skills: BotSkill[]) {
+  const has = (skill: BotSkill) => skills.includes(skill);
+  return {
+    skills: {
+      SALES: has('SALES'),
+      BOOKING: has('BOOKING'),
+      SUPPORT: has('SUPPORT'),
+      TECHNICAL: has('TECHNICAL'),
+      FORWARDING: has('FORWARDING'),
+    },
+    // Backward-compatible flags consumed by existing forwarding/reporting logic.
+    canCreateLead: has('SALES'),
+    canCreateOrder: has('SALES'),
+    canNotifyOwner: has('FORWARDING'),
+    canNotifyTeam: has('FORWARDING'),
+    canCreateMeetingRequest: has('BOOKING'),
+    canCreateTechnicalIssue: has('SUPPORT') || has('TECHNICAL'),
+  };
+}
+
+function applyForwardingPreference(skills: BotSkill[], actionForwardingEnabled?: boolean): BotSkill[] {
+  if (actionForwardingEnabled === undefined) return skills;
+  const withoutForwarding = skills.filter((skill) => skill !== 'FORWARDING');
+  return actionForwardingEnabled ? [...withoutForwarding, 'FORWARDING'] : withoutForwarding;
+}
+
+function getTemplatePreset(template: BotTemplate) {
+  switch (template) {
+    case 'SALES':
+      return {
+        capabilities: {
+          canCreateLead: true,
+          canCreateOrder: true,
+          canNotifyOwner: true,
+          canNotifyTeam: true,
+          canCreateMeetingRequest: true,
+          canCreateTechnicalIssue: false,
+        },
+        actionForwardingEnabled: true,
+      };
+    case 'SUPPORT':
+      return {
+        capabilities: {
+          canCreateLead: false,
+          canCreateOrder: false,
+          canNotifyOwner: true,
+          canNotifyTeam: true,
+          canCreateMeetingRequest: false,
+          canCreateTechnicalIssue: true,
+        },
+        actionForwardingEnabled: true,
+      };
+    case 'BOOKING':
+      return {
+        capabilities: {
+          canCreateLead: false,
+          canCreateOrder: false,
+          canNotifyOwner: true,
+          canNotifyTeam: true,
+          canCreateMeetingRequest: true,
+          canCreateTechnicalIssue: false,
+        },
+        actionForwardingEnabled: true,
+      };
+    case 'TECHNICAL':
+      return {
+        capabilities: {
+          canCreateLead: false,
+          canCreateOrder: false,
+          canNotifyOwner: true,
+          canNotifyTeam: true,
+          canCreateMeetingRequest: false,
+          canCreateTechnicalIssue: true,
+        },
+        actionForwardingEnabled: true,
+      };
+    case 'GENERAL':
+    default:
+      return {
+        capabilities: {
+          canCreateLead: true,
+          canCreateOrder: true,
+          canNotifyOwner: true,
+          canNotifyTeam: true,
+          canCreateMeetingRequest: true,
+          canCreateTechnicalIssue: true,
+        },
+        actionForwardingEnabled: false,
+      };
+  }
+}
+
+function getTemplateCatalog() {
+  const templates: BotTemplate[] = ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'];
+  return templates.map((template) => {
+    const preset = getTemplatePreset(template);
+    return {
+      template,
+      name: template.charAt(0) + template.slice(1).toLowerCase(),
+      description: {
+        GENERAL: 'Flexible bot for mixed use cases and general routing.',
+        SALES: 'Lead capture and order intake with owner/team alerts.',
+        SUPPORT: 'Support-focused bot with technical issue forwarding.',
+        BOOKING: 'Meeting and scheduling focused bot.',
+        TECHNICAL: 'Technical issue and incident intake bot.',
+      }[template],
+      actionForwardingEnabled: preset.actionForwardingEnabled,
+      capabilities: preset.capabilities,
+    };
+  });
 }
 
 @Injectable()
@@ -44,12 +178,18 @@ export class BotsService {
     private readonly teamChat: TeamChatService,
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
+    private readonly orgs: OrganizationsService,
+    private readonly actionForwarding: ActionForwardingService,
   ) {}
 
   async create(organizationId: string, dto: CreateBotDto) {
     const primaryChannel = dto.primaryChannel ?? 'TELEGRAM';
     const telegramToken = dto.telegramToken?.trim();
     const needsTelegram = primaryChannel === 'TELEGRAM';
+    const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled ?? true);
+    const template: BotTemplate = 'GENERAL';
+    const capabilities = buildCapabilitiesFromSkills(requestedSkills);
+    const actionForwardingEnabled = requestedSkills.includes('FORWARDING');
 
     if (needsTelegram && !telegramToken) {
       throw new BadRequestException('Telegram token is required for Telegram bots');
@@ -80,8 +220,15 @@ export class BotsService {
         webWidgetEnabled: primaryChannel === 'WEB_WIDGET',
         webWidgetKey: primaryChannel === 'WEB_WIDGET' ? this.generateWidgetKey() : null,
         isActive: true,
+        template,
+        capabilities: capabilities as any,
+        actionForwardingEnabled,
       },
     });
+  }
+
+  getTemplateCatalog() {
+    return getTemplateCatalog();
   }
 
   async findAll(organizationId: string) {
@@ -103,6 +250,13 @@ export class BotsService {
     const existing = await this.findOne(organizationId, botId);
     const enableWidget = dto.webWidgetEnabled === true;
     const nextAllowedDomains = dto.webWidgetAllowedDomains?.map((d) => d.trim().toLowerCase()).filter(Boolean);
+    const nextTemplate = (dto.template ?? existing.template) as BotTemplate;
+    const preset = getTemplatePreset(nextTemplate);
+    const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled);
+    const hasSkillsUpdate = dto.skills !== undefined;
+    const resolvedCapabilities = hasSkillsUpdate ? buildCapabilitiesFromSkills(requestedSkills) : (dto.template !== undefined ? preset.capabilities : undefined);
+    const resolvedTemplate = hasSkillsUpdate ? 'GENERAL' : (dto.template !== undefined ? nextTemplate : undefined);
+    const resolvedActionForwardingEnabled = hasSkillsUpdate ? requestedSkills.includes('FORWARDING') : dto.actionForwardingEnabled;
 
     return this.prisma.bot.update({
       where: { id: botId },
@@ -113,6 +267,9 @@ export class BotsService {
         ...(dto.routeToRoles !== undefined && { routeToRoles: dto.routeToRoles }),
         ...(dto.webWidgetEnabled !== undefined && { webWidgetEnabled: dto.webWidgetEnabled }),
         ...(nextAllowedDomains !== undefined && { webWidgetAllowedDomains: nextAllowedDomains }),
+        ...(resolvedCapabilities !== undefined && { capabilities: resolvedCapabilities as any }),
+        ...(resolvedTemplate !== undefined && { template: resolvedTemplate as BotTemplate }),
+        ...(resolvedActionForwardingEnabled !== undefined && { actionForwardingEnabled: resolvedActionForwardingEnabled }),
         ...((enableWidget && !existing.webWidgetKey) && { webWidgetKey: this.generateWidgetKey() }),
       },
     });
@@ -350,12 +507,16 @@ export class BotsService {
             organizationId: bot.organizationId,
             // Never match Telegram-only conversations (they have null widget fields)
             NOT: { widgetVisitorId: null, widgetVisitorEmail: null },
-            OR: visitorConditions,
-            OR: [
-              { status: { not: 'RESOLVED' } },
+            AND: [
+              { OR: visitorConditions },
               {
-                status: 'RESOLVED',
-                metadata: { path: ['awaitingCsat'], equals: true },
+                OR: [
+                  { status: { not: 'RESOLVED' } },
+                  {
+                    status: 'RESOLVED',
+                    metadata: { path: ['awaitingCsat'], equals: true },
+                  },
+                ],
               },
             ],
           },
@@ -410,6 +571,31 @@ export class BotsService {
     this.events.emitNewMessage(bot.organizationId, {
       conversationId: conversation.id,
       message: { id: userMessage.id, role: userMessage.role, content: userMessage.content, createdAt: userMessage.createdAt },
+    });
+
+    let forwardingResult: ActionForwardingResult = {
+      status: 'NO_INTENT',
+      reason: 'SYSTEM_ERROR',
+    };
+    await this.actionForwarding.detectAndQueue({
+      organizationId: bot.organizationId,
+      botId: bot.id,
+      conversationId: conversation.id,
+      messageId: userMessage.id,
+      messageText: userText.trim(),
+      channel: 'WIDGET',
+      customerName,
+      customerEmail: visitorEmail ?? null,
+      actionForwardingEnabled: bot.actionForwardingEnabled === true,
+    }).then((result) => {
+      forwardingResult = result;
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Action forwarding detect failed (widget): ${msg}`);
+      forwardingResult = {
+        status: 'NO_INTENT',
+        reason: 'SYSTEM_ERROR',
+      };
     });
 
     // CSAT collection: if conversation is awaiting satisfaction response, handle it
@@ -549,6 +735,15 @@ export class BotsService {
     try {
       const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
       const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
+      const effectiveSystemPrompt = [
+        buildAgentSystemPrompt(aiConfig, bot.name),
+        buildOperationalIntegrityPromptBlock(
+          forwardingResult.status,
+          forwardingResult.reason,
+          forwardingResult.missingFields,
+          forwardingResult.blockedCapability,
+        ),
+      ].filter(Boolean).join('\n\n');
 
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -559,7 +754,7 @@ export class BotsService {
           history,
           bot_name: bot.name,
           org_name: bot.organization?.name,
-          system_prompt: buildAgentSystemPrompt(aiConfig, bot.name),
+          system_prompt: effectiveSystemPrompt,
           customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(bot.organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
@@ -650,6 +845,13 @@ export class BotsService {
           },
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
+
+      aiReply = sanitizeOperationalClaims(aiReply, {
+        forwardingStatus: forwardingResult.status,
+        forwardingReason: forwardingResult.reason,
+        missingFields: forwardingResult.missingFields,
+        blockedCapability: forwardingResult.blockedCapability,
+      });
 
       // Store AI message
       const aiMessage = await this.prisma.message.create({

@@ -343,4 +343,382 @@ export class OrganizationsService {
       include: { user: { select: { id: true, name: true, email: true } } },
     });
   }
+
+  async listContactEndpoints(orgId: string, requestingUserId: string) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    return this.prisma.contactEndpoint.findMany({
+      where: { orgId },
+      orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  async createContactEndpoint(
+    orgId: string,
+    requestingUserId: string,
+    data: {
+      label: string;
+      channel: 'TELEGRAM' | 'EMAIL';
+      destination: string;
+      userId?: string | null;
+      isPrimary?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    if (data.userId) {
+      const member = await this.prisma.organizationMember.findUnique({
+        where: { organizationId_userId: { organizationId: orgId, userId: data.userId } },
+      });
+      if (!member) throw new NotFoundException('Member not found');
+    }
+
+    return this.prisma.contactEndpoint.create({
+      data: {
+        orgId,
+        label: data.label.trim(),
+        channel: data.channel,
+        destination: data.destination.trim(),
+        userId: data.userId ?? null,
+        isPrimary: data.isPrimary ?? false,
+        metadata: (data.metadata ?? {}) as any,
+      },
+    });
+  }
+
+  async updateContactEndpoint(
+    orgId: string,
+    requestingUserId: string,
+    endpointId: string,
+    data: {
+      label?: string;
+      channel?: 'TELEGRAM' | 'EMAIL';
+      destination?: string;
+      userId?: string | null;
+      isActive?: boolean;
+      isPrimary?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    const endpoint = await this.prisma.contactEndpoint.findUnique({ where: { id: endpointId } });
+    if (!endpoint || endpoint.orgId !== orgId) throw new NotFoundException('Contact endpoint not found');
+    if (data.userId) {
+      const member = await this.prisma.organizationMember.findUnique({
+        where: { organizationId_userId: { organizationId: orgId, userId: data.userId } },
+      });
+      if (!member) throw new NotFoundException('Member not found');
+    }
+
+    return this.prisma.contactEndpoint.update({
+      where: { id: endpointId },
+      data: {
+        ...(data.label !== undefined && { label: data.label.trim() }),
+        ...(data.channel !== undefined && { channel: data.channel }),
+        ...(data.destination !== undefined && { destination: data.destination.trim() }),
+        ...(data.userId !== undefined && { userId: data.userId }),
+        ...(data.isActive !== undefined && { isActive: data.isActive }),
+        ...(data.isPrimary !== undefined && { isPrimary: data.isPrimary }),
+        ...(data.metadata !== undefined && { metadata: data.metadata as any }),
+      },
+    });
+  }
+
+  async deleteContactEndpoint(orgId: string, requestingUserId: string, endpointId: string) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    const endpoint = await this.prisma.contactEndpoint.findUnique({ where: { id: endpointId } });
+    if (!endpoint || endpoint.orgId !== orgId) throw new NotFoundException('Contact endpoint not found');
+    return this.prisma.contactEndpoint.delete({ where: { id: endpointId } });
+  }
+
+  async listContactPolicies(orgId: string, requestingUserId: string) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    return this.prisma.contactPolicy.findMany({
+      where: { orgId },
+      orderBy: [{ scope: 'asc' }, { isDefault: 'desc' }, { createdAt: 'asc' }],
+      include: {
+        endpoint: true,
+        bot: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  async createContactPolicy(
+    orgId: string,
+    requestingUserId: string,
+    data: {
+      name: string;
+      scope: 'ORGANIZATION' | 'BOT';
+      endpointId?: string | null;
+      botId?: string | null;
+      isDefault?: boolean;
+      rules?: Record<string, unknown>;
+    },
+  ) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    if (data.endpointId) {
+      const endpoint = await this.prisma.contactEndpoint.findUnique({ where: { id: data.endpointId } });
+      if (!endpoint || endpoint.orgId !== orgId) throw new NotFoundException('Contact endpoint not found');
+    }
+    if (data.botId) {
+      const bot = await this.prisma.bot.findUnique({ where: { id: data.botId } });
+      if (!bot || bot.organizationId !== orgId) throw new NotFoundException('Bot not found');
+    }
+
+    return this.prisma.contactPolicy.create({
+      data: {
+        orgId,
+        name: data.name.trim(),
+        scope: data.scope,
+        endpointId: data.endpointId ?? null,
+        botId: data.scope === 'BOT' ? (data.botId ?? null) : null,
+        isDefault: data.isDefault ?? false,
+        rules: (data.rules ?? {}) as any,
+      },
+      include: { endpoint: true, bot: { select: { id: true, name: true } } },
+    });
+  }
+
+  async updateContactPolicy(
+    orgId: string,
+    requestingUserId: string,
+    policyId: string,
+    data: {
+      name?: string;
+      endpointId?: string | null;
+      botId?: string | null;
+      isDefault?: boolean;
+      rules?: Record<string, unknown>;
+    },
+  ) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    const policy = await this.prisma.contactPolicy.findUnique({ where: { id: policyId } });
+    if (!policy || policy.orgId !== orgId) throw new NotFoundException('Contact policy not found');
+    if (data.endpointId) {
+      const endpoint = await this.prisma.contactEndpoint.findUnique({ where: { id: data.endpointId } });
+      if (!endpoint || endpoint.orgId !== orgId) throw new NotFoundException('Contact endpoint not found');
+    }
+    if (data.botId) {
+      const bot = await this.prisma.bot.findUnique({ where: { id: data.botId } });
+      if (!bot || bot.organizationId !== orgId) throw new NotFoundException('Bot not found');
+    }
+
+    return this.prisma.contactPolicy.update({
+      where: { id: policyId },
+      data: {
+        ...(data.name !== undefined && { name: data.name.trim() }),
+        ...(data.endpointId !== undefined && { endpointId: data.endpointId }),
+        ...(data.botId !== undefined && { botId: data.botId }),
+        ...(data.isDefault !== undefined && { isDefault: data.isDefault }),
+        ...(data.rules !== undefined && { rules: data.rules as any }),
+      },
+      include: { endpoint: true, bot: { select: { id: true, name: true } } },
+    });
+  }
+
+  async deleteContactPolicy(orgId: string, requestingUserId: string, policyId: string) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN']);
+    const policy = await this.prisma.contactPolicy.findUnique({ where: { id: policyId } });
+    if (!policy || policy.orgId !== orgId) throw new NotFoundException('Contact policy not found');
+    return this.prisma.contactPolicy.delete({ where: { id: policyId } });
+  }
+
+  private parseLimit(limit?: string, fallback = 50): number {
+    if (!limit) return fallback;
+    const parsed = Number.parseInt(limit, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+    return Math.min(parsed, 200);
+  }
+
+  private parsePage(page?: string): number {
+    if (!page) return 1;
+    const parsed = Number.parseInt(page, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+    return parsed;
+  }
+
+  async listActionTasks(
+    orgId: string,
+    requestingUserId: string,
+    query: { botId?: string; status?: string; actionType?: string; q?: string; limit?: string; page?: string },
+  ) {
+    await this.getMembershipOrThrow(orgId, requestingUserId);
+    const take = this.parseLimit(query.limit, 75);
+    const page = this.parsePage(query.page);
+    const skip = (page - 1) * take;
+    const where: Record<string, unknown> = {
+      orgId,
+      ...(query.botId ? { botId: query.botId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.actionType ? { actionType: query.actionType } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { summary: { contains: query.q, mode: 'insensitive' } },
+              { dedupeKey: { contains: query.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const total = await this.prisma.actionTask.count({ where: where as any });
+
+    const items = await this.prisma.actionTask.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+      include: {
+        bot: { select: { id: true, name: true } },
+        conversation: { select: { id: true, customerName: true, customerEmail: true, channel: true } },
+        assignedEndpoint: { select: { id: true, label: true, channel: true, destination: true, isActive: true } },
+        routedPolicy: { select: { id: true, name: true, scope: true, isDefault: true } },
+      },
+    });
+
+    return {
+      items,
+      total,
+      page,
+      limit: take,
+      totalPages: Math.max(1, Math.ceil(total / take)),
+    };
+  }
+
+  async listLeads(
+    orgId: string,
+    requestingUserId: string,
+    query: { botId?: string; status?: string; actionType?: string; q?: string; limit?: string; page?: string },
+  ) {
+    await this.getMembershipOrThrow(orgId, requestingUserId);
+    const take = this.parseLimit(query.limit, 75);
+    const page = this.parsePage(query.page);
+    const skip = (page - 1) * take;
+    const where: Record<string, unknown> = {
+      orgId,
+      ...(query.botId ? { botId: query.botId } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { fullName: { contains: query.q, mode: 'insensitive' } },
+              { email: { contains: query.q, mode: 'insensitive' } },
+              { interest: { contains: query.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const total = await this.prisma.lead.count({ where: where as any });
+
+    const items = await this.prisma.lead.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+      include: {
+        bot: { select: { id: true, name: true } },
+        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+      },
+    });
+
+    return {
+      items,
+      total,
+      page,
+      limit: take,
+      totalPages: Math.max(1, Math.ceil(total / take)),
+    };
+  }
+
+  async listSalesOrders(
+    orgId: string,
+    requestingUserId: string,
+    query: { botId?: string; status?: string; actionType?: string; q?: string; limit?: string; page?: string },
+  ) {
+    await this.getMembershipOrThrow(orgId, requestingUserId);
+    const take = this.parseLimit(query.limit, 75);
+    const page = this.parsePage(query.page);
+    const skip = (page - 1) * take;
+    const where: Record<string, unknown> = {
+      orgId,
+      ...(query.botId ? { botId: query.botId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { customerName: { contains: query.q, mode: 'insensitive' } },
+              { customerEmail: { contains: query.q, mode: 'insensitive' } },
+              { product: { contains: query.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const total = await this.prisma.salesOrder.count({ where: where as any });
+
+    const items = await this.prisma.salesOrder.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+      include: {
+        bot: { select: { id: true, name: true } },
+        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+      },
+    });
+
+    return {
+      items,
+      total,
+      page,
+      limit: take,
+      totalPages: Math.max(1, Math.ceil(total / take)),
+    };
+  }
+
+  async listTechnicalIssues(
+    orgId: string,
+    requestingUserId: string,
+    query: { botId?: string; status?: string; actionType?: string; q?: string; limit?: string; page?: string },
+  ) {
+    await this.getMembershipOrThrow(orgId, requestingUserId);
+    const take = this.parseLimit(query.limit, 75);
+    const page = this.parsePage(query.page);
+    const skip = (page - 1) * take;
+    const where: Record<string, unknown> = {
+      orgId,
+      ...(query.botId ? { botId: query.botId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { reporterName: { contains: query.q, mode: 'insensitive' } },
+              { reporterEmail: { contains: query.q, mode: 'insensitive' } },
+              { summary: { contains: query.q, mode: 'insensitive' } },
+              { issueCategory: { contains: query.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const total = await this.prisma.technicalIssue.count({ where: where as any });
+
+    const items = await this.prisma.technicalIssue.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+      include: {
+        bot: { select: { id: true, name: true } },
+        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+      },
+    });
+
+    return {
+      items,
+      total,
+      page,
+      limit: take,
+      totalPages: Math.max(1, Math.ceil(total / take)),
+    };
+  }
 }

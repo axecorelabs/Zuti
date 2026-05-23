@@ -104,6 +104,74 @@ export const orgsApi = {
     userId: string,
     data: { specializations?: string[]; isAvailable?: boolean; maxConcurrentConversations?: number },
   ) => api.patch(`/organizations/${orgId}/members/${userId}/profile`, data),
+  listContactEndpoints: (orgId: string) => api.get(`/organizations/${orgId}/contact-endpoints`),
+  createContactEndpoint: (
+    orgId: string,
+    data: {
+      label: string;
+      channel: 'TELEGRAM' | 'EMAIL';
+      destination: string;
+      userId?: string;
+      isPrimary?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ) => api.post(`/organizations/${orgId}/contact-endpoints`, data),
+  updateContactEndpoint: (
+    orgId: string,
+    endpointId: string,
+    data: {
+      label?: string;
+      channel?: 'TELEGRAM' | 'EMAIL';
+      destination?: string;
+      userId?: string | null;
+      isActive?: boolean;
+      isPrimary?: boolean;
+      metadata?: Record<string, unknown>;
+    },
+  ) => api.patch(`/organizations/${orgId}/contact-endpoints/${endpointId}`, data),
+  deleteContactEndpoint: (orgId: string, endpointId: string) =>
+    api.delete(`/organizations/${orgId}/contact-endpoints/${endpointId}`),
+  listContactPolicies: (orgId: string) => api.get(`/organizations/${orgId}/contact-policies`),
+  createContactPolicy: (
+    orgId: string,
+    data: {
+      name: string;
+      scope: 'ORGANIZATION' | 'BOT';
+      endpointId?: string;
+      botId?: string;
+      isDefault?: boolean;
+      rules?: Record<string, unknown>;
+    },
+  ) => api.post(`/organizations/${orgId}/contact-policies`, data),
+  updateContactPolicy: (
+    orgId: string,
+    policyId: string,
+    data: {
+      name?: string;
+      endpointId?: string | null;
+      botId?: string | null;
+      isDefault?: boolean;
+      rules?: Record<string, unknown>;
+    },
+  ) => api.patch(`/organizations/${orgId}/contact-policies/${policyId}`, data),
+  deleteContactPolicy: (orgId: string, policyId: string) =>
+    api.delete(`/organizations/${orgId}/contact-policies/${policyId}`),
+  listActionTasks: (
+    orgId: string,
+    params?: { botId?: string; status?: string; actionType?: string; q?: string; limit?: number; page?: number },
+  ) => api.get(`/organizations/${orgId}/action-tasks`, { params }),
+  listLeads: (
+    orgId: string,
+    params?: { botId?: string; q?: string; limit?: number; page?: number },
+  ) => api.get(`/organizations/${orgId}/leads`, { params }),
+  listSalesOrders: (
+    orgId: string,
+    params?: { botId?: string; status?: string; q?: string; limit?: number; page?: number },
+  ) => api.get(`/organizations/${orgId}/sales-orders`, { params }),
+  listTechnicalIssues: (
+    orgId: string,
+    params?: { botId?: string; status?: string; q?: string; limit?: number; page?: number },
+  ) => api.get(`/organizations/${orgId}/technical-issues`, { params }),
 };
 
 // ── Invitations ───────────────────────────────────────────────────────────────
@@ -120,12 +188,20 @@ export const invitationsApi = {
 
 // ── Bots ──────────────────────────────────────────────────────────────────────
 export const botsApi = {
+  templates: (orgId: string) => api.get(`/organizations/${orgId}/bots/templates`),
   list: (orgId: string) => api.get(`/organizations/${orgId}/bots`),
   get: (orgId: string, botId: string) =>
     api.get(`/organizations/${orgId}/bots/${botId}`),
   create: (
     orgId: string,
-    data: { name: string; primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL'; telegramToken?: string },
+    data: {
+      name: string;
+      primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
+      telegramToken?: string;
+      template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+      skills?: Array<'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING'>;
+      actionForwardingEnabled?: boolean;
+    },
   ) => api.post(`/organizations/${orgId}/bots`, data),
   update: (orgId: string, botId: string, data: Record<string, unknown>) =>
     api.patch(`/organizations/${orgId}/bots/${botId}`, data),

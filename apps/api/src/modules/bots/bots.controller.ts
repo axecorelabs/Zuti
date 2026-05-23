@@ -17,6 +17,12 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 export class BotsController {
   constructor(private readonly botsService: BotsService) {}
 
+  @Get('templates')
+  @ApiOperation({ summary: 'List bot templates with their preset capabilities and defaults' })
+  templates() {
+    return this.botsService.getTemplateCatalog();
+  }
+
   @Post()
   @RequireRole('OWNER', 'ADMIN')
   @ApiOperation({ summary: 'Create a bot and choose its primary channel (Telegram or Website Widget)' })

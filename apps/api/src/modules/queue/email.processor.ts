@@ -20,7 +20,12 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import {
+  buildOperationalIntegrityPromptBlock,
+  sanitizeOperationalClaims,
+} from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
+import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -84,6 +89,7 @@ export class EmailProcessor {
     private readonly csatClassifier: CsatClassifierService,
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
+    private readonly actionForwarding: ActionForwardingService,
   ) {}
 
   @Process()
@@ -179,6 +185,31 @@ export class EmailProcessor {
       customerName: conversation.customerName,
     });
 
+    let forwardingResult: ActionForwardingResult = {
+      status: 'NO_INTENT',
+      reason: 'SYSTEM_ERROR',
+    };
+    await this.actionForwarding.detectAndQueue({
+      organizationId,
+      botId,
+      conversationId: conversation.id,
+      messageId: userMessage.id,
+      messageText: bodyText.trim(),
+      channel: 'EMAIL',
+      customerName: conversation.customerName,
+      customerEmail: conversation.customerEmail,
+      actionForwardingEnabled: bot.actionForwardingEnabled === true,
+    }).then((result) => {
+      forwardingResult = result;
+    }).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Action forwarding detect failed (email): ${msg}`);
+      forwardingResult = {
+        status: 'NO_INTENT',
+        reason: 'SYSTEM_ERROR',
+      };
+    });
+
     if (conversation.mode !== 'AI') return;
 
     // CSAT collection: if conversation is awaiting satisfaction response, handle it
@@ -254,6 +285,7 @@ export class EmailProcessor {
       bodyText.trim(), bot.name, systemPrompt,
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
+      forwardingResult,
       routeToRoles,
       userMessage.id,
     );
@@ -270,6 +302,7 @@ export class EmailProcessor {
     systemPrompt: string | null,
     orgName: string | null,
     orgSlug: string | null,
+    forwardingResult: ActionForwardingResult,
     routeToRoles: string[] = ['AGENT'],
     inboundMessageId?: string,
   ) {
@@ -391,6 +424,16 @@ export class EmailProcessor {
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
+    const effectiveSystemPrompt = [
+      systemPrompt,
+      buildOperationalIntegrityPromptBlock(
+        forwardingResult.status,
+        forwardingResult.reason,
+        forwardingResult.missingFields,
+        forwardingResult.blockedCapability,
+      ),
+    ].filter(Boolean).join('\n\n');
+
     try {
       const response = await firstValueFrom(
         this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
@@ -401,7 +444,7 @@ export class EmailProcessor {
           history,
           bot_name: botName,
           org_name: orgName,
-          system_prompt: systemPrompt,
+          system_prompt: effectiveSystemPrompt,
           customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
         }),
       );
@@ -507,9 +550,16 @@ export class EmailProcessor {
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
 
+      const safeAiText = sanitizeOperationalClaims(aiText, {
+        forwardingStatus: forwardingResult.status,
+        forwardingReason: forwardingResult.reason,
+        missingFields: forwardingResult.missingFields,
+        blockedCapability: forwardingResult.blockedCapability,
+      });
+
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
-        data: { conversationId: conversation.id, role: 'ASSISTANT', content: aiText },
+        data: { conversationId: conversation.id, role: 'ASSISTANT', content: safeAiText },
       });
       this.events.emitNewMessage(organizationId, {
         conversationId: conversation.id,
@@ -525,7 +575,7 @@ export class EmailProcessor {
       await this.sendEmail(
         fromAddress, toAddress, customerEmail,
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-        aiText,
+        safeAiText,
         conversation.emailThreadId,
         botName, orgName ?? '',
       );

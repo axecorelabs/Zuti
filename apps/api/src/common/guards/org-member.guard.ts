@@ -4,7 +4,9 @@ import {
   ExecutionContext,
   ForbiddenException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../modules/prisma/prisma.service';
 
 @Injectable()
@@ -18,10 +20,26 @@ export class OrgMemberGuard implements CanActivate {
 
     if (!orgId) return true;
 
-    const member = await this.prisma.organizationMember.findUnique({
-      where: { organizationId_userId: { organizationId: orgId, userId: user.id } },
-      include: { organization: true },
-    });
+    let member: Prisma.OrganizationMemberGetPayload<{ include: { organization: true } }> | null = null;
+    try {
+      member = await this.prisma.organizationMember.findUnique({
+        where: { organizationId_userId: { organizationId: orgId, userId: user.id } },
+        include: { organization: true },
+      });
+    } catch (error) {
+      const prismaCode = error instanceof Prisma.PrismaClientKnownRequestError ? error.code : null;
+      const isConnectivityError =
+        (error instanceof Prisma.PrismaClientKnownRequestError && (prismaCode === 'P1001' || prismaCode === 'P1002')) ||
+        error instanceof Prisma.PrismaClientInitializationError;
+
+      if (isConnectivityError) {
+        throw new ServiceUnavailableException(
+          'Database is temporarily unavailable. Please try again shortly.',
+        );
+      }
+
+      throw error;
+    }
 
     if (!member) throw new ForbiddenException('Not a member of this organization');
     if (!member.organization) throw new NotFoundException('Organization not found');

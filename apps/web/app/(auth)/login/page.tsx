@@ -11,6 +11,11 @@ import { useAuthStore } from '@/lib/store';
 function LoginPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { user, isLoading, loadFromStorage } = useAuthStore((s) => ({
+    user: s.user,
+    isLoading: s.isLoading,
+    loadFromStorage: s.loadFromStorage,
+  }));
   const setAuth = useAuthStore((s) => s.setAuth);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,6 +23,16 @@ function LoginPageContent() {
   const [loading, setLoading] = useState(false);
   const [showResendVerification, setShowResendVerification] = useState(false);
   const [resendingVerification, setResendingVerification] = useState(false);
+
+  useEffect(() => {
+    loadFromStorage();
+  }, [loadFromStorage]);
+
+  useEffect(() => {
+    if (!isLoading && user) {
+      router.replace('/dashboard');
+    }
+  }, [isLoading, user, router]);
 
   useEffect(() => {
     if (searchParams.get('verify') === 'sent') {

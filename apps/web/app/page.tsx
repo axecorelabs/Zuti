@@ -7,6 +7,7 @@ import Image from 'next/image';
 import { ArrowRight, MessageSquareText, ShieldCheck, Sparkles, Leaf } from 'lucide-react';
 import { gsap } from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
+import { useAuthStore } from '@/lib/store';
 
 type RevealElement = HTMLElement & { dataset: { reveal?: string } };
 
@@ -47,11 +48,19 @@ const heroWalkthrough = [
 ];
 
 export default function Home() {
+  const { user, loadFromStorage } = useAuthStore((s) => ({
+    user: s.user,
+    loadFromStorage: s.loadFromStorage,
+  }));
   const heroSectionRef = useRef<HTMLElement | null>(null);
   const heroStepTitleRef = useRef<HTMLHeadingElement | null>(null);
   const heroStepDescRef = useRef<HTMLParagraphElement | null>(null);
   const heroStepBadgeRef = useRef<HTMLSpanElement | null>(null);
   const [activeHeroStep, setActiveHeroStep] = useState(0);
+
+  useEffect(() => {
+    loadFromStorage();
+  }, [loadFromStorage]);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -159,13 +168,22 @@ export default function Home() {
             <Link href="/pricing" className="inline-flex items-center px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors whitespace-nowrap">
               Pricing
             </Link>
-            <Link href="/login" className="inline-flex items-center px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors whitespace-nowrap">
-              Sign in
-            </Link>
-            <Link href="/register" className="inline-flex items-center gap-1 sm:gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full bg-white text-black hover:bg-zinc-100 transition-colors whitespace-nowrap">
-              Get started
-              <ArrowRight className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
-            </Link>
+            {user ? (
+              <Link href="/dashboard" className="inline-flex items-center gap-1 sm:gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full bg-white text-black hover:bg-zinc-100 transition-colors whitespace-nowrap">
+                Open dashboard
+                <ArrowRight className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
+              </Link>
+            ) : (
+              <>
+                <Link href="/login" className="inline-flex items-center px-2.5 sm:px-3.5 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-900 transition-colors whitespace-nowrap">
+                  Sign in
+                </Link>
+                <Link href="/register" className="inline-flex items-center gap-1 sm:gap-1.5 px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm rounded-full bg-white text-black hover:bg-zinc-100 transition-colors whitespace-nowrap">
+                  Get started
+                  <ArrowRight className="w-3 sm:w-3.5 h-3 sm:h-3.5" />
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </header>

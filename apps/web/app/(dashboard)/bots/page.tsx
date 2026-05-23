@@ -20,6 +20,15 @@ interface AiConfig {
   extraDetails?: string;
   creativity?: number;
   verbosity?: number;
+  skillIntakeConfig?: Partial<Record<'SALES' | 'BOOKING' | 'TECHNICAL', {
+    version?: number;
+    fields?: Array<{
+      key: string;
+      label?: string;
+      required?: boolean;
+      aliases?: string[];
+    }>;
+  }>>;
 }
 
 type PromptMode = 'guided' | 'override';
@@ -45,6 +54,75 @@ const STYLE_PRESETS = [
   { label: 'Sales', creativity: 65, verbosity: 60 },
   { label: 'Technical', creativity: 25, verbosity: 70 },
 ] as const;
+
+type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
+
+type SkillIntakeKey = 'SALES' | 'BOOKING' | 'TECHNICAL';
+
+interface SkillIntakeFieldConfig {
+  key: string;
+  label: string;
+  required: boolean;
+  aliases: string[];
+}
+
+type SkillIntakeConfigMap = Partial<Record<SkillIntakeKey, {
+  version: number;
+  fields: SkillIntakeFieldConfig[];
+}>>;
+
+const BOT_SKILL_OPTIONS: Array<{ skill: BotSkill; name: string; description: string; effects: string[] }> = [
+  {
+    skill: 'FORWARDING',
+    name: 'Action Forwarding',
+    description: 'Sends important customer intents to your team quickly.',
+    effects: [
+      'Important intents are forwarded to your owner/team channels faster.',
+      'Your bot prepares cleaner handoff context for human follow-up.',
+      'Keeps escalation and notification behavior active for enabled skills.',
+    ],
+  },
+  {
+    skill: 'SALES',
+    name: 'Sales',
+    description: 'Lead capture and order intake workflows.',
+    effects: [
+      'Your bot can collect buyer interest and capture lead details for follow-up.',
+      'Your bot can recognize order requests and pass them to your team quickly.',
+      'Your team gets clearer handoff context when sales intent appears.',
+    ],
+  },
+  {
+    skill: 'BOOKING',
+    name: 'Booking',
+    description: 'Meeting request and scheduling workflows.',
+    effects: [
+      'Your bot can detect booking requests and collect meeting details.',
+      'Scheduling conversations are routed with better context to the right person.',
+      'Customers get a smoother path from request to confirmed follow-up.',
+    ],
+  },
+  {
+    skill: 'SUPPORT',
+    name: 'Support',
+    description: 'General support handling and triage workflows.',
+    effects: [
+      'Your bot handles support questions with better triage and categorization.',
+      'It can gather the key details your support team needs before handoff.',
+      'Customers get faster first responses for common support issues.',
+    ],
+  },
+  {
+    skill: 'TECHNICAL',
+    name: 'Technical',
+    description: 'Technical issue intake and escalation workflows.',
+    effects: [
+      'Your bot can identify technical problems and collect useful diagnostics.',
+      'Complex issues are prepared better before they reach technical staff.',
+      'Customers get clearer guidance while waiting for deeper technical help.',
+    ],
+  },
+];
 
 const GUIDED_PACK_PRESETS = [
   {
@@ -101,6 +179,42 @@ const GUIDED_STEPS = [
   { id: 4, label: 'Preview' },
 ] as const;
 
+const SKILL_INTAKE_META: Array<{ key: SkillIntakeKey; label: string; description: string }> = [
+  {
+    key: 'SALES',
+    label: 'Sales Intake Fields',
+    description: 'Collect extra lead and purchase details for sales workflows.',
+  },
+  {
+    key: 'BOOKING',
+    label: 'Booking Intake Fields',
+    description: 'Collect extra scheduling details before creating a meeting request.',
+  },
+  {
+    key: 'TECHNICAL',
+    label: 'Technical Intake Fields',
+    description: 'Collect diagnostic details before creating a technical issue request.',
+  },
+];
+
+const SKILL_CORE_REQUIRED_FIELDS: Record<SkillIntakeKey, Array<{ key: string; label: string }>> = {
+  SALES: [
+    { key: 'customer_name', label: 'Customer name' },
+    { key: 'customer_email', label: 'Customer email' },
+    { key: 'product', label: 'Product' },
+  ],
+  BOOKING: [
+    { key: 'customer_name', label: 'Customer name' },
+    { key: 'customer_email', label: 'Customer email' },
+    { key: 'preferred_datetime', label: 'Preferred date/time' },
+  ],
+  TECHNICAL: [
+    { key: 'customer_name', label: 'Customer name' },
+    { key: 'customer_email', label: 'Customer email' },
+    { key: 'issue_summary', label: 'Issue summary' },
+  ],
+};
+
 function asNonEmptyString(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
@@ -116,6 +230,99 @@ function splitList(value: string): string[] {
 function toBoundedNumber(value: number): number {
   if (Number.isNaN(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function normalizeFieldKeyInput(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function toDisplayLabelFromKey(key: string): string {
+  return key
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function normalizeSkillIntakeConfig(value: unknown): SkillIntakeConfigMap {
+  const result: SkillIntakeConfigMap = {};
+  if (!value || typeof value !== 'object') return result;
+
+  const source = value as Record<string, unknown>;
+  for (const key of ['SALES', 'BOOKING', 'TECHNICAL'] as SkillIntakeKey[]) {
+    const raw = source[key];
+    if (!raw || typeof raw !== 'object') continue;
+    const rawObj = raw as Record<string, unknown>;
+    const fieldsRaw = Array.isArray(rawObj.fields) ? rawObj.fields : [];
+    const fields: SkillIntakeFieldConfig[] = fieldsRaw
+      .map((item) => {
+        const field = item as Record<string, unknown>;
+        const normalizedKey = normalizeFieldKeyInput(typeof field.key === 'string' ? field.key : '');
+        if (!normalizedKey) return null;
+        return {
+          key: normalizedKey,
+          label: typeof field.label === 'string' ? field.label : '',
+          required: field.required === true,
+          aliases: Array.isArray(field.aliases)
+            ? field.aliases.filter((alias): alias is string => typeof alias === 'string').map((alias) => alias.trim()).filter(Boolean)
+            : [],
+        };
+      })
+      .filter((field): field is SkillIntakeFieldConfig => Boolean(field));
+
+    const version = typeof rawObj.version === 'number' && Number.isFinite(rawObj.version)
+      ? Math.max(1, Math.round(rawObj.version))
+      : 1;
+
+    result[key] = { version, fields };
+  }
+
+  return result;
+}
+
+function serializeSkillIntakeConfig(config: SkillIntakeConfigMap): AiConfig['skillIntakeConfig'] {
+  const output: NonNullable<AiConfig['skillIntakeConfig']> = {};
+  for (const key of ['SALES', 'BOOKING', 'TECHNICAL'] as SkillIntakeKey[]) {
+    const entry = config[key];
+    if (!entry) continue;
+    const fields = entry.fields
+      .map((field) => ({
+        key: normalizeFieldKeyInput(field.key),
+        label: field.label.trim() || undefined,
+        required: field.required,
+        aliases: field.aliases.map((alias) => alias.trim()).filter(Boolean),
+      }))
+      .filter((field) => field.key.length > 0);
+    if (fields.length === 0) continue;
+
+    output[key] = {
+      version: Math.max(1, Math.round(entry.version || 1)),
+      fields,
+    };
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function extractSkillsFromBot(bot: BotRecord): BotSkill[] {
+  if (Array.isArray(bot.skills) && bot.skills.length > 0) {
+    return bot.skills.filter((value): value is BotSkill => BOT_SKILL_OPTIONS.some((item) => item.skill === value));
+  }
+
+  const capabilities = (bot.capabilities ?? {}) as Record<string, unknown>;
+  const skillsObject = (capabilities.skills ?? {}) as Record<string, unknown>;
+  const inferred: BotSkill[] = [];
+
+  if (skillsObject.FORWARDING === true || bot.actionForwardingEnabled === true) inferred.push('FORWARDING');
+  if (skillsObject.SALES === true || capabilities.canCreateLead === true || capabilities.canCreateOrder === true) inferred.push('SALES');
+  if (skillsObject.BOOKING === true || capabilities.canCreateMeetingRequest === true) inferred.push('BOOKING');
+  if (skillsObject.SUPPORT === true) inferred.push('SUPPORT');
+  if (skillsObject.TECHNICAL === true || capabilities.canCreateTechnicalIssue === true) inferred.push('TECHNICAL');
+
+  return Array.from(new Set(inferred));
 }
 
 function buildGuidedPromptPreview(config: AiConfig, botName: string): string {
@@ -252,6 +459,10 @@ interface BotRecord {
   id: string;
   name: string;
   primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
+  template: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+  skills?: BotSkill[];
+  capabilities?: Record<string, unknown>;
+  actionForwardingEnabled: boolean;
   telegramToken: string | null;
   telegramUsername: string | null;
   webWidgetEnabled: boolean;
@@ -281,10 +492,12 @@ export default function BotsPage() {
   const [bots, setBots] = useState<BotRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const [createStep, setCreateStep] = useState(1);
   const [creating, setCreating] = useState(false);
   const [createName, setCreateName] = useState('');
   const [createPrimaryChannel, setCreatePrimaryChannel] = useState<'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL'>('TELEGRAM');
   const [createTelegramToken, setCreateTelegramToken] = useState('');
+  const [createActionForwardingEnabled, setCreateActionForwardingEnabled] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
   const [editPromptMode, setEditPromptMode] = useState<PromptMode>('guided');
@@ -308,10 +521,14 @@ export default function BotsPage() {
   const [presetAgentNameDraft, setPresetAgentNameDraft] = useState('');
   const [settingsValidationError, setSettingsValidationError] = useState<string | null>(null);
   const [editRouteToRoles, setEditRouteToRoles] = useState<string[]>(['AGENT']);
+  const [editSkills, setEditSkills] = useState<BotSkill[]>([]);
+  const [editSkillIntakeConfig, setEditSkillIntakeConfig] = useState<SkillIntakeConfigMap>({});
+  const [showSkillEnableModal, setShowSkillEnableModal] = useState(false);
+  const [pendingSkillEnable, setPendingSkillEnable] = useState<(typeof BOT_SKILL_OPTIONS)[number] | null>(null);
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'skills' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram'>('ai');
   const [saving, setSaving] = useState(false);
   const [emailLocalPart, setEmailLocalPart] = useState('');
   const [emailSaving, setEmailSaving] = useState(false);
@@ -376,6 +593,20 @@ export default function BotsPage() {
     ],
   );
 
+  const openCreateModal = () => {
+    setCreateStep(1);
+    setCreateName('');
+    setCreatePrimaryChannel('TELEGRAM');
+    setCreateTelegramToken('');
+    setCreateActionForwardingEnabled(true);
+    setShowCreate(true);
+  };
+
+  const closeCreateModal = () => {
+    setShowCreate(false);
+    setCreateStep(1);
+  };
+
   const isOverridePromptMissing = editPromptMode === 'override' && editSystemPrompt.trim().length === 0;
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -386,14 +617,18 @@ export default function BotsPage() {
       const payload = {
         name: createName,
         primaryChannel: createPrimaryChannel,
+        skills: createActionForwardingEnabled ? (['FORWARDING'] as BotSkill[]) : ([] as BotSkill[]),
+        actionForwardingEnabled: createActionForwardingEnabled,
         ...(createPrimaryChannel === 'TELEGRAM' ? { telegramToken: createTelegramToken } : {}),
       };
-      const res = await botsApi.create(orgId, payload);
-      setBots((prev) => [...prev, res.data]);
-      setShowCreate(false);
+      await botsApi.create(orgId, payload);
+      const refreshed = await botsApi.list(orgId);
+      setBots(refreshed.data);
+      closeCreateModal();
       setCreateName('');
       setCreatePrimaryChannel('TELEGRAM');
       setCreateTelegramToken('');
+      setCreateActionForwardingEnabled(true);
       toast.success('Bot created');
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to create bot';
@@ -402,6 +637,11 @@ export default function BotsPage() {
       setCreating(false);
     }
   };
+
+  const totalCreateSteps = 3;
+  const canAdvanceCreateStep =
+    createStep === 1 ||
+    (createStep === 2 && createName.trim().length > 0 && (createPrimaryChannel !== 'TELEGRAM' || createTelegramToken.trim().length > 0));
 
   const handleSetWebhook = async (bot: BotRecord) => {
     if (!orgId) return;
@@ -603,9 +843,13 @@ onBeforeUnmount(() => {
     };
   };
 
-  const openSettings = (bot: BotRecord) => {
-    setSettingsBot(bot);
-    const aiConfig = bot.aiConfig ?? {};
+  const openSettings = async (bot: BotRecord) => {
+    const sourceBot = orgId
+      ? (await botsApi.get(orgId, bot.id).then((res) => res.data).catch(() => bot))
+      : bot;
+
+    setSettingsBot(sourceBot);
+    const aiConfig = sourceBot.aiConfig ?? {};
     const nextMode: PromptMode = aiConfig.promptMode
       ? aiConfig.promptMode
       : aiConfig.systemPrompt
@@ -643,13 +887,106 @@ onBeforeUnmount(() => {
     setSettingsValidationError(null);
     setEditCreativity(typeof aiConfig.creativity === 'number' ? Math.max(0, Math.min(100, Math.round(aiConfig.creativity))) : 45);
     setEditVerbosity(typeof aiConfig.verbosity === 'number' ? Math.max(0, Math.min(100, Math.round(aiConfig.verbosity))) : 50);
-    setEditRouteToRoles(bot.routeToRoles?.length ? bot.routeToRoles : ['AGENT']);
-    setEditWidgetEnabled(Boolean(bot.webWidgetEnabled));
-    setEditWidgetDomains((bot.webWidgetAllowedDomains ?? []).join('\n'));
+    setEditRouteToRoles(sourceBot.routeToRoles?.length ? sourceBot.routeToRoles : ['AGENT']);
+    setEditWidgetEnabled(Boolean(sourceBot.webWidgetEnabled));
+    setEditWidgetDomains((sourceBot.webWidgetAllowedDomains ?? []).join('\n'));
     setWidgetSnippetType('html');
-    setEmailLocalPart(bot.emailAddress ? bot.emailAddress.split('@')[0] : '');
+    setEditSkills(extractSkillsFromBot(sourceBot));
+    setEditSkillIntakeConfig(normalizeSkillIntakeConfig((aiConfig as AiConfig).skillIntakeConfig));
+    setEmailLocalPart(sourceBot.emailAddress ? sourceBot.emailAddress.split('@')[0] : '');
     setEditTelegramToken('');
     setSettingsTab('ai');
+  };
+
+  const toggleSkill = (skill: BotSkill) => {
+    setEditSkills((prev) => {
+      if (prev.includes(skill)) {
+        return prev.filter((value) => value !== skill);
+      }
+      const option = BOT_SKILL_OPTIONS.find((item) => item.skill === skill);
+      if (option) {
+        setPendingSkillEnable(option);
+        setShowSkillEnableModal(true);
+      }
+      return prev;
+    });
+  };
+
+  const setSkillIntakeVersion = (skill: SkillIntakeKey, value: number) => {
+    setEditSkillIntakeConfig((prev) => {
+      const current = prev[skill] ?? { version: 1, fields: [] };
+      return {
+        ...prev,
+        [skill]: {
+          ...current,
+          version: Math.max(1, Math.round(value || 1)),
+        },
+      };
+    });
+  };
+
+  const addSkillIntakeField = (skill: SkillIntakeKey) => {
+    setEditSkillIntakeConfig((prev) => {
+      const current = prev[skill] ?? { version: 1, fields: [] };
+      return {
+        ...prev,
+        [skill]: {
+          ...current,
+          fields: [
+            ...current.fields,
+            { key: '', label: '', required: false, aliases: [] },
+          ],
+        },
+      };
+    });
+  };
+
+  const removeSkillIntakeField = (skill: SkillIntakeKey, index: number) => {
+    setEditSkillIntakeConfig((prev) => {
+      const current = prev[skill] ?? { version: 1, fields: [] };
+      return {
+        ...prev,
+        [skill]: {
+          ...current,
+          fields: current.fields.filter((_, i) => i !== index),
+        },
+      };
+    });
+  };
+
+  const updateSkillIntakeField = (
+    skill: SkillIntakeKey,
+    index: number,
+    patch: Partial<SkillIntakeFieldConfig>,
+  ) => {
+    setEditSkillIntakeConfig((prev) => {
+      const current = prev[skill] ?? { version: 1, fields: [] };
+      return {
+        ...prev,
+        [skill]: {
+          ...current,
+          fields: current.fields.map((field, i) => {
+            if (i !== index) return field;
+            return {
+              ...field,
+              ...patch,
+            };
+          }),
+        },
+      };
+    });
+  };
+
+  const confirmSkillEnable = () => {
+    if (!pendingSkillEnable) return;
+    setEditSkills((prev) => (prev.includes(pendingSkillEnable.skill) ? prev : [...prev, pendingSkillEnable.skill]));
+    setShowSkillEnableModal(false);
+    setPendingSkillEnable(null);
+  };
+
+  const closeSkillEnableModal = () => {
+    setShowSkillEnableModal(false);
+    setPendingSkillEnable(null);
   };
 
   const toggleRouteRole = (role: string) => {
@@ -693,6 +1030,7 @@ onBeforeUnmount(() => {
         extraDetails: editExtraDetails,
         creativity: editCreativity,
         verbosity: editVerbosity,
+        skillIntakeConfig: serializeSkillIntakeConfig(editSkillIntakeConfig),
       };
 
       const res = await botsApi.update(orgId, settingsBot.id, {
@@ -700,6 +1038,8 @@ onBeforeUnmount(() => {
         routeToRoles: editRouteToRoles,
         webWidgetEnabled: editWidgetEnabled,
         webWidgetAllowedDomains: allowedDomains,
+        skills: editSkills,
+        actionForwardingEnabled: editSkills.includes('FORWARDING'),
       });
       setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? res.data : b)));
       setSettingsBot(res.data);
@@ -893,6 +1233,8 @@ onBeforeUnmount(() => {
           <span className="text-sm text-zinc-500">
             {settingsTab === 'ai'
               ? 'AI Settings'
+              : settingsTab === 'skills'
+                ? 'Skills'
               : settingsTab === 'knowledge'
                 ? 'Knowledge Packs'
                 : settingsTab === 'routing'
@@ -909,6 +1251,7 @@ onBeforeUnmount(() => {
           <div className="inline-flex rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
             {([
               { key: 'ai', label: 'AI' },
+              { key: 'skills', label: 'Skills' },
               { key: 'knowledge', label: 'Knowledge' },
               { key: 'routing', label: 'Routing' },
               { key: 'widget', label: 'Widget' },
@@ -934,6 +1277,196 @@ onBeforeUnmount(() => {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
           {/* Left: editor sections */}
           <div className="xl:col-span-2 space-y-5">
+            {settingsTab === 'skills' && (
+              <div className="card p-6 border border-zinc-800 space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-white">Bot Skills</h2>
+                    <p className="text-xs text-zinc-500 font-light">Turn skills on or off any time. You can enable multiple skills on one bot.</p>
+                  </div>
+                  <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
+                    Enabled: <span className="text-white font-medium">{editSkills.length}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {BOT_SKILL_OPTIONS.map((skill) => (
+                    <div
+                      key={skill.skill}
+                      className={`rounded-xl border px-3 py-3 transition-all duration-200 ${
+                        editSkills.includes(skill.skill)
+                          ? 'border-blue-500/50 bg-blue-500/10 text-white shadow-[0_0_0_1px_rgba(59,130,246,0.12)]'
+                          : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-semibold text-white leading-none">{skill.name}</div>
+                          <div className="mt-1 text-[11px] leading-4 text-zinc-500">{skill.description}</div>
+                        </div>
+                        <button
+                          type="button"
+                          aria-label={`${editSkills.includes(skill.skill) ? 'Disable' : 'Enable'} ${skill.name} skill`}
+                          onClick={() => toggleSkill(skill.skill)}
+                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                            editSkills.includes(skill.skill) ? 'bg-blue-600' : 'bg-zinc-700'
+                          }`}
+                        >
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${editSkills.includes(skill.skill) ? 'translate-x-6' : 'translate-x-1'}`} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 space-y-3">
+                  <div>
+                    <p className="text-sm text-zinc-200 font-medium">Skill Intake Fields</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                      Define extra data fields owners want collected for each workflow. These are merged with core required fields.
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {SKILL_INTAKE_META.map((meta) => {
+                      const config = editSkillIntakeConfig[meta.key] ?? { version: 1, fields: [] };
+                      const isEnabled = meta.key === 'TECHNICAL'
+                        ? editSkills.includes('TECHNICAL') || editSkills.includes('SUPPORT')
+                        : editSkills.includes(meta.key);
+                      const coreRequired = SKILL_CORE_REQUIRED_FIELDS[meta.key];
+                      const customRequired = config.fields
+                        .filter((field) => field.required && normalizeFieldKeyInput(field.key).length > 0)
+                        .map((field) => ({
+                          key: normalizeFieldKeyInput(field.key),
+                          label: field.label.trim() || toDisplayLabelFromKey(normalizeFieldKeyInput(field.key)),
+                        }));
+                      const mergedRequiredMap = new Map<string, string>();
+                      coreRequired.forEach((field) => mergedRequiredMap.set(field.key, field.label));
+                      customRequired.forEach((field) => mergedRequiredMap.set(field.key, field.label));
+                      const mergedRequiredLabels = Array.from(mergedRequiredMap.values());
+                      const previewPrompt = mergedRequiredLabels.length > 0
+                        ? `To help with this request, please share: ${mergedRequiredLabels.join(', ')}.`
+                        : 'No required fields configured for this workflow.';
+
+                      return (
+                        <div key={meta.key} className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 space-y-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="text-xs font-semibold text-white">{meta.label}</p>
+                              <p className="text-[11px] text-zinc-500 mt-0.5">{meta.description}</p>
+                            </div>
+                            <span className={`text-[10px] px-2 py-0.5 rounded-md border ${
+                              isEnabled
+                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                                : 'border-zinc-700 bg-zinc-900 text-zinc-500'
+                            }`}>
+                              {isEnabled ? 'Active' : 'Inactive'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <label className="text-[11px] text-zinc-500">Schema version</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={config.version}
+                              onChange={(e) => setSkillIntakeVersion(meta.key, Number(e.target.value))}
+                              className="w-20 h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            {config.fields.length === 0 && (
+                              <p className="text-[11px] text-zinc-600">No custom fields yet.</p>
+                            )}
+
+                            {config.fields.map((field, index) => (
+                              <div key={`${meta.key}-field-${index}`} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-2">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="block text-[11px] text-zinc-500 mb-1">Field key</label>
+                                    <input
+                                      type="text"
+                                      value={field.key}
+                                      onChange={(e) => updateSkillIntakeField(meta.key, index, { key: normalizeFieldKeyInput(e.target.value) })}
+                                      placeholder="company_size"
+                                      className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[11px] text-zinc-500 mb-1">Field label</label>
+                                    <input
+                                      type="text"
+                                      value={field.label}
+                                      onChange={(e) => updateSkillIntakeField(meta.key, index, { label: e.target.value })}
+                                      placeholder="Company Size"
+                                      className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                    />
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="block text-[11px] text-zinc-500 mb-1">Aliases (comma separated)</label>
+                                    <input
+                                      type="text"
+                                      value={field.aliases.join(', ')}
+                                      onChange={(e) => updateSkillIntakeField(meta.key, index, {
+                                        aliases: e.target.value.split(',').map((alias) => alias.trim()).filter(Boolean),
+                                      })}
+                                      placeholder="team size, employee count"
+                                      className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                    />
+                                  </div>
+                                  <div className="flex items-end justify-between gap-2">
+                                    <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
+                                      <input
+                                        type="checkbox"
+                                        checked={field.required}
+                                        onChange={(e) => updateSkillIntakeField(meta.key, index, { required: e.target.checked })}
+                                        className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-900 accent-blue-500"
+                                      />
+                                      Required
+                                    </label>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeSkillIntakeField(meta.key, index)}
+                                      className="px-2 py-1 rounded-md border border-red-500/20 bg-red-500/5 text-[11px] text-red-300 hover:bg-red-500/10"
+                                    >
+                                      Remove
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+
+                            <button
+                              type="button"
+                              onClick={() => addSkillIntakeField(meta.key)}
+                              className="px-2.5 py-1.5 rounded-md border border-zinc-700 text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600"
+                            >
+                              + Add field
+                            </button>
+                          </div>
+
+                          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-1.5">
+                            <p className="text-[11px] text-zinc-400 font-medium">Missing-field prompt preview</p>
+                            <p className="text-[11px] text-zinc-500 leading-relaxed">{previewPrompt}</p>
+                            <p className="text-[10px] text-zinc-600">Core required fields are always enforced. Custom required fields are appended.</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3">
+                  <p className="text-sm text-zinc-200 font-medium">Action forwarding is now a skill</p>
+                  <p className="text-[11px] text-zinc-500 mt-0.5">Use the Action Forwarding skill toggle above to control escalation and team notifications.</p>
+                </div>
+              </div>
+            )}
+
             {/* System Prompt */}
             {settingsTab === 'ai' && (
             <div className="card p-6 border border-zinc-800">
@@ -1821,6 +2354,46 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
+        {showSkillEnableModal && pendingSkillEnable && (
+          <Modal onClose={closeSkillEnableModal}>
+            <div className="w-[92vw] max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
+              <h3 className="text-sm font-semibold text-white">Turn on {pendingSkillEnable.name}?</h3>
+              <p className="text-xs text-zinc-500 mt-1">
+                This helps your bot handle more {pendingSkillEnable.name.toLowerCase()} conversations with better responses and smarter handoff.
+              </p>
+
+              <div className="mt-4 rounded-xl border border-zinc-800 bg-zinc-900/70 p-3">
+                <p className="text-xs text-zinc-400 mb-2">What changes after you turn this on</p>
+                <ul className="space-y-1.5">
+                  {pendingSkillEnable.effects.map((effect) => (
+                    <li key={effect} className="text-[11px] text-zinc-300 leading-relaxed flex gap-1.5">
+                      <span className="text-zinc-600">•</span>
+                      <span>{effect}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={closeSkillEnableModal}
+                  className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmSkillEnable}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500"
+                >
+                  Turn it on
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
         {showPresetAgentNameModal && pendingGuidedPreset && (
           <Modal onClose={closeGuidedPackFlow}>
             <div className="w-[92vw] max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
@@ -1872,7 +2445,7 @@ onBeforeUnmount(() => {
           <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Ai Support Bots</h1>
           <p className="mt-1 text-sm text-zinc-500 font-light">Set up your AI support bots across channels, then expand routing and automation in bot settings.</p>
         </div>
-        <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
+        <button onClick={openCreateModal} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
           <Plus className="w-4 h-4" />
           Add bot
         </button>
@@ -1880,84 +2453,200 @@ onBeforeUnmount(() => {
 
       {/* Create modal */}
       {showCreate && (
-        <Modal onClose={() => setShowCreate(false)}>
-          <div className="card p-8 w-full max-w-md mx-4 border border-zinc-800">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/20 flex items-center justify-center">
-                <Bot className="w-5 h-5 text-blue-400" />
+        <Modal onClose={closeCreateModal}>
+          <div className="card p-8 w-full max-w-2xl mx-4 border border-zinc-800">
+            <div className="flex items-start justify-between gap-4 mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/20 flex items-center justify-center">
+                  <Bot className="w-5 h-5 text-blue-400" />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-lg text-white tracking-tight">Add a bot</h2>
+                  <p className="text-xs text-zinc-500">Set the bot shape first, then finalize the channel and launch details.</p>
+                </div>
               </div>
-              <div>
-                <h2 className="font-semibold text-lg text-white tracking-tight">Add a bot</h2>
-                <p className="text-xs text-zinc-500">Choose your primary channel. You can add more channels later.</p>
+              <div className="text-right">
+                <div className="text-[11px] uppercase tracking-[0.2em] text-zinc-500">Step {createStep} of {totalCreateSteps}</div>
+                <div className="mt-2 flex items-center gap-1.5">
+                  {Array.from({ length: totalCreateSteps }).map((_, index) => (
+                    <span
+                      key={index}
+                      className={`h-1.5 w-8 rounded-full transition-colors ${index + 1 <= createStep ? 'bg-blue-500' : 'bg-zinc-800'}`}
+                    />
+                  ))}
+                </div>
               </div>
             </div>
-            <form onSubmit={handleCreate} className="space-y-4">
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Primary channel</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setCreatePrimaryChannel('TELEGRAM')}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
-                      createPrimaryChannel === 'TELEGRAM'
-                        ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
-                        : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
-                    }`}
-                  >
-                    <Bot className="w-4 h-4" /> Telegram
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCreatePrimaryChannel('WEB_WIDGET')}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
-                      createPrimaryChannel === 'WEB_WIDGET'
-                        ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
-                        : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
-                    }`}
-                  >
-                    <Globe className="w-4 h-4" /> Widget
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCreatePrimaryChannel('EMAIL')}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
-                      createPrimaryChannel === 'EMAIL'
-                        ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
-                        : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
-                    }`}
-                  >
-                    <Mail className="w-4 h-4" /> Email
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Bot name</label>
-                <input type="text" required value={createName} onChange={(e) => setCreateName(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors" placeholder="Support Bot" />
-              </div>
-              {createPrimaryChannel === 'TELEGRAM' ? (
-                <div>
-                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Telegram bot token</label>
-                  <input type="text" required value={createTelegramToken} onChange={(e) => setCreateTelegramToken(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 font-mono placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors" placeholder="123456789:AAFxxxxxx…" />
-                  <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-blue-400 transition-colors">
-                    Get token from @BotFather <ExternalLink className="w-2.5 h-2.5" />
-                  </a>
-                </div>
-              ) : createPrimaryChannel === 'WEB_WIDGET' ? (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
-                  Website widget channel will be enabled immediately. Embed code and domain allowlist are configured in settings.
-                </div>
-              ) : (
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
-                  Bot will be created with no channels active. Go to Settings → Email to assign an email address, or Settings → Telegram to connect a Telegram bot.
+
+            <form onSubmit={handleCreate} className="space-y-5">
+              {createStep === 1 && (
+                <div className="space-y-5">
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3">
+                    <p className="text-sm text-zinc-200 font-medium">Default behavior</p>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                      New bots are created as General by default. You can enable Sales, Booking, Support, and Technical skills later in bot settings.
+                    </p>
+                  </div>
+
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3 flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-sm text-zinc-200 font-medium">Action forwarding</p>
+                      <p className="text-[11px] text-zinc-500 mt-0.5">Forward actionable intents to owner or team contacts.</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCreateActionForwardingEnabled((value) => !value)}
+                      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                        createActionForwardingEnabled ? 'bg-blue-600' : 'bg-zinc-700'
+                      }`}
+                    >
+                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${createActionForwardingEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                    </button>
+                  </div>
                 </div>
               )}
+
+              {createStep === 2 && (
+                <div className="space-y-5">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Primary channel</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCreatePrimaryChannel('TELEGRAM')}
+                        className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                          createPrimaryChannel === 'TELEGRAM'
+                            ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                        }`}
+                      >
+                        <Bot className="w-4 h-4" /> Telegram
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreatePrimaryChannel('WEB_WIDGET')}
+                        className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                          createPrimaryChannel === 'WEB_WIDGET'
+                            ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                        }`}
+                      >
+                        <Globe className="w-4 h-4" /> Widget
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreatePrimaryChannel('EMAIL')}
+                        className={`flex items-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                          createPrimaryChannel === 'EMAIL'
+                            ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                        }`}
+                      >
+                        <Mail className="w-4 h-4" /> Email
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Bot name</label>
+                    <input
+                      type="text"
+                      required
+                      value={createName}
+                      onChange={(e) => setCreateName(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors"
+                      placeholder="Support Bot"
+                    />
+                  </div>
+
+                  {createPrimaryChannel === 'TELEGRAM' ? (
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Telegram bot token</label>
+                      <input
+                        type="text"
+                        required
+                        value={createTelegramToken}
+                        onChange={(e) => setCreateTelegramToken(e.target.value)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 font-mono placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors"
+                        placeholder="123456789:AAFxxxxxx…"
+                      />
+                      <a href="https://t.me/BotFather" target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-blue-400 transition-colors">
+                        Get token from @BotFather <ExternalLink className="w-2.5 h-2.5" />
+                      </a>
+                    </div>
+                  ) : createPrimaryChannel === 'WEB_WIDGET' ? (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
+                      Website widget channel will be enabled immediately. Embed code and domain allowlist are configured in settings.
+                    </div>
+                  ) : (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
+                      Bot will be created with no channels active. Go to Settings later to connect email or Telegram.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {createStep === 3 && (
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-xs text-zinc-500 uppercase tracking-[0.2em]">Bot mode</p>
+                        <p className="text-sm text-white font-medium mt-1">General</p>
+                        <p className="text-xs text-zinc-500 mt-1">Skills can be enabled in bot settings after creation.</p>
+                      </div>
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-400">
+                        {createActionForwardingEnabled ? 'Forwarding enabled' : 'Forwarding disabled'}
+                      </span>
+                    </div>
+                    <div className="grid gap-2 text-sm text-zinc-300">
+                      <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                        <span className="text-zinc-500">Bot name</span>
+                        <span className="text-white font-medium">{createName.trim() || 'Untitled bot'}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                        <span className="text-zinc-500">Primary channel</span>
+                        <span className="text-white font-medium">{createPrimaryChannel.replace('_', ' ')}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                        <span className="text-zinc-500">Forwarding</span>
+                        <span className="text-white font-medium">{createActionForwardingEnabled ? 'On' : 'Off'}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
+                    Review the summary and create the bot. You can adjust skills, channel, and forwarding settings later.
+                  </div>
+                </div>
+              )}
+
               <div className="flex gap-3 pt-1">
-                <button type="button" onClick={() => setShowCreate(false)} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium">
+                <button type="button" onClick={closeCreateModal} className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-zinc-400 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium">
                   Cancel
                 </button>
-                <button type="submit" disabled={creating} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors">
-                  {creating ? 'Creating…' : 'Create bot'}
-                </button>
+                {createStep > 1 ? (
+                  <button
+                    type="button"
+                    onClick={() => setCreateStep((value) => value - 1)}
+                    className="flex-1 py-2.5 rounded-xl border border-zinc-800 text-zinc-300 hover:text-white hover:border-zinc-700 transition-colors text-sm font-medium inline-flex items-center justify-center gap-2"
+                  >
+                    <ChevronLeft className="w-4 h-4" /> Back
+                  </button>
+                ) : null}
+                {createStep < totalCreateSteps ? (
+                  <button
+                    type="button"
+                    disabled={!canAdvanceCreateStep}
+                    onClick={() => setCreateStep((value) => Math.min(totalCreateSteps, value + 1))}
+                    className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors inline-flex items-center justify-center gap-2"
+                  >
+                    Next <ChevronRight className="w-4 h-4" />
+                  </button>
+                ) : (
+                  <button type="submit" disabled={creating} className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors inline-flex items-center justify-center gap-2">
+                    {creating ? 'Creating…' : 'Create bot'} <Sparkles className="w-4 h-4" />
+                  </button>
+                )}
               </div>
             </form>
           </div>
@@ -1978,7 +2667,7 @@ onBeforeUnmount(() => {
           <p className="text-sm text-zinc-600 font-light mb-6 max-w-xs">
             Add your first bot and choose Telegram or Website Widget as its first channel.
           </p>
-          <button onClick={() => setShowCreate(true)} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
+          <button onClick={openCreateModal} className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
             <Plus className="w-4 h-4" /> Add your first bot
           </button>
         </div>

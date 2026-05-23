@@ -20,6 +20,7 @@ import { TeamChatModule } from './modules/team-chat/team-chat.module';
 import { AiUsageModule } from './modules/ai-usage/ai-usage.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { BillingModule } from './modules/billing/billing.module';
+import { ActionForwardingModule } from './modules/action-forwarding/action-forwarding.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 
@@ -49,6 +50,7 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     AiUsageModule,
     PricingModule,
     BillingModule,
+    ActionForwardingModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },
