@@ -163,6 +163,8 @@ function getTemplateCatalog() {
   });
 }
 
+const FORWARDING_CONFIG_REDIRECT = '/settings/forwarding';
+
 @Injectable()
 export class BotsService {
   private readonly logger = new Logger(BotsService.name);
@@ -182,6 +184,33 @@ export class BotsService {
     private readonly actionForwarding: ActionForwardingService,
   ) {}
 
+  private async hasForwardingRouteConfiguration(organizationId: string, botId?: string): Promise<boolean> {
+    const [botPolicies, orgPolicies, endpoints] = await Promise.all([
+      botId
+        ? this.prisma.contactPolicy.findMany({ where: { orgId: organizationId, botId } })
+        : Promise.resolve([]),
+      this.prisma.contactPolicy.findMany({ where: { orgId: organizationId, botId: null } }),
+      this.prisma.contactEndpoint.findMany({ where: { orgId: organizationId, isActive: true } }),
+    ]);
+
+    const route = this.actionForwarding.resolveRoute({
+      actionType: 'OWNER_ATTENTION_NEEDED',
+      botPolicies: botPolicies as any,
+      orgPolicies: orgPolicies as any,
+      endpoints: endpoints as any,
+    });
+
+    return Boolean(route.endpoint && route.policy);
+  }
+
+  private throwForwardingConfigurationRequired(): never {
+    throw new BadRequestException({
+      code: 'FORWARDING_CONFIG_REQUIRED',
+      message: 'Forwarding requires at least one active endpoint and a default routing policy.',
+      redirectTo: FORWARDING_CONFIG_REDIRECT,
+    });
+  }
+
   async create(organizationId: string, dto: CreateBotDto) {
     const primaryChannel = dto.primaryChannel ?? 'TELEGRAM';
     const telegramToken = dto.telegramToken?.trim();
@@ -190,6 +219,11 @@ export class BotsService {
     const template: BotTemplate = 'GENERAL';
     const capabilities = buildCapabilitiesFromSkills(requestedSkills);
     const actionForwardingEnabled = requestedSkills.includes('FORWARDING');
+
+    if (actionForwardingEnabled) {
+      const hasRoute = await this.hasForwardingRouteConfiguration(organizationId);
+      if (!hasRoute) this.throwForwardingConfigurationRequired();
+    }
 
     if (needsTelegram && !telegramToken) {
       throw new BadRequestException('Telegram token is required for Telegram bots');
@@ -257,6 +291,11 @@ export class BotsService {
     const resolvedCapabilities = hasSkillsUpdate ? buildCapabilitiesFromSkills(requestedSkills) : (dto.template !== undefined ? preset.capabilities : undefined);
     const resolvedTemplate = hasSkillsUpdate ? 'GENERAL' : (dto.template !== undefined ? nextTemplate : undefined);
     const resolvedActionForwardingEnabled = hasSkillsUpdate ? requestedSkills.includes('FORWARDING') : dto.actionForwardingEnabled;
+
+    if (resolvedActionForwardingEnabled === true && existing.actionForwardingEnabled !== true) {
+      const hasRoute = await this.hasForwardingRouteConfiguration(organizationId, botId);
+      if (!hasRoute) this.throwForwardingConfigurationRequired();
+    }
 
     return this.prisma.bot.update({
       where: { id: botId },

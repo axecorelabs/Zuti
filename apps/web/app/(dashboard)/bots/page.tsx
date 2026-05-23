@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
@@ -70,6 +71,8 @@ type SkillIntakeConfigMap = Partial<Record<SkillIntakeKey, {
   version: number;
   fields: SkillIntakeFieldConfig[];
 }>>;
+
+type SkillIntakeOpenState = Record<SkillIntakeKey, boolean>;
 
 const BOT_SKILL_OPTIONS: Array<{ skill: BotSkill; name: string; description: string; effects: string[] }> = [
   {
@@ -477,6 +480,17 @@ interface BotRecord {
   routeToRoles: string[];
 }
 
+interface ForwardingEndpointRecord {
+  id: string;
+  isActive: boolean;
+}
+
+interface ForwardingPolicyRecord {
+  scope: 'ORGANIZATION' | 'BOT';
+  isDefault: boolean;
+  endpointId?: string | null;
+}
+
 type WidgetSnippetType = 'html' | 'react' | 'next' | 'vue' | 'prompt';
 
 function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
@@ -488,6 +502,7 @@ function Modal({ children, onClose }: { children: React.ReactNode; onClose: () =
 }
 
 export default function BotsPage() {
+  const router = useRouter();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [bots, setBots] = useState<BotRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -523,6 +538,11 @@ export default function BotsPage() {
   const [editRouteToRoles, setEditRouteToRoles] = useState<string[]>(['AGENT']);
   const [editSkills, setEditSkills] = useState<BotSkill[]>([]);
   const [editSkillIntakeConfig, setEditSkillIntakeConfig] = useState<SkillIntakeConfigMap>({});
+  const [skillIntakeOpen, setSkillIntakeOpen] = useState<SkillIntakeOpenState>({
+    SALES: true,
+    BOOKING: true,
+    TECHNICAL: true,
+  });
   const [showSkillEnableModal, setShowSkillEnableModal] = useState(false);
   const [pendingSkillEnable, setPendingSkillEnable] = useState<(typeof BOT_SKILL_OPTIONS)[number] | null>(null);
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
@@ -534,6 +554,49 @@ export default function BotsPage() {
   const [emailSaving, setEmailSaving] = useState(false);
   const [editTelegramToken, setEditTelegramToken] = useState('');
   const [telegramSaving, setTelegramSaving] = useState(false);
+
+  const hasOrgForwardingConfiguration = async (): Promise<boolean> => {
+    if (!orgId) return false;
+    const [endpointsRes, policiesRes] = await Promise.all([
+      orgsApi.listContactEndpoints(orgId),
+      orgsApi.listContactPolicies(orgId),
+    ]);
+
+    const endpoints = (endpointsRes.data ?? []) as ForwardingEndpointRecord[];
+    const policies = (policiesRes.data ?? []) as ForwardingPolicyRecord[];
+    const activeEndpointIds = new Set(
+      endpoints.filter((endpoint) => endpoint.isActive).map((endpoint) => endpoint.id),
+    );
+
+    return policies.some(
+      (policy) =>
+        policy.scope === 'ORGANIZATION' &&
+        policy.isDefault === true &&
+        Boolean(policy.endpointId) &&
+        activeEndpointIds.has(policy.endpointId as string),
+    );
+  };
+
+  const redirectToForwardingSettings = (message?: string) => {
+    toast.error(message || 'Configure forwarding before enabling this skill.');
+    closeCreateModal();
+    router.push('/settings/forwarding');
+  };
+
+  const handleForwardingConfigRequired = (err: unknown): boolean => {
+    const data = (err as { response?: { data?: { code?: string; redirectTo?: string; message?: string | string[] | { code?: string; redirectTo?: string; message?: string } } } })?.response?.data;
+    const nested = data?.message && typeof data.message === 'object' && !Array.isArray(data.message)
+      ? data.message
+      : null;
+    const code = data?.code ?? nested?.code;
+    if (code !== 'FORWARDING_CONFIG_REQUIRED') return false;
+    const messageRaw = nested?.message ?? data?.message;
+    const message = Array.isArray(messageRaw) ? messageRaw[0] : messageRaw;
+    const redirectTo = data?.redirectTo ?? nested?.redirectTo;
+    toast.error(message || 'Configure forwarding before enabling this skill.');
+    router.push(redirectTo || '/settings/forwarding');
+    return true;
+  };
 
   useEffect(() => {
     orgsApi.list().then((res) => {
@@ -593,6 +656,21 @@ export default function BotsPage() {
     ],
   );
 
+  const isSkillIntakeEnabled = (skill: SkillIntakeKey, skills: BotSkill[]) => {
+    if (skill === 'TECHNICAL') {
+      return skills.includes('TECHNICAL') || skills.includes('SUPPORT');
+    }
+    return skills.includes(skill);
+  };
+
+  useEffect(() => {
+    setSkillIntakeOpen((prev) => ({
+      SALES: isSkillIntakeEnabled('SALES', editSkills) ? prev.SALES : false,
+      BOOKING: isSkillIntakeEnabled('BOOKING', editSkills) ? prev.BOOKING : false,
+      TECHNICAL: isSkillIntakeEnabled('TECHNICAL', editSkills) ? prev.TECHNICAL : false,
+    }));
+  }, [editSkills]);
+
   const openCreateModal = () => {
     setCreateStep(1);
     setCreateName('');
@@ -631,6 +709,7 @@ export default function BotsPage() {
       setCreateActionForwardingEnabled(true);
       toast.success('Bot created');
     } catch (err: unknown) {
+      if (handleForwardingConfigRequired(err)) return;
       const msg = (err as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Failed to create bot';
       toast.error(Array.isArray(msg) ? msg[0] : msg);
     } finally {
@@ -891,14 +970,33 @@ onBeforeUnmount(() => {
     setEditWidgetEnabled(Boolean(sourceBot.webWidgetEnabled));
     setEditWidgetDomains((sourceBot.webWidgetAllowedDomains ?? []).join('\n'));
     setWidgetSnippetType('html');
-    setEditSkills(extractSkillsFromBot(sourceBot));
+    const sourceSkills = extractSkillsFromBot(sourceBot);
+    setEditSkills(sourceSkills);
+    setSkillIntakeOpen({
+      SALES: isSkillIntakeEnabled('SALES', sourceSkills),
+      BOOKING: isSkillIntakeEnabled('BOOKING', sourceSkills),
+      TECHNICAL: isSkillIntakeEnabled('TECHNICAL', sourceSkills),
+    });
     setEditSkillIntakeConfig(normalizeSkillIntakeConfig((aiConfig as AiConfig).skillIntakeConfig));
     setEmailLocalPart(sourceBot.emailAddress ? sourceBot.emailAddress.split('@')[0] : '');
     setEditTelegramToken('');
     setSettingsTab('ai');
   };
 
-  const toggleSkill = (skill: BotSkill) => {
+  const toggleSkill = async (skill: BotSkill) => {
+    if (!editSkills.includes(skill) && skill === 'FORWARDING') {
+      try {
+        const hasConfig = await hasOrgForwardingConfiguration();
+        if (!hasConfig) {
+          redirectToForwardingSettings('Set up forwarding endpoints and a default policy before enabling Action Forwarding.');
+          return;
+        }
+      } catch {
+        toast.error('Unable to verify forwarding settings right now.');
+        return;
+      }
+    }
+
     setEditSkills((prev) => {
       if (prev.includes(skill)) {
         return prev.filter((value) => value !== skill);
@@ -979,7 +1077,19 @@ onBeforeUnmount(() => {
 
   const confirmSkillEnable = () => {
     if (!pendingSkillEnable) return;
-    setEditSkills((prev) => (prev.includes(pendingSkillEnable.skill) ? prev : [...prev, pendingSkillEnable.skill]));
+    setEditSkills((prev) => {
+      if (prev.includes(pendingSkillEnable.skill)) return prev;
+      const nextSkills = [...prev, pendingSkillEnable.skill];
+      setSkillIntakeOpen((current) => ({
+        ...current,
+        SALES: isSkillIntakeEnabled('SALES', nextSkills) ? current.SALES || pendingSkillEnable.skill === 'SALES' : false,
+        BOOKING: isSkillIntakeEnabled('BOOKING', nextSkills) ? current.BOOKING || pendingSkillEnable.skill === 'BOOKING' : false,
+        TECHNICAL: isSkillIntakeEnabled('TECHNICAL', nextSkills)
+          ? current.TECHNICAL || pendingSkillEnable.skill === 'TECHNICAL' || pendingSkillEnable.skill === 'SUPPORT'
+          : false,
+      }));
+      return nextSkills;
+    });
     setShowSkillEnableModal(false);
     setPendingSkillEnable(null);
   };
@@ -1045,7 +1155,11 @@ onBeforeUnmount(() => {
       setSettingsBot(res.data);
       setSettingsValidationError(null);
       toast.success('Settings saved');
-    } catch { toast.error('Failed to save settings'); } finally { setSaving(false); }
+    } catch (err: unknown) {
+      if (!handleForwardingConfigRequired(err)) {
+        toast.error('Failed to save settings');
+      }
+    } finally { setSaving(false); }
   };
 
   const handleEnableEmail = async () => {
@@ -1328,11 +1442,9 @@ onBeforeUnmount(() => {
                   </div>
 
                   <div className="space-y-3">
-                    {SKILL_INTAKE_META.map((meta) => {
+                    {SKILL_INTAKE_META.filter((meta) => isSkillIntakeEnabled(meta.key, editSkills)).map((meta) => {
                       const config = editSkillIntakeConfig[meta.key] ?? { version: 1, fields: [] };
-                      const isEnabled = meta.key === 'TECHNICAL'
-                        ? editSkills.includes('TECHNICAL') || editSkills.includes('SUPPORT')
-                        : editSkills.includes(meta.key);
+                      const isExpanded = skillIntakeOpen[meta.key];
                       const coreRequired = SKILL_CORE_REQUIRED_FIELDS[meta.key];
                       const customRequired = config.fields
                         .filter((field) => field.required && normalizeFieldKeyInput(field.key).length > 0)
@@ -1350,113 +1462,118 @@ onBeforeUnmount(() => {
 
                       return (
                         <div key={meta.key} className="rounded-xl border border-zinc-800 bg-zinc-950/60 p-3 space-y-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
+                          <button
+                            type="button"
+                            onClick={() => setSkillIntakeOpen((prev) => ({ ...prev, [meta.key]: !prev[meta.key] }))}
+                            className="w-full flex items-center justify-between gap-3"
+                          >
+                            <div className="text-left">
                               <p className="text-xs font-semibold text-white">{meta.label}</p>
                               <p className="text-[11px] text-zinc-500 mt-0.5">{meta.description}</p>
                             </div>
-                            <span className={`text-[10px] px-2 py-0.5 rounded-md border ${
-                              isEnabled
-                                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
-                                : 'border-zinc-700 bg-zinc-900 text-zinc-500'
-                            }`}>
-                              {isEnabled ? 'Active' : 'Inactive'}
-                            </span>
-                          </div>
+                            <ChevronDown className={`w-4 h-4 text-zinc-500 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                          </button>
 
-                          <div className="flex items-center gap-2">
-                            <label className="text-[11px] text-zinc-500">Schema version</label>
-                            <input
-                              type="number"
-                              min={1}
-                              value={config.version}
-                              onChange={(e) => setSkillIntakeVersion(meta.key, Number(e.target.value))}
-                              className="w-20 h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            {config.fields.length === 0 && (
-                              <p className="text-[11px] text-zinc-600">No custom fields yet.</p>
-                            )}
-
-                            {config.fields.map((field, index) => (
-                              <div key={`${meta.key}-field-${index}`} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-2">
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                  <div>
-                                    <label className="block text-[11px] text-zinc-500 mb-1">Field key</label>
-                                    <input
-                                      type="text"
-                                      value={field.key}
-                                      onChange={(e) => updateSkillIntakeField(meta.key, index, { key: normalizeFieldKeyInput(e.target.value) })}
-                                      placeholder="company_size"
-                                      className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                    />
-                                  </div>
-                                  <div>
-                                    <label className="block text-[11px] text-zinc-500 mb-1">Field label</label>
-                                    <input
-                                      type="text"
-                                      value={field.label}
-                                      onChange={(e) => updateSkillIntakeField(meta.key, index, { label: e.target.value })}
-                                      placeholder="Company Size"
-                                      className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                    />
-                                  </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                  <div>
-                                    <label className="block text-[11px] text-zinc-500 mb-1">Aliases (comma separated)</label>
-                                    <input
-                                      type="text"
-                                      value={field.aliases.join(', ')}
-                                      onChange={(e) => updateSkillIntakeField(meta.key, index, {
-                                        aliases: e.target.value.split(',').map((alias) => alias.trim()).filter(Boolean),
-                                      })}
-                                      placeholder="team size, employee count"
-                                      className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
-                                    />
-                                  </div>
-                                  <div className="flex items-end justify-between gap-2">
-                                    <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
-                                      <input
-                                        type="checkbox"
-                                        checked={field.required}
-                                        onChange={(e) => updateSkillIntakeField(meta.key, index, { required: e.target.checked })}
-                                        className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-900 accent-blue-500"
-                                      />
-                                      Required
-                                    </label>
-                                    <button
-                                      type="button"
-                                      onClick={() => removeSkillIntakeField(meta.key, index)}
-                                      className="px-2 py-1 rounded-md border border-red-500/20 bg-red-500/5 text-[11px] text-red-300 hover:bg-red-500/10"
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                </div>
+                          {isExpanded && (
+                            <>
+                              <div className="flex items-center gap-2">
+                                <label className="text-[11px] text-zinc-500">Schema version</label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={config.version}
+                                  onChange={(e) => setSkillIntakeVersion(meta.key, Number(e.target.value))}
+                                  className="w-20 h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                />
                               </div>
-                            ))}
 
-                            <button
-                              type="button"
-                              onClick={() => addSkillIntakeField(meta.key)}
-                              className="px-2.5 py-1.5 rounded-md border border-zinc-700 text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600"
-                            >
-                              + Add field
-                            </button>
-                          </div>
+                              <div className="space-y-2">
+                                {config.fields.length === 0 && (
+                                  <p className="text-[11px] text-zinc-600">No custom fields yet.</p>
+                                )}
 
-                          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-1.5">
-                            <p className="text-[11px] text-zinc-400 font-medium">Missing-field prompt preview</p>
-                            <p className="text-[11px] text-zinc-500 leading-relaxed">{previewPrompt}</p>
-                            <p className="text-[10px] text-zinc-600">Core required fields are always enforced. Custom required fields are appended.</p>
-                          </div>
+                                {config.fields.map((field, index) => (
+                                  <div key={`${meta.key}-field-${index}`} className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-2">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      <div>
+                                        <label className="block text-[11px] text-zinc-500 mb-1">Field key</label>
+                                        <input
+                                          type="text"
+                                          value={field.key}
+                                          onChange={(e) => updateSkillIntakeField(meta.key, index, { key: normalizeFieldKeyInput(e.target.value) })}
+                                          placeholder="company_size"
+                                          className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                        />
+                                      </div>
+                                      <div>
+                                        <label className="block text-[11px] text-zinc-500 mb-1">Field label</label>
+                                        <input
+                                          type="text"
+                                          value={field.label}
+                                          onChange={(e) => updateSkillIntakeField(meta.key, index, { label: e.target.value })}
+                                          placeholder="Company Size"
+                                          className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                        />
+                                      </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                      <div>
+                                        <label className="block text-[11px] text-zinc-500 mb-1">Aliases (comma separated)</label>
+                                        <input
+                                          type="text"
+                                          value={field.aliases.join(', ')}
+                                          onChange={(e) => updateSkillIntakeField(meta.key, index, {
+                                            aliases: e.target.value.split(',').map((alias) => alias.trim()).filter(Boolean),
+                                          })}
+                                          placeholder="team size, employee count"
+                                          className="w-full h-8 bg-zinc-950 border border-zinc-800 rounded-lg px-2 text-xs text-zinc-200"
+                                        />
+                                      </div>
+                                      <div className="flex items-end justify-between gap-2">
+                                        <label className="inline-flex items-center gap-2 text-[11px] text-zinc-400">
+                                          <input
+                                            type="checkbox"
+                                            checked={field.required}
+                                            onChange={(e) => updateSkillIntakeField(meta.key, index, { required: e.target.checked })}
+                                            className="w-3.5 h-3.5 rounded border-zinc-600 bg-zinc-900 accent-blue-500"
+                                          />
+                                          Required
+                                        </label>
+                                        <button
+                                          type="button"
+                                          onClick={() => removeSkillIntakeField(meta.key, index)}
+                                          className="px-2 py-1 rounded-md border border-red-500/20 bg-red-500/5 text-[11px] text-red-300 hover:bg-red-500/10"
+                                        >
+                                          Remove
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+
+                                <button
+                                  type="button"
+                                  onClick={() => addSkillIntakeField(meta.key)}
+                                  className="px-2.5 py-1.5 rounded-md border border-zinc-700 text-[11px] text-zinc-300 hover:text-white hover:border-zinc-600"
+                                >
+                                  + Add field
+                                </button>
+                              </div>
+
+                              <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-2.5 space-y-1.5">
+                                <p className="text-[11px] text-zinc-400 font-medium">Missing-field prompt preview</p>
+                                <p className="text-[11px] text-zinc-500 leading-relaxed">{previewPrompt}</p>
+                                <p className="text-[10px] text-zinc-600">Core required fields are always enforced. Custom required fields are appended.</p>
+                              </div>
+                            </>
+                          )}
                         </div>
                       );
                     })}
+                    {SKILL_INTAKE_META.every((meta) => !isSkillIntakeEnabled(meta.key, editSkills)) && (
+                      <p className="text-[11px] text-zinc-600">Enable Sales, Booking, Support, or Technical to configure intake fields.</p>
+                    )}
                   </div>
                 </div>
 
@@ -2495,7 +2612,22 @@ onBeforeUnmount(() => {
                     </div>
                     <button
                       type="button"
-                      onClick={() => setCreateActionForwardingEnabled((value) => !value)}
+                      onClick={async () => {
+                        if (createActionForwardingEnabled) {
+                          setCreateActionForwardingEnabled(false);
+                          return;
+                        }
+                        try {
+                          const hasConfig = await hasOrgForwardingConfiguration();
+                          if (!hasConfig) {
+                            redirectToForwardingSettings('Set up forwarding endpoints and default policy first.');
+                            return;
+                          }
+                          setCreateActionForwardingEnabled(true);
+                        } catch {
+                          toast.error('Unable to verify forwarding settings right now.');
+                        }
+                      }}
                       className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
                         createActionForwardingEnabled ? 'bg-blue-600' : 'bg-zinc-700'
                       }`}
@@ -2503,6 +2635,19 @@ onBeforeUnmount(() => {
                       <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${createActionForwardingEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
                     </button>
                   </div>
+
+                  {!createActionForwardingEnabled && (
+                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 flex items-center justify-between gap-3">
+                      <p className="text-[11px] text-zinc-500">Want forwarding enabled? Configure endpoints first for a smooth setup.</p>
+                      <button
+                        type="button"
+                        onClick={() => redirectToForwardingSettings('Opening forwarding settings...')}
+                        className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300"
+                      >
+                        Configure now <ExternalLink className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
