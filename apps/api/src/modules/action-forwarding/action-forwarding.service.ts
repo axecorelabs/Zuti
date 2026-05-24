@@ -65,6 +65,7 @@ type ContractFieldKey =
   | 'customer_name'
   | 'customer_email'
   | 'preferred_datetime'
+  | 'booking_reason'
   | 'product'
   | 'issue_summary';
 
@@ -78,7 +79,7 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
     MEETING_REQUEST: {
       actionType: 'MEETING_REQUEST',
       capabilityKey: 'BOOKING',
-      requiredFields: ['customer_name', 'customer_email', 'preferred_datetime'],
+      requiredFields: ['customer_name', 'customer_email', 'preferred_datetime', 'booking_reason'],
       allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
       executor: {
         kind: 'ACTION_TASK',
@@ -301,6 +302,9 @@ export class ActionForwardingService {
       const naturalDatetimeMatch = text.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}(?:\s+(?:at\s+)?[0-2]?\d(?::[0-5]\d)?\s?(?:am|pm)?)?/i);
       if (datetimeMatch?.[0]) extracted.preferred_datetime = datetimeMatch[0].trim();
       else if (naturalDatetimeMatch?.[0]) extracted.preferred_datetime = naturalDatetimeMatch[0].trim();
+
+      const reasonMatch = text.match(/\b(?:reason|subject|about|regarding|for)\b\s*(?:is|:)?\s*([^\n,.!?]{4,180})/i);
+      if (reasonMatch?.[1]) extracted.booking_reason = reasonMatch[1].trim();
     }
 
     if (actionType === 'SALES_ORDER_REQUEST') {
@@ -626,6 +630,7 @@ export class ActionForwardingService {
     let collectedFields: Record<string, string> = {};
     let followUpMissingFields: string[] = [];
     let existingContractActionTaskId: string | null = null;
+    const prismaAny = this.prisma as any;
     if (contract) {
       const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
       const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
@@ -738,9 +743,11 @@ export class ActionForwardingService {
               customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
               customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
               preferredDatetime: collectedFields.preferred_datetime ?? undefined,
+              // Keep booking reason explicit for downstream ops triage.
               notes: input.messageText,
               metadata: {
                 ...existingBookingMetadata,
+                bookingReason: collectedFields.booking_reason ?? existingBookingMetadata.bookingReason ?? null,
                 followUpMissingFields: mergedFollowUpMissingFields,
               },
             },
@@ -757,6 +764,7 @@ export class ActionForwardingService {
               customerName: collectedFields.customer_name ?? input.customerName ?? null,
               customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
               preferredDatetime: collectedFields.preferred_datetime ?? null,
+              bookingReason: collectedFields.booking_reason ?? null,
               followUpMissingFields: mergedFollowUpMissingFields,
             },
           },
@@ -791,8 +799,6 @@ export class ActionForwardingService {
 
     const fingerprint = this.buildFingerprint(detected.actionType, input.messageText);
     const dedupeKey = this.buildDedupeKey(input.organizationId, input.conversationId, fingerprint);
-    const prismaAny = this.prisma as any;
-
     const existing = await prismaAny.actionTask.findFirst({
       where: {
         orgId: input.organizationId,
@@ -895,6 +901,8 @@ export class ActionForwardingService {
           metadata: {
             customFields,
             customFieldVersion: customContract.version,
+            bookingReason: collectedFields.booking_reason ?? null,
+            followUpMissingFields,
           },
         },
       });
@@ -909,6 +917,8 @@ export class ActionForwardingService {
             customerEmail: input.customerEmail ?? null,
             bookingId: booking.id,
             preferredDatetime: collectedFields.preferred_datetime ?? null,
+            bookingReason: collectedFields.booking_reason ?? null,
+            followUpMissingFields,
           },
         },
       });
@@ -924,6 +934,8 @@ export class ActionForwardingService {
           botId: input.botId,
           customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
           preferredDatetime: collectedFields.preferred_datetime ?? null,
+          bookingReason: collectedFields.booking_reason ?? null,
+          followUpMissingFields,
         },
       );
     }
