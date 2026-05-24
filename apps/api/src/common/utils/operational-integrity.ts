@@ -261,5 +261,22 @@ export function buildDeterministicFollowUpMessage(
       : 'request';
   const needed = missingFields.map(humanizeField).join(', ');
 
+  if (options.actionType === 'TECHNICAL_ISSUE') {
+    const needsEmail = missingFields.includes('customer_email');
+    const needsIssueSummary = missingFields.includes('issue_summary');
+    const issueDetailPrompt = needsIssueSummary || !missingFields.includes('issue_details')
+      ? 'a short description of the issue'
+      : null;
+    const technicalParts = [
+      needsEmail ? 'valid email address' : null,
+      issueDetailPrompt,
+      ...missingFields
+        .filter((field) => field !== 'customer_email' && field !== 'issue_summary' && field !== 'issue_details')
+        .map(humanizeField),
+    ].filter((part): part is string => Boolean(part));
+
+    return `To continue with your ${subject}, please provide: ${technicalParts.join(', ')}. I cannot submit this as completed until these details are confirmed.`;
+  }
+
   return `To continue with your ${subject}, please provide: ${needed}. I cannot submit this as completed until these details are confirmed.`;
 }
