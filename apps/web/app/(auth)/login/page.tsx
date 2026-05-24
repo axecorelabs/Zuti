@@ -91,9 +91,9 @@ function LoginPageContent() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex">
+    <div className="min-h-screen bg-[#020817] flex">
       {/* ── Left panel ── */}
-      <div className="hidden lg:flex lg:w-[48%] xl:w-1/2 relative bg-zinc-950 border-r border-zinc-900 flex-col overflow-hidden">
+      <div className="hidden lg:flex lg:w-[48%] xl:w-1/2 relative bg-[#020817] border-r border-zinc-900 flex-col overflow-hidden">
         {/* Dot grid */}
         <div className="absolute inset-0" style={{ backgroundImage: 'radial-gradient(circle, #27272a 1px, transparent 1px)', backgroundSize: '32px 32px', opacity: 0.35 }} />
         {/* Top glow */}
@@ -148,7 +148,7 @@ function LoginPageContent() {
       </div>
 
       {/* ── Right form panel ── */}
-      <div className="flex-1 flex flex-col min-h-screen">
+      <div className="flex-1 flex flex-col min-h-screen bg-[#020817]">
         {/* Mobile logo bar */}
         <div className="lg:hidden flex items-center gap-2.5 px-6 pt-8 pb-0">
           <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shadow-md shadow-blue-600/25">
@@ -251,7 +251,7 @@ function LoginPageContent() {
 
 function LoginFallback() {
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center">
+    <div className="min-h-screen bg-[#020817] flex items-center justify-center">
       <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
     </div>
   );
