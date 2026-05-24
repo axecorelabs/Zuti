@@ -38,6 +38,7 @@ function estimateUsageCredits(promptTokens: number, completionTokens: number): n
 
 type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
 type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
+type CapabilitySkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 
 const BOT_SKILLS: BotSkill[] = ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'];
 
@@ -72,10 +73,52 @@ function buildCapabilitiesFromSkills(skills: BotSkill[]) {
   };
 }
 
+function isSkillEnabledForAction(
+  actionType: string | undefined,
+  capabilities: Record<string, unknown>,
+): boolean {
+  if (!actionType) return false;
+
+  const skills = (capabilities.skills ?? {}) as Record<string, unknown>;
+  switch (actionType) {
+    case 'SALES_ORDER_REQUEST':
+      return capabilities.canCreateOrder === true || capabilities.canCreateLead === true || skills.SALES === true;
+    case 'MEETING_REQUEST':
+      return capabilities.canCreateMeetingRequest === true || skills.BOOKING === true;
+    case 'TECHNICAL_ISSUE':
+      return capabilities.canCreateTechnicalIssue === true || skills.SUPPORT === true || skills.TECHNICAL === true;
+    case 'OWNER_ATTENTION_NEEDED':
+      return capabilities.canNotifyOwner === true || capabilities.canNotifyTeam === true || skills.FORWARDING === true;
+    default:
+      return false;
+  }
+}
+
+function buildCapabilityAvailabilityPrompt(capabilities: Record<string, unknown>): string {
+  const skills = (capabilities.skills ?? {}) as Record<string, unknown>;
+  const allSkills: CapabilitySkill[] = ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'];
+  const enabled = allSkills.filter((skill) => skills[skill] === true);
+  const disabled = allSkills.filter((skill) => !enabled.includes(skill));
+
+  return [
+    'Capability availability for this bot:',
+    `- Enabled workflows: ${enabled.length > 0 ? enabled.join(', ') : 'none'}.`,
+    `- Disabled workflows: ${disabled.length > 0 ? disabled.join(', ') : 'none'}.`,
+    '- Do not imply you can execute disabled workflows.',
+    '- If a user requests a disabled workflow, explicitly say it is not enabled on this bot and offer human routing.',
+  ].join('\n');
+}
+
 function applyForwardingPreference(skills: BotSkill[], actionForwardingEnabled?: boolean): BotSkill[] {
   if (actionForwardingEnabled === undefined) return skills;
   const withoutForwarding = skills.filter((skill) => skill !== 'FORWARDING');
   return actionForwardingEnabled ? [...withoutForwarding, 'FORWARDING'] : withoutForwarding;
+}
+
+function isBlockedCapabilityReason(reason: string | undefined): boolean {
+  return reason === 'SKILL_NOT_ENABLED'
+    || reason === 'CHANNEL_NOT_ALLOWED'
+    || reason === 'EXECUTOR_DISABLED';
 }
 
 function getTemplatePreset(template: BotTemplate) {
@@ -771,15 +814,48 @@ export class BotsService {
 
     // Call AI service and get response
     let aiReply = '';
+    const deterministicFollowUp = buildDeterministicFollowUpMessage({
+      actionType: forwardingResult.actionType,
+      missingFields: forwardingResult.missingFields,
+      canClaimCompleted: forwardingResult.canClaimCompleted,
+      forwardingReason: forwardingResult.reason,
+      blockedCapability: forwardingResult.blockedCapability,
+    });
+
+    if (deterministicFollowUp && isBlockedCapabilityReason(forwardingResult.reason)) {
+      aiReply = deterministicFollowUp;
+
+      const aiMessage = await this.prisma.message.create({
+        data: {
+          conversationId: conversation.id,
+          role: 'ASSISTANT',
+          content: aiReply,
+        },
+      });
+
+      this.events.emitNewMessage(bot.organizationId, {
+        conversationId: conversation.id,
+        message: { id: aiMessage.id, role: aiMessage.role, content: aiMessage.content, createdAt: aiMessage.createdAt },
+      });
+
+      return {
+        conversationId: conversation.id,
+        message: aiReply,
+      };
+    }
+
     const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(bot.organizationId, preflightCredits);
     try {
       const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
       const aiConfig = (bot.aiConfig as Record<string, unknown>) ?? {};
+      const botCapabilities = ((bot.capabilities as Record<string, unknown> | null) ?? {});
+      const canApplySkillBehavior = isSkillEnabledForAction(forwardingResult.actionType, botCapabilities);
       const effectiveSystemPrompt = [
         buildAgentSystemPrompt(aiConfig, bot.name),
-        buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
+        buildCapabilityAvailabilityPrompt(botCapabilities),
+        canApplySkillBehavior ? buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType) : null,
         buildOperationalIntegrityPromptBlock(
           forwardingResult.status,
           forwardingResult.reason,
@@ -899,11 +975,6 @@ export class BotsService {
         blockedCapability: forwardingResult.blockedCapability,
       });
 
-      const deterministicFollowUp = buildDeterministicFollowUpMessage({
-        actionType: forwardingResult.actionType,
-        missingFields: forwardingResult.missingFields,
-        canClaimCompleted: forwardingResult.canClaimCompleted,
-      });
       if (deterministicFollowUp) {
         aiReply = deterministicFollowUp;
       }

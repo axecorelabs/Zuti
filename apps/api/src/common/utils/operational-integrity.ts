@@ -26,6 +26,8 @@ interface DeterministicFollowUpOptions {
   actionType?: string;
   missingFields?: string[];
   canClaimCompleted?: boolean;
+  forwardingReason?: string;
+  blockedCapability?: string;
 }
 
 const ESCALATION_CLAIM_PATTERNS: RegExp[] = [
@@ -68,6 +70,13 @@ const UNVERIFIED_LOGGED_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:logged|noted|submitted|queued|filed)\s+(?:it|this|your\s+request|the\s+request|your\s+meeting\s+request|the\s+meeting\s+request)?\s*(?:for\s+review)?\b/gi,
   /\b(?:your|the)\s+(?:request|meeting\s+request)\s+(?:is|has been|was)\s+(?:logged|noted|submitted|queued|filed)\s*(?:for\s+review)?\b/gi,
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:noted|captured)\s+your\s+request\s+for\s+(?:a\s+)?meeting\b/gi,
+];
+
+const AMBIGUOUS_CAPABILITY_CLAIM_PATTERNS: RegExp[] = [
+  /\bi\s+can\s+help\s+(?:log|note|submit|queue|file|process|handle)\s+(?:this|that|your\s+request|the\s+request)(?:\s+for\s+review)?\b/gi,
+  /\bi\s+can\s+help\s+(?:pass|forward)\s+(?:this|that|your\s+request|the\s+request)\s+to\s+(?:our\s+)?(?:team|sales\s+team|owner)\b/gi,
+  /\bi\s+have\s+processed\s+(?:this|that|your\s+request|the\s+request)\b/gi,
+  /\bi\s+have\s+taken\s+the\s+action\b/gi,
 ];
 
 function describeForwardingStatus(status: ForwardingTruthStatus): string {
@@ -213,6 +222,12 @@ export function sanitizeOperationalClaims(
     );
   }
 
+  if (isCapabilityBlocked) {
+    for (const pattern of AMBIGUOUS_CAPABILITY_CLAIM_PATTERNS) {
+      sanitized = sanitized.replace(pattern, missingFieldPrompt);
+    }
+  }
+
   if (!canConfirmForwardingRequest) {
     for (const pattern of UNVERIFIED_LOGGED_CLAIM_PATTERNS) {
       sanitized = sanitized.replace(pattern, missingFieldPrompt);
@@ -245,9 +260,38 @@ function humanizeField(field: string): string {
   }
 }
 
+function describeActionLabel(actionType?: string): string {
+  if (actionType === 'MEETING_REQUEST') return 'booking requests';
+  if (actionType === 'SALES_ORDER_REQUEST') return 'sales order requests';
+  if (actionType === 'TECHNICAL_ISSUE') return 'technical issue requests';
+  if (actionType === 'OWNER_ATTENTION_NEEDED') return 'owner escalation requests';
+  return 'this request type';
+}
+
+function describeCapabilityLabel(capability?: string): string {
+  if (!capability) return 'the required workflow';
+  if (capability === 'SALES') return 'the Sales workflow';
+  if (capability === 'BOOKING') return 'the Booking workflow';
+  if (capability === 'TECHNICAL') return 'the Technical workflow';
+  if (capability === 'FORWARDING') return 'the Forwarding workflow';
+  if (capability === 'SUPPORT_OR_TECHNICAL') return 'the Support or Technical workflow';
+  return `${capability} workflow`;
+}
+
 export function buildDeterministicFollowUpMessage(
   options: DeterministicFollowUpOptions = {},
 ): string | null {
+  const isBlockedCapability =
+    options.forwardingReason === 'SKILL_NOT_ENABLED'
+    || options.forwardingReason === 'CHANNEL_NOT_ALLOWED'
+    || options.forwardingReason === 'EXECUTOR_DISABLED';
+
+  if (isBlockedCapability) {
+    const actionLabel = describeActionLabel(options.actionType);
+    const capabilityLabel = describeCapabilityLabel(options.blockedCapability);
+    return `I cannot complete ${actionLabel} from this bot because ${capabilityLabel} is not enabled here. I can route you to a human teammate for help.`;
+  }
+
   const missingFields = (options.missingFields ?? []).filter((field) => field.trim().length > 0);
   if (missingFields.length === 0) return null;
   if (options.canClaimCompleted === true) return null;
