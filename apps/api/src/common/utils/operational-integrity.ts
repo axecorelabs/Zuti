@@ -21,20 +21,25 @@ interface OperationalClaimGuardOptions {
 const ESCALATION_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:escalated|forwarded|notified)\b/gi,
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:sent|passed)\s+(?:this\s+)?(?:to\s+)?(?:our\s+)?(?:team|owner|manager)\b/gi,
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:forwarded|sent|passed)\s+(?:it|this|your request)\s+(?:to\s+)?(?:the\s+)?owner\b/gi,
+  /\b(?:your|the)\s+(?:request|meeting request)\s+(?:has been|was)\s+(?:forwarded|sent|passed)\s+(?:to\s+)?(?:the\s+)?owner\b/gi,
   /\b(?:this|it)\s+(?:has been|is)\s+(?:escalated|forwarded)\b/gi,
 ];
 
 const BOOKING_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:booked|scheduled|arranged|confirmed)\s+(?:a\s+)?(?:meeting|call|appointment)\b/gi,
   /\b(?:your|the)\s+(?:meeting|call|appointment)\s+(?:is|has been)\s+(?:booked|scheduled|confirmed)\b/gi,
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:created|set up|made)\s+(?:a\s+)?meeting\s+request\b/gi,
+  /\b(?:your|the)\s+meeting\s+request\s+(?:is|has been)\s+(?:created|queued|sent|forwarded)\b/gi,
+  /\b(?:the\s+)?owner\s+(?:has been|has|was|is)\s+(?:notified|updated|alerted)\b/gi,
 ];
 
 function describeForwardingStatus(status: ForwardingTruthStatus): string {
   switch (status) {
     case 'QUEUED':
-      return 'A forwarding request was queued for this turn.';
+      return 'A follow-up request was logged for review on this turn.';
     case 'DUPLICATE':
-      return 'A similar forwarding request already exists for this turn/conversation context.';
+      return 'A similar follow-up request is already logged for this turn/conversation context.';
     case 'DISABLED':
       return 'Forwarding is disabled for this bot.';
     case 'NO_INTENT':
@@ -61,7 +66,7 @@ function describeForwardingReason(reason: ForwardingTruthReason): string {
     case 'DUPLICATE_ACTION':
       return 'A duplicate forwarding request already exists.';
     case 'QUEUED_ACTION':
-      return 'A forwarding request was queued successfully.';
+      return 'A follow-up request was logged successfully.';
     case 'SYSTEM_ERROR':
       return 'Forwarding failed due to a system/runtime issue.';
     default:
@@ -85,9 +90,11 @@ export function buildOperationalIntegrityPromptBlock(
     blockedCapability ? `- Blocked capability for this turn: ${blockedCapability}.` : null,
     missingFieldText,
     '- Never claim a booking, escalation, forwarding, or owner/team notification is completed unless the system confirms completion.',
-    '- You may only state that a forwarding request was created when forwarding truth for this turn is queued or duplicate.',
+    '- You may only state that a follow-up request was logged when forwarding truth for this turn is queued or duplicate.',
+    '- Do not say the request was forwarded to the owner, sent to the team, or that the meeting was booked/scheduled unless that is explicitly confirmed.',
+    '- If the user asked to book a meeting, but the system only logged an action task, say it was noted for review; do not say a meeting was scheduled or a booking exists.',
     '- If forwarding failed due to missing customer data, ask only for the missing fields before promising escalation.',
-    '- If completion is not confirmed, use capability language such as "I can help escalate this" or "I can help arrange a meeting request."',
+    '- If completion is not confirmed, use capability language such as "I can help log this for review" or "I can help note this as a meeting request."',
     '- Be explicit about uncertainty and next steps; do not imply actions already happened when they have not.',
   ].join('\n');
 }
@@ -106,22 +113,22 @@ export function sanitizeOperationalClaims(
   const isSkillDisabled = forwardingReason === 'SKILL_NOT_ENABLED';
 
   const missingFieldPrompt = isMissingContactIssue && missingFields.length > 0
-    ? `I can help escalate this once I have: ${missingFields.join(', ')}.`
+    ? `I can help log this for review once I have: ${missingFields.join(', ')}.`
     : isSkillDisabled
       ? `This request is outside my currently enabled workflows${blockedCapability ? ` (${blockedCapability})` : ''}. I can route you to a human for help.`
-    : 'I can help escalate this to our team';
+    : 'I can help log this for review for our team';
 
   for (const pattern of ESCALATION_CLAIM_PATTERNS) {
     sanitized = sanitized.replace(
       pattern,
       canConfirmForwardingRequest
-        ? 'I have created a follow-up request for our team'
+        ? 'I have logged this for review for our team'
         : missingFieldPrompt,
     );
   }
 
   for (const pattern of BOOKING_CLAIM_PATTERNS) {
-    sanitized = sanitized.replace(pattern, 'I can help arrange a meeting request');
+    sanitized = sanitized.replace(pattern, 'I can help note this for review');
   }
 
   if (sanitized !== text && !/cannot confirm operational actions as completed/i.test(sanitized)) {

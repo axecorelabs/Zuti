@@ -618,17 +618,17 @@ export class ActionForwardingService {
       const customFields = Object.fromEntries(
         Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
       );
-      await prismaAny.lead.create({
+      await prismaAny.booking.create({
         data: {
           orgId: input.organizationId,
           botId: input.botId,
           actionTaskId: task.id,
-          fullName: collectedFields.customer_name ?? input.customerName ?? null,
-          email: collectedFields.customer_email ?? input.customerEmail ?? null,
-          interest: 'Meeting request',
+          customerName: collectedFields.customer_name ?? input.customerName ?? null,
+          customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+          preferredDatetime: collectedFields.preferred_datetime ?? null,
+          status: 'REQUESTED',
           notes: input.messageText,
           metadata: {
-            preferredDatetime: collectedFields.preferred_datetime ?? null,
             customFields,
             customFieldVersion: customContract.version,
           },

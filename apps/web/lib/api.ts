@@ -164,6 +164,10 @@ export const orgsApi = {
     orgId: string,
     params?: { botId?: string; q?: string; limit?: number; page?: number },
   ) => api.get(`/organizations/${orgId}/leads`, { params }),
+  listBookings: (
+    orgId: string,
+    params?: { botId?: string; status?: string; q?: string; limit?: number; page?: number },
+  ) => api.get(`/organizations/${orgId}/bookings`, { params }),
   listSalesOrders: (
     orgId: string,
     params?: { botId?: string; status?: string; q?: string; limit?: number; page?: number },

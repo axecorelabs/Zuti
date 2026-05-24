@@ -314,6 +314,16 @@ export class OrganizationsController {
     return this.organizationsService.listLeads(orgId, user.id, query);
   }
 
+  @Get(':id/bookings')
+  @ApiOperation({ summary: 'List bookings for an organization' })
+  listBookings(
+    @Param('id') orgId: string,
+    @CurrentUser() user: { id: string },
+    @Query() query: ListOperationalRecordsQueryDto,
+  ) {
+    return this.organizationsService.listBookings(orgId, user.id, query);
+  }
+
   @Get(':id/sales-orders')
   @ApiOperation({ summary: 'List sales orders for an organization' })
   listSalesOrders(

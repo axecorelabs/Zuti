@@ -63,6 +63,7 @@ model Organization {
   actionTasks ActionTask[]
   actionDeliveries ActionDelivery[]
   leads Lead[]
+  bookings Booking[]
   salesOrders SalesOrder[]
   technicalIssues TechnicalIssue[]
 }
@@ -160,6 +161,7 @@ model Bot {
   contactPolicies ContactPolicy[]
   actionTasks ActionTask[]
   leads Lead[]
+  bookings Booking[]
   salesOrders SalesOrder[]
   technicalIssues TechnicalIssue[]
 }
@@ -430,6 +432,7 @@ model ActionTask {
   assignedEndpoint      ContactEndpoint? @relation("AssignedActionEndpoint", fields: [assignedEndpointId], references: [id], onDelete: SetNull)
   deliveries            ActionDelivery[]
   lead                  Lead?
+  booking               Booking?
   salesOrder            SalesOrder?
   technicalIssue        TechnicalIssue?
 
@@ -517,6 +520,36 @@ model Lead {
 
   @@index([orgId, createdAt(sort: Desc)])
   @@index([orgId, email])
+}
+
+model Booking {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  botId                 String
+  actionTaskId          String   @unique
+  customerName          String?
+  customerEmail         String?
+  customerPhone         String?
+  preferredDatetime      String?
+  status                BookingStatus @default(REQUESTED)
+  notes                 String?
+  metadata              Json     @default("{}")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
+  actionTask            ActionTask   @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, createdAt(sort: Desc)])
+  @@index([orgId, customerEmail])
+}
+
+enum BookingStatus {
+  REQUESTED
+  CONFIRMED
+  RESCHEDULED
+  CANCELLED
 }
 
 model SalesOrder {

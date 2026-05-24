@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Download, Search, RefreshCw } from 'lucide-react';
 import { botsApi, orgsApi } from '@/lib/api';
 
-type OperationsTab = 'ACTION_TASKS' | 'LEADS' | 'SALES_ORDERS' | 'TECH_ISSUES';
+type OperationsTab = 'ACTION_TASKS' | 'LEADS' | 'BOOKINGS' | 'SALES_ORDERS' | 'TECH_ISSUES';
 
 interface Org { id: string }
 interface BotItem { id: string; name: string }
@@ -22,6 +22,7 @@ const PAGE_SIZE = 25;
 const TABS: Array<{ key: OperationsTab; label: string }> = [
   { key: 'ACTION_TASKS', label: 'Action Tasks' },
   { key: 'LEADS', label: 'Leads' },
+  { key: 'BOOKINGS', label: 'Bookings' },
   { key: 'SALES_ORDERS', label: 'Sales Orders' },
   { key: 'TECH_ISSUES', label: 'Technical Issues' },
 ];
@@ -71,6 +72,10 @@ export default function OperationsPage() {
       const res = await orgsApi.listLeads(orgId, params as any);
       return res.data as PaginatedRecordsResponse;
     }
+    if (tab === 'BOOKINGS') {
+      const res = await orgsApi.listBookings(orgId, params as any);
+      return res.data as PaginatedRecordsResponse;
+    }
     if (tab === 'SALES_ORDERS') {
       const res = await orgsApi.listSalesOrders(orgId, params as any);
       return res.data as PaginatedRecordsResponse;
@@ -100,6 +105,7 @@ export default function OperationsPage() {
 
   const statusOptions = useMemo(() => {
     if (tab === 'ACTION_TASKS') return ['DETECTED', 'QUEUED', 'ROUTED', 'SENT', 'DELIVERED', 'FAILED', 'COMPLETED'];
+    if (tab === 'BOOKINGS') return ['REQUESTED', 'CONFIRMED', 'RESCHEDULED', 'CANCELLED'];
     if (tab === 'SALES_ORDERS') return ['NEW', 'PROCESSING', 'COMPLETED', 'CANCELLED'];
     if (tab === 'TECH_ISSUES') return ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'];
     return [] as string[];
@@ -159,6 +165,21 @@ export default function OperationsPage() {
           ].map(csvEscape));
           return { headers, records };
         }
+        if (tab === 'BOOKINGS') {
+          const headers = ['id', 'createdAt', 'bot', 'customerName', 'customerEmail', 'preferredDatetime', 'status', 'notes', 'actionStatus'];
+          const records = allItems.map((row) => [
+            row.id,
+            row.createdAt,
+            row.bot?.name,
+            row.customerName,
+            row.customerEmail,
+            row.preferredDatetime,
+            row.status,
+            row.notes,
+            row.actionTask?.status,
+          ].map(csvEscape));
+          return { headers, records };
+        }
         if (tab === 'SALES_ORDERS') {
           const headers = ['id', 'createdAt', 'bot', 'customerName', 'customerEmail', 'product', 'quantity', 'status', 'notes', 'actionStatus'];
           const records = allItems.map((row) => [
@@ -213,7 +234,7 @@ export default function OperationsPage() {
       <div className="mb-6">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Operations</h1>
         <p className="mt-1 text-sm text-zinc-500 font-light">
-          Search and review action tasks and collected records from forwarding workflows.
+          Search and review action tasks, bookings, and collected records from forwarding workflows.
         </p>
       </div>
 
@@ -334,6 +355,7 @@ export default function OperationsPage() {
                     row.fullName ||
                     row.customerName ||
                     row.reporterName ||
+                    row.preferredDatetime ||
                     row.product ||
                     '-';
                   const rowStatus = row.status || row.actionTask?.status || '-';
@@ -341,6 +363,7 @@ export default function OperationsPage() {
                     row.email ||
                     row.customerEmail ||
                     row.reporterEmail ||
+                    row.preferredDatetime ||
                     row.destination ||
                     row.issueCategory ||
                     row.interest ||

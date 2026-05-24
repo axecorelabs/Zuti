@@ -629,6 +629,54 @@ export class OrganizationsService {
     };
   }
 
+  async listBookings(
+    orgId: string,
+    requestingUserId: string,
+    query: { botId?: string; status?: string; q?: string; limit?: string; page?: string },
+  ) {
+    await this.getMembershipOrThrow(orgId, requestingUserId);
+    const take = this.parseLimit(query.limit, 75);
+    const page = this.parsePage(query.page);
+    const skip = (page - 1) * take;
+    const where: Record<string, unknown> = {
+      orgId,
+      ...(query.botId ? { botId: query.botId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(query.q
+        ? {
+            OR: [
+              { customerName: { contains: query.q, mode: 'insensitive' } },
+              { customerEmail: { contains: query.q, mode: 'insensitive' } },
+              { preferredDatetime: { contains: query.q, mode: 'insensitive' } },
+              { notes: { contains: query.q, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
+
+    const prismaAny = this.prisma as any;
+    const total = await prismaAny.booking.count({ where: where as any });
+
+    const items = await prismaAny.booking.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take,
+      include: {
+        bot: { select: { id: true, name: true } },
+        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+      },
+    });
+
+    return {
+      items,
+      total,
+      page,
+      limit: take,
+      totalPages: Math.max(1, Math.ceil(total / take)),
+    };
+  }
+
   async listSalesOrders(
     orgId: string,
     requestingUserId: string,
