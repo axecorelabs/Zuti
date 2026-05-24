@@ -10,12 +10,24 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
+  ActionCapabilityRegistry,
+  ActionForwardingReason,
+  ActionForwardingResult,
+  ActionForwardingResultStatus,
   ActionType,
   AiActionClassifierResponse,
+  CapabilityKey,
   ContactEndpointConfig,
   ContactPolicyConfig,
   ResolveRouteInput,
   ResolveRouteResult,
+  RuntimeChannel,
+} from './action-forwarding.types';
+
+export type {
+  ActionForwardingReason,
+  ActionForwardingResult,
+  ActionForwardingResultStatus,
 } from './action-forwarding.types';
 
 interface InboundActionSignalInput {
@@ -24,7 +36,7 @@ interface InboundActionSignalInput {
   conversationId: string;
   messageId: string;
   messageText: string;
-  channel: 'EMAIL' | 'TELEGRAM' | 'WIDGET';
+  channel: RuntimeChannel;
   customerName?: string | null;
   customerEmail?: string | null;
   actionForwardingEnabled?: boolean;
@@ -60,15 +72,77 @@ interface ActionContractDefinition {
   requiredFields: ContractFieldKey[];
 }
 
+const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
+  version: '2026-05-24',
+  actions: {
+    MEETING_REQUEST: {
+      actionType: 'MEETING_REQUEST',
+      capabilityKey: 'BOOKING',
+      requiredFields: ['customer_name', 'customer_email', 'preferred_datetime'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      executor: {
+        kind: 'ACTION_TASK',
+        enabled: true,
+      },
+      claimRules: {
+        requiresActionTaskIdToConfirm: true,
+        forbidSystemLookupClaimWithoutLookupId: true,
+      },
+    },
+    SALES_ORDER_REQUEST: {
+      actionType: 'SALES_ORDER_REQUEST',
+      capabilityKey: 'SALES',
+      requiredFields: ['customer_name', 'customer_email', 'product'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      executor: {
+        kind: 'ACTION_TASK',
+        enabled: true,
+      },
+      claimRules: {
+        requiresActionTaskIdToConfirm: true,
+        forbidSystemLookupClaimWithoutLookupId: true,
+      },
+    },
+    TECHNICAL_ISSUE: {
+      actionType: 'TECHNICAL_ISSUE',
+      capabilityKey: 'TECHNICAL',
+      requiredFields: ['issue_summary'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      executor: {
+        kind: 'ACTION_TASK',
+        enabled: true,
+      },
+      claimRules: {
+        requiresActionTaskIdToConfirm: true,
+        forbidSystemLookupClaimWithoutLookupId: true,
+      },
+    },
+    OWNER_ATTENTION_NEEDED: {
+      actionType: 'OWNER_ATTENTION_NEEDED',
+      capabilityKey: 'FORWARDING',
+      requiredFields: ['customer_name', 'customer_email'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      executor: {
+        kind: 'ACTION_TASK',
+        enabled: true,
+      },
+      claimRules: {
+        requiresActionTaskIdToConfirm: true,
+        forbidSystemLookupClaimWithoutLookupId: true,
+      },
+    },
+  },
+};
+
 const ACTION_CONTRACTS: Partial<Record<ActionType, ActionContractDefinition>> = {
   MEETING_REQUEST: {
-    requiredFields: ['customer_name', 'customer_email', 'preferred_datetime'],
+    requiredFields: ACTION_CAPABILITY_REGISTRY.actions.MEETING_REQUEST.requiredFields as ContractFieldKey[],
   },
   SALES_ORDER_REQUEST: {
-    requiredFields: ['customer_name', 'customer_email', 'product'],
+    requiredFields: ACTION_CAPABILITY_REGISTRY.actions.SALES_ORDER_REQUEST.requiredFields as ContractFieldKey[],
   },
   TECHNICAL_ISSUE: {
-    requiredFields: ['issue_summary'],
+    requiredFields: ACTION_CAPABILITY_REGISTRY.actions.TECHNICAL_ISSUE.requiredFields as ContractFieldKey[],
   },
 };
 
@@ -78,28 +152,6 @@ function normalizeFieldKey(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
-}
-
-export type ActionForwardingResultStatus = 'DISABLED' | 'NO_INTENT' | 'DUPLICATE' | 'QUEUED';
-
-export type ActionForwardingReason =
-  | 'FORWARDING_DISABLED'
-  | 'NO_ACTIONABLE_INTENT'
-  | 'SKILL_NOT_ENABLED'
-  | 'MISSING_CONTACT_INFO'
-  | 'MISSING_REQUIRED_FIELDS'
-  | 'DUPLICATE_ACTION'
-  | 'QUEUED_ACTION'
-  | 'SYSTEM_ERROR';
-
-export type ActionForwardingMissingField = string;
-
-export interface ActionForwardingResult {
-  status: ActionForwardingResultStatus;
-  reason: ActionForwardingReason;
-  actionType?: ActionType;
-  missingFields?: ActionForwardingMissingField[];
-  blockedCapability?: string;
 }
 
 @Injectable()
@@ -419,6 +471,9 @@ export class ActionForwardingService {
   }
 
   private blockedCapabilityForAction(actionType: ActionType): string {
+    const capability = ACTION_CAPABILITY_REGISTRY.actions[actionType]?.capabilityKey;
+    if (capability) return capability;
+
     switch (actionType) {
       case 'MEETING_REQUEST':
         return 'BOOKING';
@@ -433,12 +488,65 @@ export class ActionForwardingService {
     }
   }
 
+  private findPendingContractAction(metadata: Record<string, unknown>): ActionType | null {
+    const contracts = (metadata.actionContracts as Record<string, unknown> | null) ?? null;
+    if (!contracts) return null;
+
+    let best: { actionType: ActionType; updatedAt: number } | null = null;
+    const candidateActionTypes: ActionType[] = ['MEETING_REQUEST', 'SALES_ORDER_REQUEST', 'TECHNICAL_ISSUE'];
+
+    for (const actionType of candidateActionTypes) {
+      const contract = contracts[actionType] as Record<string, unknown> | undefined;
+      if (!contract) continue;
+      if (contract.status !== 'COLLECTING') continue;
+
+      const missingFields = Array.isArray(contract.missingFields)
+        ? contract.missingFields.filter((field): field is string => typeof field === 'string' && field.trim().length > 0)
+        : [];
+      if (missingFields.length === 0) continue;
+
+      const updatedAtRaw = typeof contract.updatedAt === 'string' ? contract.updatedAt : null;
+      const updatedAt = updatedAtRaw ? Date.parse(updatedAtRaw) : 0;
+      if (!best || updatedAt > best.updatedAt) {
+        best = { actionType, updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0 };
+      }
+    }
+
+    return best?.actionType ?? null;
+  }
+
+  private buildForwardingResult(result: {
+    status: ActionForwardingResultStatus;
+    reason: ActionForwardingReason;
+    actionType?: ActionType;
+    actionTaskId?: string;
+    lookupId?: string;
+    missingFields?: string[];
+    blockedCapability?: string;
+    capabilityKey?: CapabilityKey;
+  }): ActionForwardingResult {
+    const canClaimCompleted =
+      (result.status === 'QUEUED' || result.status === 'DUPLICATE') && Boolean(result.actionTaskId);
+
+    return {
+      status: result.status,
+      reason: result.reason,
+      actionType: result.actionType,
+      capabilityKey: result.capabilityKey,
+      actionTaskId: result.actionTaskId,
+      lookupId: result.lookupId,
+      canClaimCompleted,
+      missingFields: result.missingFields,
+      blockedCapability: result.blockedCapability,
+    };
+  }
+
   async detectAndQueue(input: InboundActionSignalInput): Promise<ActionForwardingResult> {
     if (!input.actionForwardingEnabled) {
-      return {
+      return this.buildForwardingResult({
         status: 'DISABLED',
         reason: 'FORWARDING_DISABLED',
-      };
+      });
     }
 
     let detected: { actionType: ActionType; confidence: number; summary: string } | null = null;
@@ -451,10 +559,47 @@ export class ActionForwardingService {
       detected = this.detectActionByKeywords(input.messageText);
     }
     if (!detected) {
-      return {
-        status: 'NO_INTENT',
-        reason: 'NO_ACTIONABLE_INTENT',
+      const conversation = await this.prisma.conversation.findUnique({
+        where: { id: input.conversationId },
+        select: { metadata: true },
+      });
+      const metadata = ((conversation?.metadata as Record<string, unknown> | null) ?? {});
+      const pendingActionType = this.findPendingContractAction(metadata);
+      if (!pendingActionType) {
+        return this.buildForwardingResult({
+          status: 'NO_INTENT',
+          reason: 'NO_ACTIONABLE_INTENT',
+        });
+      }
+
+      detected = {
+        actionType: pendingActionType,
+        confidence: 0.5,
+        summary: 'Customer provided additional details for pending workflow.',
       };
+    }
+
+    const capabilityConfig = ACTION_CAPABILITY_REGISTRY.actions[detected.actionType];
+    const capabilityKey = capabilityConfig.capabilityKey;
+
+    if (!capabilityConfig.allowedChannels.includes(input.channel)) {
+      return this.buildForwardingResult({
+        status: 'NO_INTENT',
+        reason: 'CHANNEL_NOT_ALLOWED',
+        actionType: detected.actionType,
+        capabilityKey,
+        blockedCapability: capabilityKey,
+      });
+    }
+
+    if (!capabilityConfig.executor.enabled) {
+      return this.buildForwardingResult({
+        status: 'NO_INTENT',
+        reason: 'EXECUTOR_DISABLED',
+        actionType: detected.actionType,
+        capabilityKey,
+        blockedCapability: capabilityKey,
+      });
     }
 
     const bot = await this.prisma.bot.findUnique({
@@ -463,12 +608,13 @@ export class ActionForwardingService {
     });
     const capabilities = ((bot?.capabilities as Record<string, unknown> | null) ?? {});
     if (!this.isActionEnabledByCapabilities(detected.actionType, capabilities)) {
-      return {
+      return this.buildForwardingResult({
         status: 'NO_INTENT',
         reason: 'SKILL_NOT_ENABLED',
         actionType: detected.actionType,
+        capabilityKey,
         blockedCapability: this.blockedCapabilityForAction(detected.actionType),
-      };
+      });
     }
 
     const contract = ACTION_CONTRACTS[detected.actionType];
@@ -523,12 +669,13 @@ export class ActionForwardingService {
       });
 
       if (missingFields.length > 0) {
-        return {
+        return this.buildForwardingResult({
           status: 'NO_INTENT',
           reason: 'MISSING_REQUIRED_FIELDS',
           actionType: detected.actionType,
+          capabilityKey,
           missingFields,
-        };
+        });
       }
 
       if (detected.actionType === 'TECHNICAL_ISSUE') {
@@ -550,11 +697,13 @@ export class ActionForwardingService {
       select: { id: true },
     });
     if (existing) {
-      return {
+      return this.buildForwardingResult({
         status: 'DUPLICATE',
         reason: 'DUPLICATE_ACTION',
         actionType: detected.actionType,
-      };
+        capabilityKey,
+        actionTaskId: existing.id,
+      });
     }
 
     const task = await prismaAny.actionTask.create({
@@ -700,11 +849,13 @@ export class ActionForwardingService {
       });
     }
 
-    return {
+    return this.buildForwardingResult({
       status: 'QUEUED',
       reason: 'QUEUED_ACTION',
       actionType: detected.actionType,
+      capabilityKey,
+      actionTaskId: task.id,
       missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
-    };
+    });
   }
 }

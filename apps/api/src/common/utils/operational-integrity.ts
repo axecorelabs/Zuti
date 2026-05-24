@@ -7,6 +7,8 @@ export type ForwardingTruthReason =
   | 'MISSING_REQUIRED_FIELDS'
   | 'DUPLICATE_ACTION'
   | 'QUEUED_ACTION'
+  | 'CHANNEL_NOT_ALLOWED'
+  | 'EXECUTOR_DISABLED'
   | 'SYSTEM_ERROR'
   | 'UNKNOWN';
 export type ForwardingMissingField = string;
@@ -14,6 +16,8 @@ export type ForwardingMissingField = string;
 interface OperationalClaimGuardOptions {
   forwardingStatus?: ForwardingTruthStatus;
   forwardingReason?: ForwardingTruthReason;
+  actionTaskId?: string;
+  canClaimCompleted?: boolean;
   missingFields?: ForwardingMissingField[];
   blockedCapability?: string;
 }
@@ -30,6 +34,8 @@ const BOOKING_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:booked|scheduled|arranged|confirmed)\s+(?:a\s+)?(?:meeting|call|appointment)\b/gi,
   /\b(?:your|the)\s+(?:meeting|call|appointment)\s+(?:is|has been)\s+(?:booked|scheduled|confirmed)\b/gi,
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:created|set up|made)\s+(?:a\s+)?meeting\s+request\b/gi,
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:logged|noted|submitted)\s+(?:your\s+|the\s+)?meeting\s+request\b/gi,
+  /\b(?:your|the)\s+meeting\s+request\s+(?:is|has been)\s+(?:logged|noted|submitted)\b/gi,
   /\b(?:your|the)\s+meeting\s+request\s+(?:is|has been)\s+(?:created|queued|sent|forwarded)\b/gi,
   /\b(?:the\s+)?owner\s+(?:has been|has|was|is)\s+(?:notified|updated|alerted)\b/gi,
 ];
@@ -79,6 +85,10 @@ function describeForwardingReason(reason: ForwardingTruthReason): string {
       return 'A duplicate forwarding request already exists.';
     case 'QUEUED_ACTION':
       return 'A follow-up request was logged successfully.';
+    case 'CHANNEL_NOT_ALLOWED':
+      return 'This channel is not allowed for the requested action.';
+    case 'EXECUTOR_DISABLED':
+      return 'This action executor is currently disabled.';
     case 'SYSTEM_ERROR':
       return 'Forwarding failed due to a system/runtime issue.';
     default:
@@ -91,6 +101,7 @@ export function buildOperationalIntegrityPromptBlock(
   reason: ForwardingTruthReason = 'UNKNOWN',
   missingFields: ForwardingMissingField[] = [],
   blockedCapability?: string,
+  actionTaskId?: string,
 ): string {
   const missingFieldText = missingFields.length > 0
     ? `- Missing data for forwarding: ${missingFields.join(', ')}.`
@@ -99,6 +110,7 @@ export function buildOperationalIntegrityPromptBlock(
     'Operational integrity rules:',
     `- Forwarding truth for this turn: ${describeForwardingStatus(status)}`,
     `- Forwarding reason for this turn: ${describeForwardingReason(reason)}`,
+    actionTaskId ? `- Verified action task id for this turn: ${actionTaskId}.` : '- Verified action task id for this turn: none.',
     blockedCapability ? `- Blocked capability for this turn: ${blockedCapability}.` : null,
     missingFieldText,
     '- Never claim a booking, escalation, forwarding, or owner/team notification is completed unless the system confirms completion.',
@@ -119,16 +131,21 @@ export function sanitizeOperationalClaims(
   let sanitized = text;
   const forwardingStatus = options.forwardingStatus ?? 'UNKNOWN';
   const forwardingReason = options.forwardingReason ?? 'UNKNOWN';
+  const actionTaskId = options.actionTaskId;
   const missingFields = options.missingFields ?? [];
   const blockedCapability = options.blockedCapability;
-  const canConfirmForwardingRequest = forwardingStatus === 'QUEUED' || forwardingStatus === 'DUPLICATE';
+  const canConfirmForwardingRequest = options.canClaimCompleted
+    ?? ((forwardingStatus === 'QUEUED' || forwardingStatus === 'DUPLICATE') && Boolean(actionTaskId));
   const hasFollowUpMissingFields = missingFields.length > 0;
   const isMissingContactIssue = forwardingReason === 'MISSING_CONTACT_INFO' || forwardingReason === 'MISSING_REQUIRED_FIELDS';
-  const isSkillDisabled = forwardingReason === 'SKILL_NOT_ENABLED';
+  const isCapabilityBlocked =
+    forwardingReason === 'SKILL_NOT_ENABLED'
+    || forwardingReason === 'CHANNEL_NOT_ALLOWED'
+    || forwardingReason === 'EXECUTOR_DISABLED';
 
   const missingFieldPrompt = isMissingContactIssue && missingFields.length > 0
     ? `I can help log this for review once I have: ${missingFields.join(', ')}.`
-    : isSkillDisabled
+    : isCapabilityBlocked
       ? `This request is outside my currently enabled workflows${blockedCapability ? ` (${blockedCapability})` : ''}. I can route you to a human for help.`
     : 'I can help log this for review for our team';
 

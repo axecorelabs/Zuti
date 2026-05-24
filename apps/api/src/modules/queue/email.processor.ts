@@ -188,6 +188,7 @@ export class EmailProcessor {
     let forwardingResult: ActionForwardingResult = {
       status: 'NO_INTENT',
       reason: 'SYSTEM_ERROR',
+      canClaimCompleted: false,
     };
     await this.actionForwarding.detectAndQueue({
       organizationId,
@@ -207,6 +208,7 @@ export class EmailProcessor {
       forwardingResult = {
         status: 'NO_INTENT',
         reason: 'SYSTEM_ERROR',
+        canClaimCompleted: false,
       };
     });
 
@@ -431,6 +433,7 @@ export class EmailProcessor {
         forwardingResult.reason,
         forwardingResult.missingFields,
         forwardingResult.blockedCapability,
+        forwardingResult.actionTaskId,
       ),
     ].filter(Boolean).join('\n\n');
 
@@ -553,6 +556,8 @@ export class EmailProcessor {
       const safeAiText = sanitizeOperationalClaims(aiText, {
         forwardingStatus: forwardingResult.status,
         forwardingReason: forwardingResult.reason,
+        actionTaskId: forwardingResult.actionTaskId,
+        canClaimCompleted: forwardingResult.canClaimCompleted,
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
       });
