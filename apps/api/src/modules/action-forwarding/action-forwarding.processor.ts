@@ -4,10 +4,13 @@ import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job } from 'bull';
 import { firstValueFrom } from 'rxjs';
+import { render } from '@react-email/render';
+import * as React from 'react';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActionForwardingService } from './action-forwarding.service';
+import { ActionForwardingEmail } from '../mail/templates/ActionForwardingEmail';
 
 export interface ActionForwardingJob {
   actionTaskId: string;
@@ -27,6 +30,7 @@ export class ActionForwardingProcessor {
   ) {}
 
   private formatActionText(action: {
+    id: string;
     actionType: string;
     summary: string;
     payload: unknown;
@@ -38,6 +42,7 @@ export class ActionForwardingProcessor {
     const messageText = typeof payload.messageText === 'string' ? payload.messageText : null;
     const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : null;
     const preferredDatetime = typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null;
+    const bookingReason = typeof payload.bookingReason === 'string' ? payload.bookingReason : null;
 
     const parts = [
       `Action type: ${action.actionType}`,
@@ -45,10 +50,11 @@ export class ActionForwardingProcessor {
       `Summary: ${action.summary}`,
       customerName ? `Customer: ${customerName}` : null,
       customerEmail ? `Email: ${customerEmail}` : null,
+      bookingReason ? `Booking reason: ${bookingReason}` : null,
       preferredDatetime ? `Preferred time: ${preferredDatetime}` : null,
       bookingId ? `Booking id: ${bookingId}` : null,
       messageText ? `Customer message: ${messageText}` : null,
-      `Action task id: ${(payload as Record<string, unknown>).actionTaskId ?? 'n/a'}`,
+      `Action task id: ${action.id}`,
     ].filter(Boolean);
 
     return parts.join('\n');
@@ -66,10 +72,10 @@ export class ActionForwardingProcessor {
     );
   }
 
-  private async sendEmail(destination: string, subject: string, body: string) {
+  private async sendEmail(destination: string, subject: string, body: string, htmlBody: string, botName: string) {
     const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
     const fromAddress = this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app';
-    const fromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+    const fromName = `${botName} <Zuti>`;
     if (!apiKey) throw new Error('ZEPTOMAIL_API_KEY is not configured');
 
     await firstValueFrom(
@@ -80,6 +86,7 @@ export class ActionForwardingProcessor {
           to: [{ email_address: { address: destination } }],
           subject,
           textbody: body,
+          htmlbody: htmlBody,
         },
         {
           headers: {
@@ -97,7 +104,16 @@ export class ActionForwardingProcessor {
     this.logger.log(`Action forwarding job queued for org=${organizationId}, task=${actionTaskId}`);
     const prismaAny = this.prisma as any;
 
-    const action = await prismaAny.actionTask.findUnique({ where: { id: actionTaskId } });
+    const action = await prismaAny.actionTask.findUnique({
+      where: { id: actionTaskId },
+      include: {
+        bot: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
     if (!action || action.orgId !== organizationId) return { ok: false, reason: 'NOT_FOUND' };
 
     const [botPolicies, orgPolicies, endpoints] = await Promise.all([
@@ -178,6 +194,21 @@ export class ActionForwardingProcessor {
     }
 
     const deliveryText = this.formatActionText(action);
+    const payload = (action.payload as Record<string, unknown> | null) ?? {};
+    const actionHtml = render(
+      React.createElement(ActionForwardingEmail, {
+        botName: action.bot?.name ?? 'Bot',
+        actionType: action.actionType,
+        priority: action.priority,
+        summary: action.summary,
+        customerName: typeof payload.customerName === 'string' ? payload.customerName : null,
+        customerEmail: typeof payload.customerEmail === 'string' ? payload.customerEmail : null,
+        bookingReason: typeof payload.bookingReason === 'string' ? payload.bookingReason : null,
+        preferredDatetime: typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null,
+        messageText: typeof payload.messageText === 'string' ? payload.messageText : null,
+        actionTaskId: action.id,
+      }),
+    );
 
     try {
       const sendResult = route.endpoint.channel === 'TELEGRAM'
@@ -186,6 +217,8 @@ export class ActionForwardingProcessor {
             route.endpoint.destination,
             `Action forwarding: ${action.actionType}`,
             deliveryText,
+            actionHtml,
+            action.bot?.name ?? 'Bot',
           );
 
       await prismaAny.actionDelivery.update({
