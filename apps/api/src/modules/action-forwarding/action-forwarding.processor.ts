@@ -36,6 +36,8 @@ export class ActionForwardingProcessor {
     const customerName = typeof payload.customerName === 'string' ? payload.customerName : null;
     const customerEmail = typeof payload.customerEmail === 'string' ? payload.customerEmail : null;
     const messageText = typeof payload.messageText === 'string' ? payload.messageText : null;
+    const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : null;
+    const preferredDatetime = typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null;
 
     const parts = [
       `Action type: ${action.actionType}`,
@@ -43,6 +45,8 @@ export class ActionForwardingProcessor {
       `Summary: ${action.summary}`,
       customerName ? `Customer: ${customerName}` : null,
       customerEmail ? `Email: ${customerEmail}` : null,
+      preferredDatetime ? `Preferred time: ${preferredDatetime}` : null,
+      bookingId ? `Booking id: ${bookingId}` : null,
       messageText ? `Customer message: ${messageText}` : null,
       `Action task id: ${(payload as Record<string, unknown>).actionTaskId ?? 'n/a'}`,
     ].filter(Boolean);

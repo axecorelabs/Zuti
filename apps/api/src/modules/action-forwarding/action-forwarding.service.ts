@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
   ActionType,
@@ -107,6 +108,7 @@ export class ActionForwardingService {
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
     private readonly config: ConfigService,
+    private readonly notifications: NotificationsService,
     @InjectQueue(ACTION_FORWARDING_QUEUE) private readonly queue: Queue,
   ) {}
 
@@ -618,7 +620,7 @@ export class ActionForwardingService {
       const customFields = Object.fromEntries(
         Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
       );
-      await prismaAny.booking.create({
+      const booking = await prismaAny.booking.create({
         data: {
           orgId: input.organizationId,
           botId: input.botId,
@@ -634,6 +636,34 @@ export class ActionForwardingService {
           },
         },
       });
+
+      await prismaAny.actionTask.update({
+        where: { id: task.id },
+        data: {
+          payload: {
+            channel: input.channel,
+            messageText: input.messageText,
+            customerName: input.customerName ?? null,
+            customerEmail: input.customerEmail ?? null,
+            bookingId: booking.id,
+            preferredDatetime: collectedFields.preferred_datetime ?? null,
+          },
+        },
+      });
+
+      await this.notifications.createOrgNotification(
+        input.organizationId,
+        'booking_requested',
+        'New booking request captured',
+        `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
+        {
+          actionTaskId: task.id,
+          bookingId: null,
+          botId: input.botId,
+          customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+          preferredDatetime: collectedFields.preferred_datetime ?? null,
+        },
+      );
     }
 
     await this.queue.add(
