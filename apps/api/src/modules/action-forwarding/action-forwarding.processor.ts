@@ -45,16 +45,16 @@ export class ActionForwardingProcessor {
     const bookingReason = typeof payload.bookingReason === 'string' ? payload.bookingReason : null;
 
     const parts = [
-      `Action type: ${action.actionType}`,
-      `Priority: ${action.priority}`,
-      `Summary: ${action.summary}`,
-      customerName ? `Customer: ${customerName}` : null,
-      customerEmail ? `Email: ${customerEmail}` : null,
-      bookingReason ? `Booking reason: ${bookingReason}` : null,
+      `Topic: ${action.actionType}`,
+      `Urgency: ${action.priority}`,
+      `Request summary: ${action.summary}`,
+      customerName ? `Customer name: ${customerName}` : null,
+      customerEmail ? `Customer email: ${customerEmail}` : null,
+      bookingReason ? `Reason for booking: ${bookingReason}` : null,
       preferredDatetime ? `Preferred time: ${preferredDatetime}` : null,
-      bookingId ? `Booking id: ${bookingId}` : null,
+      bookingId ? `Booking reference: ${bookingId}` : null,
       messageText ? `Customer message: ${messageText}` : null,
-      `Action task id: ${action.id}`,
+      `Reference id: ${action.id}`,
     ].filter(Boolean);
 
     return parts.join('\n');
@@ -75,7 +75,7 @@ export class ActionForwardingProcessor {
   private async sendEmail(destination: string, subject: string, body: string, htmlBody: string, botName: string) {
     const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
     const fromAddress = this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app';
-    const fromName = `${botName} <Zuti>`;
+    const fromName = `${botName} <Zuti Agent>`;
     if (!apiKey) throw new Error('ZEPTOMAIL_API_KEY is not configured');
 
     await firstValueFrom(
@@ -215,7 +215,7 @@ export class ActionForwardingProcessor {
         ? await this.sendTelegram(route.endpoint.destination, deliveryText)
         : await this.sendEmail(
             route.endpoint.destination,
-            `Action forwarding: ${action.actionType}`,
+            `New customer request: ${action.actionType}`,
             deliveryText,
             actionHtml,
             action.bot?.name ?? 'Bot',
