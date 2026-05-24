@@ -1095,6 +1095,14 @@ export default function InboxPage() {
               <aside className="hidden lg:flex w-[300px] xl:w-[320px] shrink-0 border-l border-zinc-900 bg-zinc-950/40 p-4 flex-col gap-4 overflow-y-auto">
                 <div className="flex items-center justify-between gap-3 pb-1">
                   <h3 className="text-sm font-semibold text-white">Customer context</h3>
+                  <button
+                    onClick={() => setCustomerPanelOpen(false)}
+                    aria-label="Hide customer panel"
+                    title="Hide customer panel"
+                    className="inline-flex items-center justify-center w-8 h-8 rounded-lg text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+                  >
+                    <EyeOff className="w-4 h-4" />
+                  </button>
                 </div>
                 <CustomerPanelContent />
               </aside>
