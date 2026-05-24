@@ -289,13 +289,18 @@ export class ActionForwardingService {
 
     const emailMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
     if (emailMatch?.[0]) extracted.customer_email = emailMatch[0].toLowerCase();
+    // Fallback for user-typed but incomplete emails (e.g. missing TLD) so requests can still be captured.
+    const emailLikeMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]{2,}\b/i);
+    if (!extracted.customer_email && emailLikeMatch?.[0]) extracted.customer_email = emailLikeMatch[0].toLowerCase();
 
     const nameMatch = text.match(/\b(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z\s'-]{1,60})\b/i);
     if (nameMatch?.[1]) extracted.customer_name = nameMatch[1].trim();
 
     if (actionType === 'MEETING_REQUEST') {
       const datetimeMatch = text.match(/\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?|\d{4}-\d{2}-\d{2})(?:\s+at\s+[0-2]?\d(?::[0-5]\d)?\s?(?:am|pm)?)?/i);
+      const naturalDatetimeMatch = text.match(/\b\d{1,2}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}(?:\s+(?:at\s+)?[0-2]?\d(?::[0-5]\d)?\s?(?:am|pm)?)?/i);
       if (datetimeMatch?.[0]) extracted.preferred_datetime = datetimeMatch[0].trim();
+      else if (naturalDatetimeMatch?.[0]) extracted.preferred_datetime = naturalDatetimeMatch[0].trim();
     }
 
     if (actionType === 'SALES_ORDER_REQUEST') {
@@ -620,6 +625,7 @@ export class ActionForwardingService {
     const contract = ACTION_CONTRACTS[detected.actionType];
     let collectedFields: Record<string, string> = {};
     let followUpMissingFields: string[] = [];
+    let existingContractActionTaskId: string | null = null;
     if (contract) {
       const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
       const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
@@ -635,6 +641,7 @@ export class ActionForwardingService {
       const metadata = ((conversation?.metadata as Record<string, unknown> | null) ?? {});
       const contracts = ((metadata.actionContracts as Record<string, unknown> | null) ?? {});
       const previousDraft = ((contracts[detected.actionType] as Record<string, unknown> | null) ?? {});
+      existingContractActionTaskId = typeof previousDraft.actionTaskId === 'string' ? previousDraft.actionTaskId : null;
       const previousCollected = ((previousDraft.collected as Record<string, unknown> | null) ?? {});
       const normalizedPrevious: Record<string, string> = {};
       for (const [key, value] of Object.entries(previousCollected)) {
@@ -669,6 +676,10 @@ export class ActionForwardingService {
       });
 
       if (missingFields.length > 0) {
+        if (detected.actionType === 'MEETING_REQUEST') {
+          // Capture meeting requests even when some intake fields are missing.
+          followUpMissingFields = Array.from(new Set([...followUpMissingFields, ...missingFields]));
+        } else {
         return this.buildForwardingResult({
           status: 'NO_INTENT',
           reason: 'MISSING_REQUIRED_FIELDS',
@@ -676,12 +687,105 @@ export class ActionForwardingService {
           capabilityKey,
           missingFields,
         });
+        }
       }
 
       if (detected.actionType === 'TECHNICAL_ISSUE') {
         if (!collectedFields.customer_email || collectedFields.customer_email.trim().length === 0) {
           followUpMissingFields.push('customer_email');
         }
+      }
+    }
+
+    if (detected.actionType === 'MEETING_REQUEST' && existingContractActionTaskId) {
+      const existingTask = await prismaAny.actionTask.findFirst({
+        where: {
+          id: existingContractActionTaskId,
+          orgId: input.organizationId,
+          botId: input.botId,
+          actionType: 'MEETING_REQUEST',
+        },
+        select: {
+          id: true,
+          payload: true,
+        },
+      });
+
+      if (existingTask) {
+        const existingPayload = ((existingTask.payload as Record<string, unknown> | null) ?? {});
+        const mergedFollowUpMissingFields = Array.from(new Set<string>([
+          ...((existingPayload.followUpMissingFields as string[] | undefined) ?? []),
+          ...followUpMissingFields,
+        ]));
+
+        const existingBooking = await prismaAny.booking.findFirst({
+          where: {
+            orgId: input.organizationId,
+            botId: input.botId,
+            actionTaskId: existingTask.id,
+          },
+          select: {
+            id: true,
+            metadata: true,
+          },
+        });
+
+        if (existingBooking) {
+          const existingBookingMetadata = ((existingBooking.metadata as Record<string, unknown> | null) ?? {});
+          await prismaAny.booking.update({
+            where: { id: existingBooking.id },
+            data: {
+              customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
+              customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
+              preferredDatetime: collectedFields.preferred_datetime ?? undefined,
+              notes: input.messageText,
+              metadata: {
+                ...existingBookingMetadata,
+                followUpMissingFields: mergedFollowUpMissingFields,
+              },
+            },
+          });
+        }
+
+        await prismaAny.actionTask.update({
+          where: { id: existingTask.id },
+          data: {
+            payload: {
+              ...existingPayload,
+              channel: input.channel,
+              messageText: input.messageText,
+              customerName: collectedFields.customer_name ?? input.customerName ?? null,
+              customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+              preferredDatetime: collectedFields.preferred_datetime ?? null,
+              followUpMissingFields: mergedFollowUpMissingFields,
+            },
+          },
+        });
+
+        if (contract) {
+          const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
+          const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
+          const requiredFieldKeys = Array.from(new Set<string>([
+            ...contract.requiredFields,
+            ...customContract.requiredKeys,
+          ]));
+          await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
+            status: mergedFollowUpMissingFields.length > 0 ? 'COLLECTING' : 'COMMITTED',
+            requiredFields: requiredFieldKeys,
+            missingFields: mergedFollowUpMissingFields,
+            collected: collectedFields,
+            actionTaskId: existingTask.id,
+          });
+        }
+
+        return this.buildForwardingResult({
+          status: 'DUPLICATE',
+          reason: 'DUPLICATE_ACTION',
+          actionType: detected.actionType,
+          capabilityKey,
+          actionTaskId: existingTask.id,
+          missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
+        });
       }
     }
 
@@ -840,10 +944,11 @@ export class ActionForwardingService {
         ...contract.requiredFields,
         ...customContract.requiredKeys,
       ]));
+      const pendingFollowUpFields = detected.actionType === 'MEETING_REQUEST' ? followUpMissingFields : [];
       await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
-        status: 'COMMITTED',
+        status: pendingFollowUpFields.length > 0 ? 'COLLECTING' : 'COMMITTED',
         requiredFields: requiredFieldKeys,
-        missingFields: [],
+        missingFields: pendingFollowUpFields,
         collected: collectedFields,
         actionTaskId: task.id,
       });

@@ -52,6 +52,12 @@ const LOOKUP_CLAIM_PATTERNS: RegExp[] = [
   /\b(?:meeting\s+request\s+for\s+[^\s,;:.!?]+@[^\s,;:.!?]+\s+has\s+(?:also\s+)?been\s+(?:noted|logged))\b/gi,
 ];
 
+const UNVERIFIED_LOGGED_CLAIM_PATTERNS: RegExp[] = [
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:logged|noted|submitted|queued|filed)\s+(?:it|this|your\s+request|the\s+request|your\s+meeting\s+request|the\s+meeting\s+request)?\s*(?:for\s+review)?\b/gi,
+  /\b(?:your|the)\s+(?:request|meeting\s+request)\s+(?:is|has been|was)\s+(?:logged|noted|submitted|queued|filed)\s*(?:for\s+review)?\b/gi,
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:noted|captured)\s+your\s+request\s+for\s+(?:a\s+)?meeting\b/gi,
+];
+
 function describeForwardingStatus(status: ForwardingTruthStatus): string {
   switch (status) {
     case 'QUEUED':
@@ -118,7 +124,7 @@ export function buildOperationalIntegrityPromptBlock(
     '- Do not say the request was forwarded to the owner, sent to the team, or that the meeting was booked/scheduled unless that is explicitly confirmed.',
     '- If the user asked to book a meeting, but the system only logged an action task, say it was noted for review; do not say a meeting was scheduled or a booking exists.',
     '- If forwarding failed due to missing customer data, ask only for the missing fields before promising escalation.',
-    '- If completion is not confirmed, use capability language such as "I can help log this for review" or "I can help note this as a meeting request."',
+    '- If completion is not confirmed, use capability language such as "I can help prepare this as a request for review" or "I can help note this as a meeting request."',
     '- Do not claim you checked or verified arbitrary customer records/emails in the system unless that lookup was explicitly confirmed by backend data for this turn.',
     '- Be explicit about uncertainty and next steps; do not imply actions already happened when they have not.',
   ].join('\n');
@@ -180,6 +186,12 @@ export function sanitizeOperationalClaims(
         ? 'I can only confirm requests created in this conversation context'
         : 'I cannot verify unrelated customer records from here without a confirmed booking/request reference',
     );
+  }
+
+  if (!canConfirmForwardingRequest) {
+    for (const pattern of UNVERIFIED_LOGGED_CLAIM_PATTERNS) {
+      sanitized = sanitized.replace(pattern, missingFieldPrompt);
+    }
   }
 
   if (sanitized !== text && !/cannot confirm operational actions as completed/i.test(sanitized)) {
