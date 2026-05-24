@@ -52,6 +52,12 @@ const ISSUE_LOG_CLAIM_PATTERNS: RegExp[] = [
   /\b(?:our\s+)?(?:technical|support)\s+team\s+(?:is|has been)\s+(?:notified|alerted)\b/gi,
 ];
 
+const ORDER_LOG_CLAIM_PATTERNS: RegExp[] = [
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:now\s+|already\s+)?(?:logged|reported|filed|created|submitted)\s+(?:this\s+)?(?:order|order request|purchase request)\b/gi,
+  /\b(?:this|the)\s+(?:order|order request|purchase request)\s+(?:has been|was)\s+(?:logged|reported|filed|created|submitted)\b/gi,
+  /\b(?:your|the)\s+(?:order|order request|purchase request)\s+(?:is|has been)\s+(?:queued|sent|forwarded|logged|submitted)\b/gi,
+];
+
 const LOOKUP_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:looked up|checked|checked in|checked on)\s+(?:our\s+)?(?:system|records?)\b/gi,
   /\b(i\s+can\s+confirm|i\s+confirm|i\s+can\s+see)\b[^.!?\n]{0,160}\b(?:noted for review|logged for review|in our system|in the system)\b/gi,
@@ -187,6 +193,17 @@ export function sanitizeOperationalClaims(
     );
   }
 
+  for (const pattern of ORDER_LOG_CLAIM_PATTERNS) {
+    sanitized = sanitized.replace(
+      pattern,
+      canConfirmForwardingRequest
+        ? hasFollowUpMissingFields
+          ? `I have logged this for review for our sales team. To follow up with you, please share: ${missingFields.join(', ')}.`
+          : 'I have logged this for review for our sales team'
+        : missingFieldPrompt,
+    );
+  }
+
   for (const pattern of LOOKUP_CLAIM_PATTERNS) {
     sanitized = sanitized.replace(
       pattern,
@@ -237,6 +254,8 @@ export function buildDeterministicFollowUpMessage(
 
   const subject = options.actionType === 'MEETING_REQUEST'
     ? 'meeting request'
+    : options.actionType === 'SALES_ORDER_REQUEST'
+      ? 'order request'
     : options.actionType === 'TECHNICAL_ISSUE'
       ? 'technical issue request'
       : 'request';

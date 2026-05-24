@@ -740,18 +740,7 @@ export class ActionForwardingService {
       });
 
       if (missingOrInvalidFields.length > 0) {
-        if (detected.actionType === 'MEETING_REQUEST') {
-          // Capture meeting requests even when some intake fields are missing.
-          followUpMissingFields = Array.from(new Set([...followUpMissingFields, ...missingOrInvalidFields]));
-        } else {
-        return this.buildForwardingResult({
-          status: 'NO_INTENT',
-          reason: 'MISSING_REQUIRED_FIELDS',
-          actionType: detected.actionType,
-          capabilityKey,
-          missingFields: missingOrInvalidFields,
-        });
-        }
+        followUpMissingFields = Array.from(new Set([...followUpMissingFields, ...missingOrInvalidFields]));
       }
 
       if (detected.actionType === 'TECHNICAL_ISSUE') {
@@ -788,18 +777,7 @@ export class ActionForwardingService {
       existingContractActionTaskId = activeConversationTask.id;
     }
 
-    if (detected.actionType !== 'MEETING_REQUEST' && existingContractActionTaskId) {
-      return this.buildForwardingResult({
-        status: 'DUPLICATE',
-        reason: 'DUPLICATE_ACTION',
-        actionType: detected.actionType,
-        capabilityKey,
-        actionTaskId: existingContractActionTaskId,
-        missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
-      });
-    }
-
-    if (detected.actionType === 'MEETING_REQUEST' && existingContractActionTaskId) {
+    if (existingContractActionTaskId) {
       const existingTask = await prismaAny.actionTask.findFirst({
         where: {
           id: existingContractActionTaskId,
@@ -817,53 +795,165 @@ export class ActionForwardingService {
       if (existingTask) {
         const existingPayload = ((existingTask.payload as Record<string, unknown> | null) ?? {});
         const currentFollowUpMissingFields = Array.from(new Set<string>(followUpMissingFields));
+        const actionAiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
 
-        const existingBooking = await prismaAny.booking.findFirst({
-          where: {
-            orgId: input.organizationId,
-            botId: input.botId,
-            actionTaskId: existingTask.id,
-          },
-          select: {
-            id: true,
-            metadata: true,
-          },
-        });
+        if (detected.actionType === 'MEETING_REQUEST') {
+          const customContract = this.getCustomIntakeFields(actionAiConfig, detected.actionType);
+          const customFields = Object.fromEntries(
+            Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
+          );
 
-        if (existingBooking) {
-          const existingBookingMetadata = ((existingBooking.metadata as Record<string, unknown> | null) ?? {});
-          await prismaAny.booking.update({
-            where: { id: existingBooking.id },
+          const existingBooking = await prismaAny.booking.findFirst({
+            where: {
+              orgId: input.organizationId,
+              botId: input.botId,
+              actionTaskId: existingTask.id,
+            },
+            select: {
+              id: true,
+              metadata: true,
+            },
+          });
+
+          if (existingBooking) {
+            const existingBookingMetadata = ((existingBooking.metadata as Record<string, unknown> | null) ?? {});
+            await prismaAny.booking.update({
+              where: { id: existingBooking.id },
+              data: {
+                customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
+                preferredDatetime: collectedFields.preferred_datetime ?? undefined,
+                // Keep booking reason explicit for downstream ops triage.
+                notes: input.messageText,
+                metadata: {
+                  ...existingBookingMetadata,
+                  customFields,
+                  customFieldVersion: customContract.version,
+                  bookingReason: collectedFields.booking_reason ?? existingBookingMetadata.bookingReason ?? null,
+                  followUpMissingFields: currentFollowUpMissingFields,
+                },
+              },
+            });
+          }
+
+          await prismaAny.actionTask.update({
+            where: { id: existingTask.id },
             data: {
-              customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
-              customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
-              preferredDatetime: collectedFields.preferred_datetime ?? undefined,
-              // Keep booking reason explicit for downstream ops triage.
-              notes: input.messageText,
-              metadata: {
-                ...existingBookingMetadata,
-                bookingReason: collectedFields.booking_reason ?? existingBookingMetadata.bookingReason ?? null,
+              payload: {
+                ...existingPayload,
+                channel: input.channel,
+                messageText: input.messageText,
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                preferredDatetime: collectedFields.preferred_datetime ?? null,
+                bookingReason: collectedFields.booking_reason ?? null,
+                followUpMissingFields: currentFollowUpMissingFields,
+              },
+            },
+          });
+        } else if (detected.actionType === 'SALES_ORDER_REQUEST') {
+          const customContract = this.getCustomIntakeFields(actionAiConfig, detected.actionType);
+          const customFields = Object.fromEntries(
+            Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
+          );
+
+          const existingOrder = await prismaAny.salesOrder.findFirst({
+            where: {
+              orgId: input.organizationId,
+              botId: input.botId,
+              actionTaskId: existingTask.id,
+            },
+            select: {
+              id: true,
+              metadata: true,
+            },
+          });
+
+          if (existingOrder) {
+            const existingOrderMetadata = ((existingOrder.metadata as Record<string, unknown> | null) ?? {});
+            await prismaAny.salesOrder.update({
+              where: { id: existingOrder.id },
+              data: {
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                product: collectedFields.product ?? null,
+                notes: input.messageText,
+                metadata: {
+                  ...existingOrderMetadata,
+                  customFields,
+                  customFieldVersion: customContract.version,
+                  followUpMissingFields: currentFollowUpMissingFields,
+                },
+              },
+            });
+          }
+
+          await prismaAny.actionTask.update({
+            where: { id: existingTask.id },
+            data: {
+              payload: {
+                ...existingPayload,
+                channel: input.channel,
+                messageText: input.messageText,
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                product: collectedFields.product ?? null,
+                followUpMissingFields: currentFollowUpMissingFields,
+              },
+            },
+          });
+        } else if (detected.actionType === 'TECHNICAL_ISSUE') {
+          const customContract = this.getCustomIntakeFields(actionAiConfig, detected.actionType);
+          const customFields = Object.fromEntries(
+            Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
+          );
+
+          const existingIssue = await prismaAny.technicalIssue.findFirst({
+            where: {
+              orgId: input.organizationId,
+              botId: input.botId,
+              actionTaskId: existingTask.id,
+            },
+            select: {
+              id: true,
+              metadata: true,
+            },
+          });
+
+          if (existingIssue) {
+            const existingIssueMetadata = ((existingIssue.metadata as Record<string, unknown> | null) ?? {});
+            await prismaAny.technicalIssue.update({
+              where: { id: existingIssue.id },
+              data: {
+                reporterName: collectedFields.customer_name ?? input.customerName ?? null,
+                reporterEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                summary: collectedFields.issue_summary ?? input.messageText,
+                details: input.messageText,
+                metadata: {
+                  ...existingIssueMetadata,
+                  customFields,
+                  customFieldVersion: customContract.version,
+                  followUpMissingFields: currentFollowUpMissingFields,
+                },
+              },
+            });
+          }
+
+          await prismaAny.actionTask.update({
+            where: { id: existingTask.id },
+            data: {
+              payload: {
+                ...existingPayload,
+                channel: input.channel,
+                messageText: input.messageText,
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                issueSummary: collectedFields.issue_summary ?? null,
                 followUpMissingFields: currentFollowUpMissingFields,
               },
             },
           });
         }
-
-        await prismaAny.actionTask.update({
-          where: { id: existingTask.id },
-          data: {
-            payload: {
-              ...existingPayload,
-              channel: input.channel,
-              messageText: input.messageText,
-              customerName: collectedFields.customer_name ?? input.customerName ?? null,
-              customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
-              preferredDatetime: collectedFields.preferred_datetime ?? null,
-              bookingReason: collectedFields.booking_reason ?? null,
-              followUpMissingFields: currentFollowUpMissingFields,
-            },
-          },
-        });
 
         if (currentFollowUpMissingFields.length === 0 && existingTask.status === 'PENDING_CONFIRMATION') {
           await prismaAny.actionTask.update({
@@ -898,8 +988,7 @@ export class ActionForwardingService {
         }
 
         if (contract) {
-          const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
-          const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
+          const customContract = this.getCustomIntakeFields(actionAiConfig, detected.actionType);
           const requiredFieldKeys = Array.from(new Set<string>([
             ...contract.requiredFields,
             ...customContract.requiredKeys,
@@ -914,12 +1003,12 @@ export class ActionForwardingService {
         }
 
         return this.buildForwardingResult({
-          status: 'DUPLICATE',
-          reason: 'DUPLICATE_ACTION',
+          status: currentFollowUpMissingFields.length > 0 ? 'DUPLICATE' : 'QUEUED',
+          reason: currentFollowUpMissingFields.length > 0 ? 'DUPLICATE_ACTION' : 'QUEUED_ACTION',
           actionType: detected.actionType,
           capabilityKey,
           actionTaskId: existingTask.id,
-          missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
+          missingFields: currentFollowUpMissingFields.length > 0 ? currentFollowUpMissingFields : undefined,
         });
       }
     }
@@ -950,7 +1039,7 @@ export class ActionForwardingService {
         conversationId: input.conversationId,
         sourceMessageId: input.messageId,
         actionType: detected.actionType,
-        status: detected.actionType === 'MEETING_REQUEST' && followUpMissingFields.length > 0
+        status: followUpMissingFields.length > 0
           ? 'PENDING_CONFIRMATION'
           : 'QUEUED',
         priority: detected.actionType === 'MEETING_REQUEST'
@@ -992,6 +1081,20 @@ export class ActionForwardingService {
           },
         },
       });
+
+      await prismaAny.actionTask.update({
+        where: { id: task.id },
+        data: {
+          payload: {
+            channel: input.channel,
+            messageText: input.messageText,
+            customerName: collectedFields.customer_name ?? input.customerName ?? null,
+            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+            product: collectedFields.product ?? null,
+            followUpMissingFields,
+          },
+        },
+      });
     } else if (task.actionType === 'TECHNICAL_ISSUE') {
       const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
       const customContract = this.getCustomIntakeFields(aiConfig, task.actionType);
@@ -1010,6 +1113,20 @@ export class ActionForwardingService {
           metadata: {
             customFields,
             customFieldVersion: customContract.version,
+          },
+        },
+      });
+
+      await prismaAny.actionTask.update({
+        where: { id: task.id },
+        data: {
+          payload: {
+            channel: input.channel,
+            messageText: input.messageText,
+            customerName: collectedFields.customer_name ?? input.customerName ?? null,
+            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+            issueSummary: collectedFields.issue_summary ?? null,
+            followUpMissingFields,
           },
         },
       });
@@ -1091,11 +1208,10 @@ export class ActionForwardingService {
         ...contract.requiredFields,
         ...customContract.requiredKeys,
       ]));
-      const pendingFollowUpFields = detected.actionType === 'MEETING_REQUEST' ? followUpMissingFields : [];
       await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
-        status: pendingFollowUpFields.length > 0 ? 'COLLECTING' : 'COMMITTED',
+        status: followUpMissingFields.length > 0 ? 'COLLECTING' : 'COMMITTED',
         requiredFields: requiredFieldKeys,
-        missingFields: pendingFollowUpFields,
+        missingFields: followUpMissingFields,
         collected: collectedFields,
         actionTaskId: task.id,
       });
