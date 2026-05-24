@@ -27,6 +27,8 @@ import {
   Activity,
   BarChart2,
   Briefcase,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
@@ -70,7 +72,7 @@ export interface AppNotification {
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
-  { label: 'Ai Support Bots', href: '/bots', icon: Bot, agentVisible: false },
+  { label: 'AI Agents', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
   { label: 'Analytics', href: '/analytics', icon: BarChart2, agentVisible: false },
@@ -80,7 +82,17 @@ const navItems = [
   { label: 'Settings', href: '/settings', icon: Settings, agentVisible: true },
 ];
 
-export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean; onClose?: () => void }) {
+export default function Sidebar({
+  isOpen = false,
+  onClose,
+  theme,
+  onToggleTheme,
+}: {
+  isOpen?: boolean;
+  onClose?: () => void;
+  theme?: 'dark' | 'light';
+  onToggleTheme?: () => void;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, clearAuth, setOrgRoles, getRoleForOrg } = useAuthStore();
@@ -203,6 +215,7 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
   };
 
   const notifCount = notifications.length;
+  const isLight = theme === 'light';
 
   const handleDismissServer = async (notif: AppNotification) => {
     if (!notif.serverId || !activeOrg) return;
@@ -221,21 +234,23 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
       {/* Notification backdrop (mobile-only full dark, desktop transparent) */}
       {notifOpen && (
         <div
-          className="fixed inset-0 z-[55] bg-black/40"
+          className={`fixed inset-0 z-[55] ${isLight ? 'bg-slate-900/25' : 'bg-black/40'}`}
           onClick={() => setNotifOpen(false)}
         />
       )}
 
       {/* Notification panel — slides in from right */}
       <div
-        className={`fixed inset-y-0 right-0 z-[60] w-80 bg-zinc-950 border-l border-zinc-800 flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${
+        className={`fixed inset-y-0 right-0 z-[60] w-80 flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${
+          isLight ? 'bg-white border-l border-slate-200' : 'bg-zinc-950 border-l border-zinc-800'
+        } ${
           notifOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-between px-4 py-4 border-b border-zinc-800 shrink-0">
+        <div className={`flex items-center justify-between px-4 py-4 border-b shrink-0 ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
           <div className="flex items-center gap-2">
-            <Bell className="w-4 h-4 text-zinc-400" />
-            <span className="text-sm font-medium text-white">Notifications</span>
+            <Bell className={`w-4 h-4 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`} />
+            <span className={`text-sm font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>Notifications</span>
             {notifCount > 0 && (
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-600 text-white">
                 {notifCount}
@@ -246,14 +261,14 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
             {notifCount > 0 && (
               <button
                 onClick={handleMarkAllRead}
-                className="text-[10px] text-zinc-500 hover:text-zinc-300 transition-colors"
+                className={`text-[10px] transition-colors ${isLight ? 'text-slate-500 hover:text-slate-800' : 'text-zinc-500 hover:text-zinc-300'}`}
               >
                 Mark all read
               </button>
             )}
             <button
               onClick={() => setNotifOpen(false)}
-              className="text-zinc-600 hover:text-zinc-300 transition-colors"
+              className={`transition-colors ${isLight ? 'text-slate-500 hover:text-slate-800' : 'text-zinc-600 hover:text-zinc-300'}`}
             >
               <X className="w-4 h-4" />
             </button>
@@ -263,8 +278,8 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           {notifCount === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <Bell className="w-8 h-8 text-zinc-800 mb-3" />
-              <p className="text-sm text-zinc-600 font-light">No new notifications</p>
+              <Bell className={`w-8 h-8 mb-3 ${isLight ? 'text-slate-300' : 'text-zinc-800'}`} />
+              <p className={`text-sm font-light ${isLight ? 'text-slate-500' : 'text-zinc-600'}`}>No new notifications</p>
             </div>
           ) : (
             notifications.map((notif) => {
@@ -272,13 +287,13 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
                 const inv = notif.inviteMeta;
                 const busy = actingToken === inv.token;
                 return (
-                  <div key={notif.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                  <div key={notif.id} className={`rounded-xl p-4 ${isLight ? 'bg-slate-50 border border-slate-200' : 'bg-zinc-900 border border-zinc-800'}`}>
                     <div className="flex items-center gap-1.5 mb-2">
                       <Mail className="w-3 h-3 text-blue-400 shrink-0" />
                       <span className="text-[10px] text-blue-400 font-medium uppercase tracking-wide">Invitation</span>
                     </div>
-                    <p className="text-sm font-medium text-white mb-0.5">{inv.organization.name}</p>
-                    <p className="text-xs text-zinc-500 font-light mb-1">
+                    <p className={`text-sm font-medium mb-0.5 ${isLight ? 'text-slate-900' : 'text-white'}`}>{inv.organization.name}</p>
+                    <p className={`text-xs font-light mb-1 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
                       Invited by {inv.invitedBy.name ?? inv.invitedBy.email}
                     </p>
                     <span className="inline-block text-[10px] px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-400 font-medium mb-3">
@@ -296,7 +311,7 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
                       <button
                         onClick={() => handleDecline(inv.token)}
                         disabled={busy}
-                        className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-400 text-xs font-light transition-colors"
+                        className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg disabled:opacity-50 text-xs font-light transition-colors ${isLight ? 'bg-slate-100 hover:bg-slate-200 text-slate-600' : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-400'}`}
                       >
                         <XCircle className="w-3 h-3" />
                         Decline
@@ -307,15 +322,15 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
               }
               // Server notification card (with dismiss button)
               return (
-                <div key={notif.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 relative">
+                <div key={notif.id} className={`rounded-xl p-4 relative ${isLight ? 'bg-slate-50 border border-slate-200' : 'bg-zinc-900 border border-zinc-800'}`}>
                   <button
                     onClick={() => handleDismissServer(notif)}
-                    className="absolute top-2 right-2 text-zinc-600 hover:text-zinc-300 transition-colors"
+                    className={`absolute top-2 right-2 transition-colors ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-600 hover:text-zinc-300'}`}
                   >
                     <X className="w-3 h-3" />
                   </button>
-                  <p className="text-sm font-medium text-white mb-0.5 pr-4">{notif.title}</p>
-                  <p className="text-xs text-zinc-500 font-light">{notif.body}</p>
+                  <p className={`text-sm font-medium mb-0.5 pr-4 ${isLight ? 'text-slate-900' : 'text-white'}`}>{notif.title}</p>
+                  <p className={`text-xs font-light ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{notif.body}</p>
                 </div>
               );
             })
@@ -324,29 +339,29 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
       </div>
 
       {/* Sidebar */}
-      <aside className={`fixed inset-y-0 left-0 z-50 md:relative md:inset-auto md:left-auto md:z-auto w-64 md:w-60 shrink-0 h-screen bg-zinc-950 border-r border-zinc-900 flex flex-col transition-transform duration-200 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 md:relative md:inset-auto md:left-auto md:z-auto w-64 md:w-60 shrink-0 h-screen flex flex-col transition-transform duration-200 ease-in-out ${isLight ? 'bg-white border-r border-slate-200' : 'bg-zinc-950 border-r border-zinc-900'} ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         {/* Brand */}
-        <div className="px-4 py-5 border-b border-zinc-900">
+        <div className={`px-4 py-5 border-b ${isLight ? 'border-slate-200' : 'border-zinc-900'}`}>
           <div className="flex items-center justify-between px-1">
             <Link
               href="/"
               onClick={onClose}
               className="flex items-center gap-2.5 hover:opacity-90 transition-opacity"
             >
-              <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-blue-600/30">
-                <Leaf className="w-3.5 h-3.5 text-white" />
+              <div className="sidebar-brand-logo w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0 shadow-md shadow-blue-600/30">
+                <Leaf className="sidebar-brand-logo-icon w-3.5 h-3.5 text-white" />
               </div>
-              <span className="font-brand font-semibold text-lg tracking-tight text-white">Zuti Studio</span>
+              <span className={`font-brand font-semibold text-lg tracking-tight ${isLight ? 'text-slate-900' : 'text-white'}`}>Zuti Studio</span>
             </Link>
             {/* Notification bell */}
             <button
               onClick={() => setNotifOpen(true)}
               title="Notifications"
-              className="relative text-zinc-500 hover:text-zinc-200 transition-colors"
+              className={`relative transition-colors ${isLight ? 'text-slate-500 hover:text-slate-800' : 'text-zinc-500 hover:text-zinc-200'}`}
             >
               <Bell className="w-4 h-4" />
               {notifCount > 0 && (
-                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center">
+                <span className="sidebar-notif-badge absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center">
                   {notifCount}
                 </span>
               )}
@@ -355,22 +370,22 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         </div>
 
         {/* Org switcher */}
-        <div className="px-3 py-3 border-b border-zinc-900">
+        <div className={`px-3 py-3 border-b ${isLight ? 'border-slate-200' : 'border-zinc-900'}`}>
           <button
             onClick={() => setOrgOpen(!orgOpen)}
-            className="w-full flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-zinc-900 transition-colors"
+            className={`w-full flex items-center gap-2 px-2 py-2 rounded-lg transition-colors ${isLight ? 'hover:bg-slate-100' : 'hover:bg-zinc-900'}`}
           >
-            <div className="w-6 h-6 rounded-md bg-zinc-700 flex items-center justify-center shrink-0">
-              <Building2 className="w-3.5 h-3.5 text-zinc-300" />
+            <div className={`w-6 h-6 rounded-md flex items-center justify-center shrink-0 ${isLight ? 'bg-slate-200' : 'bg-zinc-700'}`}>
+              <Building2 className={`w-3.5 h-3.5 ${isLight ? 'text-slate-600' : 'text-zinc-300'}`} />
             </div>
-            <span className="text-sm text-zinc-300 font-light truncate flex-1 text-left">
+            <span className={`text-sm font-light truncate flex-1 text-left ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>
               {activeOrg?.name ?? 'No workspace'}
             </span>
-            <ChevronDown className="w-3.5 h-3.5 text-zinc-600 shrink-0" />
+            <ChevronDown className={`w-3.5 h-3.5 shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-600'}`} />
           </button>
 
           {orgOpen && orgs.length > 0 && (
-            <div className="mt-1 bg-zinc-900 border border-zinc-800 rounded-lg overflow-hidden">
+            <div className={`mt-1 rounded-lg overflow-hidden ${isLight ? 'bg-white border border-slate-200' : 'bg-zinc-900 border border-zinc-800'}`}>
               {orgs.map((org) => (
                 <button
                   key={org.id}
@@ -378,14 +393,14 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
                     setActiveOrg(org);
                     setOrgOpen(false);
                   }}
-                  className="w-full text-left px-3 py-2 text-sm text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors font-light"
+                  className={`w-full text-left px-3 py-2 text-sm transition-colors font-light ${isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'}`}
                 >
                   {org.name}
                 </button>
               ))}
               <Link
                 href="/onboarding"
-                className="flex items-center gap-1.5 px-3 py-2 text-sm text-zinc-600 hover:text-zinc-300 border-t border-zinc-800 transition-colors font-light"
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm border-t transition-colors font-light ${isLight ? 'text-slate-500 hover:text-slate-800 border-slate-200' : 'text-zinc-600 hover:text-zinc-300 border-zinc-800'}`}
               >
                 <Plus className="w-3.5 h-3.5" />
                 New workspace
@@ -409,14 +424,14 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
                 onClick={onClose}
                 className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all relative ${
                   isActive
-                    ? 'bg-blue-600/10 text-white font-normal'
-                    : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light'
+                    ? (isLight ? 'bg-blue-50 text-slate-900 font-normal' : 'bg-blue-600/10 text-white font-normal')
+                    : (isLight ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 font-light' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light')
                 }`}
               >
                 {isActive && (
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-blue-500 rounded-r-full" />
                 )}
-                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-400' : 'text-zinc-600'}`} />
+                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-500' : isLight ? 'text-slate-400' : 'text-zinc-600'}`} />
                 {label}
               </Link>
             );
@@ -424,20 +439,33 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         </nav>
 
         {/* User footer */}
-        <div className="px-3 py-3 border-t border-zinc-900">
-          <div className="flex items-center gap-2.5 px-2 py-2 rounded-lg hover:bg-zinc-900/60 transition-colors group">
-            <div className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
-              <UserRound className="w-4 h-4 text-zinc-400" />
+        <div className={`px-3 py-3 border-t ${isLight ? 'border-slate-200' : 'border-zinc-900'}`}>
+          <button
+            onClick={onToggleTheme}
+            className={`w-full mb-2 flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border transition-colors ${isLight ? 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 hover:text-slate-900' : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:text-white hover:bg-zinc-900'}`}
+          >
+            <span className="inline-flex items-center gap-2 text-xs font-medium">
+              {theme === 'light' ? <Sun className="w-3.5 h-3.5 text-blue-400" /> : <Moon className="w-3.5 h-3.5 text-blue-400" />}
+              {theme === 'light' ? 'Light mode' : 'Dark mode'}
+            </span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 border border-blue-500/25">
+              Switch
+            </span>
+          </button>
+
+          <div className={`flex items-center gap-2.5 px-2 py-2 rounded-lg transition-colors group ${isLight ? 'hover:bg-slate-100' : 'hover:bg-zinc-900/60'}`}>
+            <div className={`w-7 h-7 rounded-full border flex items-center justify-center shrink-0 ${isLight ? 'bg-slate-100 border-slate-200' : 'bg-zinc-800 border-zinc-700'}`}>
+              <UserRound className={`w-4 h-4 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`} />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm text-zinc-200 font-normal truncate leading-tight">{user?.name || 'Account'}</p>
-              <p className="text-[11px] text-zinc-600 truncate leading-tight">{user?.email}</p>
+              <p className={`text-sm font-normal truncate leading-tight ${isLight ? 'text-slate-800' : 'text-zinc-200'}`}>{user?.name || 'Account'}</p>
+              <p className={`text-[11px] truncate leading-tight ${isLight ? 'text-slate-500' : 'text-zinc-600'}`}>{user?.email}</p>
             </div>
             {/* Logout */}
             <button
               onClick={handleLogout}
               title="Sign out"
-              className="text-zinc-700 hover:text-zinc-300 transition-colors opacity-0 group-hover:opacity-100"
+              className={`transition-colors opacity-0 group-hover:opacity-100 ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-700 hover:text-zinc-300'}`}
             >
               <LogOut className="w-3.5 h-3.5" />
             </button>

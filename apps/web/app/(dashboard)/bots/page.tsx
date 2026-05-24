@@ -32,8 +32,6 @@ interface AiConfig {
   }>>;
 }
 
-type PromptMode = 'guided' | 'override';
-
 const TONE_PRESETS = [
   'Professional and concise',
   'Warm and empathetic',
@@ -129,39 +127,39 @@ const BOT_SKILL_OPTIONS: Array<{ skill: BotSkill; name: string; description: str
 
 const GUIDED_PACK_PRESETS = [
   {
-    label: 'Support',
-    description: 'Balanced helpdesk responses with empathy and concise guidance.',
-    mission: 'Resolve customer issues quickly and accurately while keeping the customer calm and informed at every step.',
+    label: 'Concierge Host',
+    description: 'Polished, high-trust assistant that makes customers feel personally guided.',
+    mission: 'Deliver premium, attentive customer support that feels personal and proactive.',
     tone: 'Warm and empathetic',
     persona: 'Helpful support specialist',
-    languageStyle: 'Use plain language and reassure customers while staying precise.',
-    escalationPolicy: 'Escalate billing disputes, account lockouts, and legal/compliance questions.',
-    prohibitedTopics: 'Legal advice, medical advice, financial investment advice, policy exceptions without approval',
-    extraDetails: 'Always summarize next steps at the end. Confirm customer goal before proposing a solution when the request is ambiguous.',
-    creativity: 35,
-    verbosity: 45,
+    languageStyle: 'Use welcoming language, smooth transitions, and clear next steps.',
+    escalationPolicy: 'Escalate account access, legal/compliance requests, and unresolved high-impact issues.',
+    prohibitedTopics: 'Legal advice, medical advice, policy exceptions without approval',
+    extraDetails: 'Acknowledge the customer context quickly, then guide them with confidence and calm.',
+    creativity: 40,
+    verbosity: 55,
     cardClass: 'border-emerald-500/25 bg-emerald-500/8 hover:border-emerald-400/40',
     selectedCardClass: 'border-emerald-400/50 bg-emerald-500/15',
   },
   {
-    label: 'Sales',
-    description: 'Value-oriented assistant that handles objections and keeps momentum.',
+    label: 'Strategic Advisor',
+    description: 'Clear, confident, business-minded voice focused on outcomes and fit.',
     mission: 'Help customers choose the right plan confidently by highlighting value, fit, and clear next actions without overpromising.',
-    tone: 'Friendly and conversational',
+    tone: 'Confident and direct',
     persona: 'Sales assistant',
-    languageStyle: 'Highlight value clearly and keep responses energetic but factual.',
-    escalationPolicy: 'Escalate contract negotiation, custom pricing exceptions, and enterprise security requests.',
+    languageStyle: 'Use decision-ready language with concise rationale and explicit trade-offs.',
+    escalationPolicy: 'Escalate contract negotiation, custom pricing exceptions, enterprise security requests, and legal commitments.',
     prohibitedTopics: 'Unapproved discounts, legal commitments, competitor misinformation, guaranteed outcomes',
-    extraDetails: 'Ask one discovery question before recommending when context is missing. Use concise benefit bullets and include a clear CTA.',
-    creativity: 65,
-    verbosity: 60,
+    extraDetails: 'Ask one high-signal discovery question before recommending when context is missing.',
+    creativity: 55,
+    verbosity: 50,
     cardClass: 'border-amber-500/25 bg-amber-500/8 hover:border-amber-400/40',
     selectedCardClass: 'border-amber-400/50 bg-amber-500/15',
   },
   {
-    label: 'Technical',
-    description: 'Methodical troubleshooting with strong detail and low speculation.',
-    mission: 'Diagnose and resolve technical issues with reproducible, step-by-step guidance and minimal ambiguity.',
+    label: 'Technical Specialist',
+    description: 'Methodical and precise, optimized for troubleshooting and reproducibility.',
+    mission: 'Diagnose and resolve issues with reproducible steps, explicit assumptions, and low ambiguity.',
     tone: 'Professional and concise',
     persona: 'Technical product expert',
     languageStyle: 'Use precise technical wording and include concrete troubleshooting steps.',
@@ -173,13 +171,102 @@ const GUIDED_PACK_PRESETS = [
     cardClass: 'border-cyan-500/25 bg-cyan-500/8 hover:border-cyan-400/40',
     selectedCardClass: 'border-cyan-400/50 bg-cyan-500/15',
   },
+  {
+    label: 'Calm Reassurer',
+    description: 'Steady and empathetic style for stressed or frustrated customers.',
+    mission: 'Reduce customer stress while moving each conversation toward resolution with clarity.',
+    tone: 'Warm and empathetic',
+    persona: 'Patient onboarding guide',
+    languageStyle: 'Use short reassuring language and avoid abrupt phrasing.',
+    escalationPolicy: 'Escalate urgent unresolved issues, billing disputes, and repeated failed attempts.',
+    prohibitedTopics: 'Dismissive language, policy exceptions without approval, legal advice',
+    extraDetails: 'Acknowledge emotions first, then present the next action clearly.',
+    creativity: 35,
+    verbosity: 55,
+    cardClass: 'border-rose-500/25 bg-rose-500/8 hover:border-rose-400/40',
+    selectedCardClass: 'border-rose-400/50 bg-rose-500/15',
+  },
+  {
+    label: 'Concise Operator',
+    description: 'Fast, lean responses for high-volume support workflows.',
+    mission: 'Resolve requests quickly with minimal friction and clear action-focused responses.',
+    tone: 'Professional and concise',
+    persona: 'Helpful support specialist',
+    languageStyle: 'Prefer short, direct sentences and compact bullet points.',
+    escalationPolicy: 'Escalate unresolved operational blockers and access issues.',
+    prohibitedTopics: 'Speculation, policy assumptions, unnecessary verbosity',
+    extraDetails: 'Ask only for missing required details and avoid repeating already confirmed info.',
+    creativity: 25,
+    verbosity: 30,
+    cardClass: 'border-slate-500/25 bg-slate-500/8 hover:border-slate-400/40',
+    selectedCardClass: 'border-slate-400/50 bg-slate-500/15',
+  },
+  {
+    label: 'Friendly Coach',
+    description: 'Encouraging, educational voice for onboarding and feature discovery.',
+    mission: 'Help customers build confidence and momentum while adopting the product effectively.',
+    tone: 'Friendly and conversational',
+    persona: 'Patient onboarding guide',
+    languageStyle: 'Use supportive phrasing and simple teaching moments without talking down.',
+    escalationPolicy: 'Escalate account blockers, billing constraints, and unresolved technical friction.',
+    prohibitedTopics: 'Condescending phrasing, risky workaround advice, legal commitments',
+    extraDetails: 'Teach by example in one small step at a time.',
+    creativity: 55,
+    verbosity: 65,
+    cardClass: 'border-lime-500/25 bg-lime-500/8 hover:border-lime-400/40',
+    selectedCardClass: 'border-lime-400/50 bg-lime-500/15',
+  },
+  {
+    label: 'Brand Ambassador',
+    description: 'Voice-forward, polished messaging tuned for brand consistency.',
+    mission: 'Represent the brand with consistent tone while staying accurate and operationally reliable.',
+    tone: 'Friendly and conversational',
+    persona: 'Helpful support specialist',
+    languageStyle: 'Use signature brand-friendly wording while preserving clarity and brevity.',
+    escalationPolicy: 'Escalate exceptions, unresolved account concerns, and compliance-sensitive requests.',
+    prohibitedTopics: 'Off-brand claims, legal promises, unsupported guarantees',
+    extraDetails: 'Keep the voice memorable but never at the expense of accuracy.',
+    creativity: 60,
+    verbosity: 55,
+    cardClass: 'border-fuchsia-500/25 bg-fuchsia-500/8 hover:border-fuchsia-400/40',
+    selectedCardClass: 'border-fuchsia-400/50 bg-fuchsia-500/15',
+  },
+  {
+    label: 'Enterprise Formal',
+    description: 'Structured and formal communication for enterprise-facing teams.',
+    mission: 'Provide high-clarity, low-ambiguity communication suitable for enterprise stakeholders.',
+    tone: 'Professional and concise',
+    persona: 'Technical product expert',
+    languageStyle: 'Use formal structure, avoid slang, and present explicit assumptions.',
+    escalationPolicy: 'Escalate security, legal/compliance, procurement, and SLA-impacting issues.',
+    prohibitedTopics: 'Informal commitments, unsupported guarantees, policy speculation',
+    extraDetails: 'Use consistent terminology and document next steps explicitly.',
+    creativity: 30,
+    verbosity: 60,
+    cardClass: 'border-indigo-500/25 bg-indigo-500/8 hover:border-indigo-400/40',
+    selectedCardClass: 'border-indigo-400/50 bg-indigo-500/15',
+  },
+  {
+    label: 'Custom',
+    description: 'Build your own personality profile from scratch.',
+    mission: '',
+    tone: 'Custom',
+    persona: 'Custom',
+    languageStyle: '',
+    escalationPolicy: '',
+    prohibitedTopics: '',
+    extraDetails: '',
+    creativity: 45,
+    verbosity: 50,
+    cardClass: 'border-zinc-600/30 bg-zinc-800/30 hover:border-zinc-500/50',
+    selectedCardClass: 'border-zinc-400/50 bg-zinc-700/30',
+    isCustom: true,
+  },
 ] as const;
 
 const GUIDED_STEPS = [
-  { id: 1, label: 'Basics' },
-  { id: 2, label: 'Policy' },
-  { id: 3, label: 'Style' },
-  { id: 4, label: 'Preview' },
+  { id: 1, label: 'Personality' },
+  { id: 2, label: 'Preview' },
 ] as const;
 
 const SKILL_INTAKE_META: Array<{ key: SkillIntakeKey; label: string; description: string }> = [
@@ -515,8 +602,6 @@ export default function BotsPage() {
   const [createActionForwardingEnabled, setCreateActionForwardingEnabled] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
-  const [editPromptMode, setEditPromptMode] = useState<PromptMode>('guided');
-  const [editSystemPrompt, setEditSystemPrompt] = useState('');
   const [editAgentAlias, setEditAgentAlias] = useState('');
   const [editMission, setEditMission] = useState('');
   const [editPersona, setEditPersona] = useState('Helpful support specialist');
@@ -533,15 +618,16 @@ export default function BotsPage() {
   const [guidedStep, setGuidedStep] = useState(1);
   const [showPresetAgentNameModal, setShowPresetAgentNameModal] = useState(false);
   const [pendingGuidedPreset, setPendingGuidedPreset] = useState<(typeof GUIDED_PACK_PRESETS)[number] | null>(null);
+  const [showCustomPersonalityModal, setShowCustomPersonalityModal] = useState(false);
   const [presetAgentNameDraft, setPresetAgentNameDraft] = useState('');
   const [settingsValidationError, setSettingsValidationError] = useState<string | null>(null);
   const [editRouteToRoles, setEditRouteToRoles] = useState<string[]>(['AGENT']);
   const [editSkills, setEditSkills] = useState<BotSkill[]>([]);
   const [editSkillIntakeConfig, setEditSkillIntakeConfig] = useState<SkillIntakeConfigMap>({});
   const [skillIntakeOpen, setSkillIntakeOpen] = useState<SkillIntakeOpenState>({
-    SALES: true,
+    SALES: false,
     BOOKING: false,
-    TECHNICAL: true,
+    TECHNICAL: false,
   });
   const [showSkillEnableModal, setShowSkillEnableModal] = useState(false);
   const [pendingSkillEnable, setPendingSkillEnable] = useState<(typeof BOT_SKILL_OPTIONS)[number] | null>(null);
@@ -614,11 +700,6 @@ export default function BotsPage() {
     if (!orgId) return;
     botsApi.list(orgId).then((res) => setBots(res.data)).catch(() => {}).finally(() => setLoading(false));
   }, [orgId]);
-
-  const systemPromptPlaceholder = useMemo(() => {
-    if (!settingsBot) return '';
-    return `You are ${settingsBot.name}, a helpful and friendly support assistant.\n\nYour role is to:\n- Answer customer questions clearly and professionally\n- Escalate complex issues to a human agent when needed\n- Stay on-topic and avoid discussing unrelated subjects\n\nTone: Professional yet approachable.`;
-  }, [settingsBot]);
 
   const effectiveTone = useMemo(
     () => (editTone === 'Custom' ? editToneCustom.trim() : editTone),
@@ -701,8 +782,6 @@ export default function BotsPage() {
     setShowCreate(false);
     setCreateStep(1);
   };
-
-  const isOverridePromptMissing = editPromptMode === 'override' && editSystemPrompt.trim().length === 0;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -946,13 +1025,6 @@ onBeforeUnmount(() => {
 
     setSettingsBot(sourceBot);
     const aiConfig = sourceBot.aiConfig ?? {};
-    const nextMode: PromptMode = aiConfig.promptMode
-      ? aiConfig.promptMode
-      : aiConfig.systemPrompt
-        ? 'override'
-        : 'guided';
-    setEditPromptMode(nextMode);
-    setEditSystemPrompt(aiConfig.systemPrompt ?? '');
     setEditAgentAlias(aiConfig.agentAlias ?? '');
     setEditMission(aiConfig.mission ?? '');
     const personaValue = aiConfig.persona ?? 'Helpful support specialist';
@@ -990,9 +1062,9 @@ onBeforeUnmount(() => {
     const sourceSkills = extractSkillsFromBot(sourceBot);
     setEditSkills(sourceSkills);
     setSkillIntakeOpen({
-      SALES: isSkillIntakeEnabled('SALES', sourceSkills),
-      BOOKING: isSkillIntakeEnabled('BOOKING', sourceSkills),
-      TECHNICAL: isSkillIntakeEnabled('TECHNICAL', sourceSkills),
+      SALES: false,
+      BOOKING: false,
+      TECHNICAL: false,
     });
     setEditSkillIntakeConfig(normalizeSkillIntakeConfig((aiConfig as AiConfig).skillIntakeConfig));
     setEmailLocalPart(sourceBot.emailAddress ? sourceBot.emailAddress.split('@')[0] : '');
@@ -1166,8 +1238,8 @@ onBeforeUnmount(() => {
 
       const nextAiConfig: AiConfig = {
         ...(settingsBot.aiConfig ?? {}),
-        promptMode: editPromptMode,
-        systemPrompt: editSystemPrompt,
+        promptMode: 'guided',
+        systemPrompt: undefined,
         agentAlias: editAgentAlias,
         guidedPreset: selectedGuidedPreset,
         mission: editMission,
@@ -1275,10 +1347,20 @@ onBeforeUnmount(() => {
 
   const applyGuidedPack = (preset: (typeof GUIDED_PACK_PRESETS)[number]) => {
     setEditMission(preset.mission);
-    setEditTone(preset.tone);
-    setEditToneCustom('');
-    setEditPersona(preset.persona);
-    setEditPersonaCustom('');
+    if (preset.tone === 'Custom') {
+      setEditTone('Custom');
+      setEditToneCustom('');
+    } else {
+      setEditTone(preset.tone);
+      setEditToneCustom('');
+    }
+    if (preset.persona === 'Custom') {
+      setEditPersona('Custom');
+      setEditPersonaCustom('');
+    } else {
+      setEditPersona(preset.persona);
+      setEditPersonaCustom('');
+    }
     setEditLanguageStyle(preset.languageStyle);
     setEditEscalationPolicy(preset.escalationPolicy);
     setEditProhibitedTopics(preset.prohibitedTopics);
@@ -1298,7 +1380,10 @@ onBeforeUnmount(() => {
     if (!pendingGuidedPreset) return;
     applyGuidedPack(pendingGuidedPreset);
     setEditAgentAlias(presetAgentNameDraft.trim());
-    setGuidedStep(4);
+    setGuidedStep(2);
+    if (pendingGuidedPreset.label === 'Custom') {
+      setShowCustomPersonalityModal(true);
+    }
     setShowPresetAgentNameModal(false);
     setPendingGuidedPreset(null);
     setSettingsValidationError(null);
@@ -1332,10 +1417,6 @@ onBeforeUnmount(() => {
   };
 
   const validateAiConfig = (): string | null => {
-    if (editPromptMode === 'override' && editSystemPrompt.trim().length === 0) {
-      return 'Prompt Override is selected but the override text is empty. Add text or switch back to Guided Config.';
-    }
-
     if (editExtraDetails.length > 1000) {
       return 'Extra Details is too long. Keep it under 1000 characters.';
     }
@@ -1510,7 +1591,7 @@ onBeforeUnmount(() => {
   // ── Settings step (full-page inline view) ─────────────────────────────────
   if (settingsBot) {
     return (
-      <div className="p-4 md:p-8">
+      <div className="ai-settings-page p-4 md:p-8">
         {/* Breadcrumb nav */}
         <div className="flex items-center gap-2 mb-8">
           <button
@@ -1525,7 +1606,7 @@ onBeforeUnmount(() => {
           <ChevronRight className="w-3 h-3 text-zinc-700" />
           <span className="text-sm text-zinc-500">
             {settingsTab === 'ai'
-              ? 'AI Settings'
+              ? 'Agent Behavior'
               : settingsTab === 'skills'
                 ? 'Skills'
               : settingsTab === 'knowledge'
@@ -1541,9 +1622,9 @@ onBeforeUnmount(() => {
         </div>
 
         <div className="mb-6">
-          <div className="inline-flex rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
+          <div className="ai-settings-tabs inline-flex rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
             {([
-              { key: 'ai', label: 'AI' },
+              { key: 'ai', label: 'Behavior' },
               { key: 'skills', label: 'Skills' },
               { key: 'knowledge', label: 'Knowledge' },
               { key: 'routing', label: 'Routing' },
@@ -1555,9 +1636,9 @@ onBeforeUnmount(() => {
                 key={tab.key}
                 type="button"
                 onClick={() => setSettingsTab(tab.key)}
-                className={`px-4 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                className={`ai-settings-tab-btn px-4 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   settingsTab === tab.key
-                    ? 'bg-blue-600 text-white'
+                    ? 'is-active bg-blue-600 text-white'
                     : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
                 }`}
               >
@@ -1634,10 +1715,6 @@ onBeforeUnmount(() => {
                   })}
                 </div>
 
-                <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3">
-                  <p className="text-sm text-zinc-200 font-medium">Action forwarding is now a skill</p>
-                  <p className="text-[11px] text-zinc-500 mt-0.5">Use the Action Forwarding skill toggle above to control escalation and team notifications.</p>
-                </div>
               </div>
             )}
 
@@ -1649,372 +1726,115 @@ onBeforeUnmount(() => {
                   <Sparkles className="w-4 h-4 text-blue-400" />
                 </div>
                 <div className="min-w-0">
-                  <h2 className="text-sm font-semibold text-white">AI Configuration</h2>
-                  <p className="text-xs text-zinc-500 font-light">Choose either guided controls or a raw system prompt override.</p>
-                </div>
-                <div className="ml-auto rounded-lg border border-zinc-800 bg-zinc-900/70 px-2.5 py-1 text-[11px] text-zinc-400">
-                  Active mode: <span className="text-white font-medium">{editPromptMode === 'guided' ? 'Guided Config' : 'Prompt Override'}</span>
+                  <h2 className="text-sm font-semibold text-white">Agent Behavior</h2>
+                  <p className="text-xs text-zinc-500 font-light">Configure personality and response style here. Skills still control validation and workflow execution.</p>
                 </div>
               </div>
 
-              <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-1 inline-flex">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditPromptMode('guided');
-                    setGuidedStep(1);
-                    setSettingsValidationError(null);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    editPromptMode === 'guided' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  <span className="inline-flex items-center gap-1">
-                    Guided Config
-                    <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-400/20 text-emerald-300 border border-emerald-400/30">Recommended</span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setEditPromptMode('override');
-                    setSettingsValidationError(null);
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    editPromptMode === 'override' ? 'bg-blue-600 text-white' : 'text-zinc-400 hover:text-white'
-                  }`}
-                >
-                  Prompt Override
-                </button>
+              <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2">
+                <div className="grid grid-cols-2 gap-1.5">
+                  {GUIDED_STEPS.map((step) => {
+                    const active = guidedStep === step.id;
+                    const complete = guidedStep > step.id;
+                    return (
+                      <button
+                        key={step.id}
+                        type="button"
+                        onClick={() => setGuidedStep(step.id)}
+                        className={`ai-settings-subtab-btn px-2 py-1.5 rounded-lg text-xs transition-colors ${
+                          active
+                            ? 'is-active bg-blue-600 text-white'
+                            : complete
+                              ? 'is-complete bg-zinc-800 text-zinc-300'
+                              : 'text-zinc-500 hover:text-white hover:bg-zinc-800'
+                        }`}
+                      >
+                        {step.id}. {step.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={resetToRecommended}
+                    className="text-[11px] text-blue-400 hover:text-blue-300"
+                  >
+                    Reset to recommended
+                  </button>
+                  <span className="text-zinc-700">•</span>
+                  <button
+                    type="button"
+                    onClick={resetGuidedForm}
+                    className="text-[11px] text-zinc-400 hover:text-white"
+                  >
+                    Reset personality config
+                  </button>
+                </div>
               </div>
 
-              {editPromptMode === 'guided' ? (
-                <>
-                  <div className="mb-4 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                      {GUIDED_STEPS.map((step) => {
-                        const active = guidedStep === step.id;
-                        const complete = guidedStep > step.id;
+              {guidedStep === 1 && (
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xs text-zinc-400 font-medium mb-1.5">Choose a personality template</p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                      {GUIDED_PACK_PRESETS.map((preset) => {
+                        const selected = selectedGuidedPreset === preset.label;
                         return (
                           <button
-                            key={step.id}
+                            key={preset.label}
                             type="button"
-                            onClick={() => setGuidedStep(step.id)}
-                            className={`px-2 py-1.5 rounded-lg text-xs transition-colors ${
-                              active
-                                ? 'bg-blue-600 text-white'
-                                : complete
-                                  ? 'bg-zinc-800 text-zinc-300'
-                                  : 'text-zinc-500 hover:text-white hover:bg-zinc-800'
+                            onClick={() => startGuidedPackFlow(preset)}
+                            className={`text-left p-3 rounded-xl border transition-colors ${
+                              selected
+                                ? preset.selectedCardClass
+                                : preset.cardClass
                             }`}
                           >
-                            {step.id}. {step.label}
+                            <p className="text-xs font-semibold text-white">{preset.label}</p>
+                            <p className="text-[11px] text-zinc-500 mt-1 leading-relaxed">{preset.description}</p>
                           </button>
                         );
                       })}
                     </div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={resetToRecommended}
-                        className="text-[11px] text-blue-400 hover:text-blue-300"
-                      >
-                        Reset to recommended
-                      </button>
-                      <span className="text-zinc-700">•</span>
-                      <button
-                        type="button"
-                        onClick={resetGuidedForm}
-                        className="text-[11px] text-zinc-400 hover:text-white"
-                      >
-                        Reset whole form
-                      </button>
-                    </div>
                   </div>
-
-                  {guidedStep === 1 && (
-                    <div className="space-y-3">
-                      <div>
-                        <p className="text-xs text-zinc-400 font-medium mb-1.5">Quick-start packs</p>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                          {GUIDED_PACK_PRESETS.map((preset) => {
-                            const selected = selectedGuidedPreset === preset.label;
-                            return (
-                              <button
-                                key={preset.label}
-                                type="button"
-                                onClick={() => startGuidedPackFlow(preset)}
-                                className={`text-left p-3 rounded-xl border transition-colors ${
-                                  selected
-                                    ? preset.selectedCardClass
-                                    : preset.cardClass
-                                }`}
-                              >
-                                <p className="text-xs font-semibold text-white">{preset.label}</p>
-                                <p className="text-[11px] text-zinc-500 mt-1 leading-relaxed">{preset.description}</p>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <label className="block text-xs text-zinc-400 font-medium">Agent Name (what customers see)</label>
-                          <span
-                            className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-zinc-700 text-[10px] text-zinc-500"
-                            title="This only affects how the assistant introduces itself in chat responses. It does not rename the bot record."
-                            aria-label="This only affects self-introduction text, not bot record naming"
-                          >
-                            i
-                          </span>
-                        </div>
-                        <input
-                          type="text"
-                          value={editAgentAlias}
-                          onChange={(e) => setEditAgentAlias(e.target.value)}
-                          placeholder={`e.g. ${settingsBot.name} Assistant`}
-                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Mission</label>
-                        <textarea
-                          rows={2}
-                          value={editMission}
-                          onChange={(e) => setEditMission(e.target.value)}
-                          placeholder="Resolve customer issues quickly while staying accurate and empathetic."
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        <PresetDropdown
-                          label="Tone"
-                          value={editTone}
-                          options={TONE_PRESETS}
-                          onSelect={setEditTone}
-                        />
-                        <PresetDropdown
-                          label="Persona"
-                          value={editPersona}
-                          options={PERSONA_PRESETS}
-                          onSelect={setEditPersona}
-                        />
-                      </div>
-
-                      {editTone === 'Custom' && (
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Custom Tone</label>
-                          <input
-                            type="text"
-                            value={editToneCustom}
-                            onChange={(e) => setEditToneCustom(e.target.value)}
-                            placeholder="Professional, calm, concise"
-                            className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
-                          />
-                        </div>
-                      )}
-
-                      {editPersona === 'Custom' && (
-                        <div>
-                          <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Custom Persona</label>
-                          <input
-                            type="text"
-                            value={editPersonaCustom}
-                            onChange={(e) => setEditPersonaCustom(e.target.value)}
-                            placeholder="Helpful product specialist"
-                            className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {guidedStep === 2 && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Language Style</label>
-                        <input
-                          type="text"
-                          value={editLanguageStyle}
-                          onChange={(e) => setEditLanguageStyle(e.target.value)}
-                          placeholder="Use plain English; avoid jargon"
-                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Escalation Policy</label>
-                        <textarea
-                          rows={2}
-                          value={editEscalationPolicy}
-                          onChange={(e) => setEditEscalationPolicy(e.target.value)}
-                          placeholder="Escalate billing disputes, account lockouts, and legal/compliance questions."
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Prohibited Topics</label>
-                        <input
-                          type="text"
-                          value={editProhibitedTopics}
-                          onChange={(e) => setEditProhibitedTopics(e.target.value)}
-                          placeholder="Legal advice, medical advice, refunds above $5000"
-                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
-                        />
-                        <p className="text-[11px] text-zinc-600 mt-1.5 font-light">Comma-separated list. These are converted into guardrails in the runtime prompt.</p>
-                      </div>
-                      <div>
-                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Extra Details</label>
-                        <textarea
-                          rows={3}
-                          value={editExtraDetails}
-                          onChange={(e) => setEditExtraDetails(e.target.value)}
-                          placeholder="Any extra behavior notes not covered above (industry nuances, response constraints, preferred wording, etc)."
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  {guidedStep === 3 && (
-                    <div className="rounded-2xl border border-zinc-800 bg-gradient-to-br from-zinc-900 via-zinc-950 to-zinc-900 p-4 space-y-4">
-                      <div className="flex items-center justify-between">
-                        <h3 className="text-sm text-white font-medium">Style Tuning</h3>
-                        <span className="text-[11px] text-zinc-500">Dial personality and detail</span>
-                      </div>
-                      <p className="text-[11px] text-zinc-500 leading-relaxed">
-                        These sliders control how the agent writes, not what it is allowed to do. Guardrails,
-                        prohibited topics, and escalation rules still take priority.
-                      </p>
-                      <div>
-                        <p className="text-[11px] text-zinc-500 mb-1.5">Recommended ranges</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {STYLE_PRESETS.map((preset) => (
-                            <button
-                              key={`shared-style-${preset.label}`}
-                              type="button"
-                              onClick={() => applyStylePreset(preset.creativity, preset.verbosity)}
-                              className="px-2 py-1 rounded-md text-[10px] border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
-                              title={`${preset.label}: creativity ${preset.creativity}, response depth ${preset.verbosity}`}
-                            >
-                              {preset.label}: {preset.creativity}/{preset.verbosity}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-xs text-zinc-400 font-medium">Creativity</label>
-                          <span className="text-xs text-amber-300 font-semibold">{editCreativity}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={editCreativity}
-                          onChange={(e) => setEditCreativity(Number(e.target.value))}
-                          className="w-full accent-amber-400"
-                        />
-                        <div className="flex items-center justify-between text-[11px] text-zinc-600 mt-1">
-                          <span>Predictable</span>
-                          <span>Inventive</span>
-                        </div>
-                        <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
-                          {editCreativity <= 33
-                            ? 'Low creativity: keeps responses conservative, factual, and less exploratory.'
-                            : editCreativity <= 66
-                              ? 'Balanced creativity: mixes reliability with occasional alternative suggestions.'
-                              : 'High creativity: offers more varied suggestions and phrasing while staying on-policy.'}
-                        </p>
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="text-xs text-zinc-400 font-medium">Response Depth</label>
-                          <span className="text-xs text-cyan-300 font-semibold">{editVerbosity}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min={0}
-                          max={100}
-                          value={editVerbosity}
-                          onChange={(e) => setEditVerbosity(Number(e.target.value))}
-                          className="w-full accent-cyan-400"
-                        />
-                        <div className="flex items-center justify-between text-[11px] text-zinc-600 mt-1">
-                          <span>Brief</span>
-                          <span>Detailed</span>
-                        </div>
-                        <p className="text-[11px] text-zinc-500 mt-1.5 leading-relaxed">
-                          {editVerbosity <= 33
-                            ? 'Brief depth: short, action-first answers with minimal explanation.'
-                            : editVerbosity <= 66
-                              ? 'Medium depth: concise answers plus key context when needed.'
-                              : 'Detailed depth: richer explanations, step-by-step guidance, and more context.'}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {guidedStep === 4 && (
-                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-xs text-zinc-300 font-medium">Runtime Prompt Preview</p>
-                        <span className="text-[11px] text-zinc-600">Read-only</span>
-                      </div>
-                      <pre className="w-full overflow-x-auto bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[11px] leading-relaxed text-zinc-400 whitespace-pre-wrap break-words max-h-64">
-{guidedPromptPreview}
-                      </pre>
-                    </div>
-                  )}
-
-                  <div className="mt-4 flex items-center justify-between">
-                    <button
-                      type="button"
-                      onClick={() => setGuidedStep((s) => Math.max(1, s - 1))}
-                      disabled={guidedStep === 1}
-                      className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600 disabled:opacity-40"
-                    >
-                      Back
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setGuidedStep((s) => Math.min(4, s + 1))}
-                      disabled={guidedStep === 4}
-                      className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
-                    >
-                      Next
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">System Prompt Override</label>
-                  <textarea
-                    rows={20}
-                    value={editSystemPrompt}
-                    onChange={(e) => setEditSystemPrompt(e.target.value)}
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50 transition-colors font-mono leading-relaxed"
-                    placeholder={systemPromptPlaceholder}
-                  />
-                  <div className="flex items-center justify-between mt-2.5">
-                    <p className="text-[11px] text-zinc-600 font-light">
-                      Raw prompt mode bypasses guided controls. Plain text only.
-                    </p>
-                    <span className="text-[11px] text-zinc-700 tabular-nums font-light">
-                      {editSystemPrompt.length.toLocaleString()} chars
-                    </span>
-                  </div>
-                  {isOverridePromptMissing && (
-                    <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-300">
-                      Override is active but empty. Saving is disabled until you add override text or switch back to Guided Config.
-                    </div>
-                  )}
-                </>
+                  <p className="text-[11px] text-zinc-500">
+                    After selecting a template, you will set the agent name. If you choose Custom, the full personality form opens in a modal.
+                  </p>
+                </div>
               )}
+
+              {guidedStep === 2 && (
+                <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs text-zinc-300 font-medium">Runtime Prompt Preview</p>
+                    <span className="text-[11px] text-zinc-600">Read-only</span>
+                  </div>
+                  <pre className="w-full overflow-x-auto bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-2 text-[11px] leading-relaxed text-zinc-400 whitespace-pre-wrap break-words max-h-64">
+{guidedPromptPreview}
+                  </pre>
+                </div>
+              )}
+
+              <div className="mt-4 flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setGuidedStep((s) => Math.max(1, s - 1))}
+                  disabled={guidedStep === 1}
+                  className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600 disabled:opacity-40"
+                >
+                  Back
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGuidedStep((s) => Math.min(2, s + 1))}
+                  disabled={guidedStep === 2}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
+                >
+                  Next
+                </button>
+              </div>
+
             </div>
             )}
 
@@ -2360,7 +2180,7 @@ onBeforeUnmount(() => {
               {settingsTab !== 'knowledge' && (
                 <button
                   onClick={handleSaveSettings}
-                  disabled={saving || isOverridePromptMissing}
+                  disabled={saving}
                   className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
                 >
                   {saving ? 'Saving…' : 'Save settings'}
@@ -2413,11 +2233,11 @@ onBeforeUnmount(() => {
                   </div>
                 )}
                 <div className="flex items-center justify-between">
-                  <span className="text-zinc-500">Prompt</span>
+                  <span className="text-zinc-500">Personality</span>
                   <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
-                    settingsBot.aiConfig?.systemPrompt ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-800 text-zinc-600'
+                    settingsBot.aiConfig?.guidedPreset ? 'bg-blue-500/10 text-blue-500' : 'bg-zinc-800 text-zinc-600'
                   }`}>
-                    {settingsBot.aiConfig?.promptMode === 'guided' ? 'Guided' : settingsBot.aiConfig?.systemPrompt ? 'Override' : 'Default'}
+                    {settingsBot.aiConfig?.guidedPreset ? settingsBot.aiConfig.guidedPreset : 'Guided'}
                   </span>
                 </div>
                 <div className="flex items-start justify-between gap-2">
@@ -2573,7 +2393,7 @@ onBeforeUnmount(() => {
             <div className="w-[92vw] max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
               <h3 className="text-sm font-semibold text-white">Set Agent Name</h3>
               <p className="text-xs text-zinc-500 mt-1">
-                "{pendingGuidedPreset.label}" preset will be applied. Choose how the agent introduces itself.
+                "{pendingGuidedPreset.label}" template will be applied. Choose how the agent introduces itself.
               </p>
 
               <div className="mt-4">
@@ -2601,7 +2421,180 @@ onBeforeUnmount(() => {
                   disabled={!presetAgentNameDraft.trim()}
                   className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
                 >
-                  Apply and go to Preview
+                  Apply and continue
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
+        {showCustomPersonalityModal && (
+          <Modal onClose={() => setShowCustomPersonalityModal(false)}>
+            <div className="w-[94vw] max-w-3xl rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl max-h-[88vh] overflow-y-auto">
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-white">Custom Personality Builder</h3>
+                  <p className="text-xs text-zinc-500 mt-1">Define personality behavior fields directly. This only affects how the agent communicates.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCustomPersonalityModal(false)}
+                  className="px-2.5 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600"
+                >
+                  Close
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Mission</label>
+                  <textarea
+                    rows={2}
+                    value={editMission}
+                    onChange={(e) => setEditMission(e.target.value)}
+                    placeholder="Resolve customer issues quickly while staying accurate and empathetic."
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <PresetDropdown
+                    label="Tone"
+                    value={editTone}
+                    options={TONE_PRESETS}
+                    onSelect={setEditTone}
+                  />
+                  <PresetDropdown
+                    label="Persona"
+                    value={editPersona}
+                    options={PERSONA_PRESETS}
+                    onSelect={setEditPersona}
+                  />
+                </div>
+
+                {editTone === 'Custom' && (
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Custom Tone</label>
+                    <input
+                      type="text"
+                      value={editToneCustom}
+                      onChange={(e) => setEditToneCustom(e.target.value)}
+                      placeholder="Professional, calm, concise"
+                      className="w-full h-9 bg-zinc-900 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                    />
+                  </div>
+                )}
+
+                {editPersona === 'Custom' && (
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Custom Persona</label>
+                    <input
+                      type="text"
+                      value={editPersonaCustom}
+                      onChange={(e) => setEditPersonaCustom(e.target.value)}
+                      placeholder="Helpful product specialist"
+                      className="w-full h-9 bg-zinc-900 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Language Style</label>
+                  <input
+                    type="text"
+                    value={editLanguageStyle}
+                    onChange={(e) => setEditLanguageStyle(e.target.value)}
+                    placeholder="Use plain English; avoid jargon"
+                    className="w-full h-9 bg-zinc-900 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Escalation Policy</label>
+                  <textarea
+                    rows={2}
+                    value={editEscalationPolicy}
+                    onChange={(e) => setEditEscalationPolicy(e.target.value)}
+                    placeholder="Escalate billing disputes, account lockouts, and legal/compliance questions."
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Prohibited Topics</label>
+                  <input
+                    type="text"
+                    value={editProhibitedTopics}
+                    onChange={(e) => setEditProhibitedTopics(e.target.value)}
+                    placeholder="Legal advice, medical advice, refunds above $5000"
+                    className="w-full h-9 bg-zinc-900 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Extra Details</label>
+                  <textarea
+                    rows={3}
+                    value={editExtraDetails}
+                    onChange={(e) => setEditExtraDetails(e.target.value)}
+                    placeholder="Any extra behavior notes not covered above (industry nuances, response constraints, preferred wording, etc)."
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder-zinc-700 resize-y focus:outline-none focus:border-blue-600/50"
+                  />
+                </div>
+
+                <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 space-y-4">
+                  <div>
+                    <p className="text-[11px] text-zinc-500 mb-1.5">Recommended ranges</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {STYLE_PRESETS.map((preset) => (
+                        <button
+                          key={`custom-style-${preset.label}`}
+                          type="button"
+                          onClick={() => applyStylePreset(preset.creativity, preset.verbosity)}
+                          className="px-2 py-1 rounded-md text-[10px] border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
+                        >
+                          {preset.label}: {preset.creativity}/{preset.verbosity}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs text-zinc-400 font-medium">Creativity</label>
+                      <span className="text-xs text-amber-300 font-semibold">{editCreativity}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={editCreativity}
+                      onChange={(e) => setEditCreativity(Number(e.target.value))}
+                      className="w-full accent-amber-400"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="text-xs text-zinc-400 font-medium">Response Depth</label>
+                      <span className="text-xs text-cyan-300 font-semibold">{editVerbosity}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={editVerbosity}
+                      onChange={(e) => setEditVerbosity(Number(e.target.value))}
+                      className="w-full accent-cyan-400"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCustomPersonalityModal(false)}
+                  className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600"
+                >
+                  Done
                 </button>
               </div>
             </div>
@@ -2612,16 +2605,16 @@ onBeforeUnmount(() => {
   }
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="ai-agents-page p-4 md:p-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Ai Support Bots</h1>
-          <p className="mt-1 text-sm text-zinc-500 font-light">Set up your AI support bots across channels, then expand routing and automation in bot settings.</p>
+          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">AI Agents</h1>
+          <p className="mt-1 text-sm text-zinc-500 font-light">Set up your AI agents across channels, then expand routing and automation in settings.</p>
         </div>
-        <button onClick={openCreateModal} className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
+        <button onClick={openCreateModal} className="ai-agents-add-btn flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
           <Plus className="w-4 h-4" />
-          Add bot
+          Add AI agent
         </button>
       </div>
 
@@ -2635,8 +2628,8 @@ onBeforeUnmount(() => {
                   <Bot className="w-5 h-5 text-blue-400" />
                 </div>
                 <div>
-                  <h2 className="font-semibold text-lg text-white tracking-tight">Add a bot</h2>
-                  <p className="text-xs text-zinc-500">Set the bot shape first, then finalize the channel and launch details.</p>
+                  <h2 className="font-semibold text-lg text-white tracking-tight">Add an AI agent</h2>
+                  <p className="text-xs text-zinc-500">Set the agent shape first, then finalize the channel and launch details.</p>
                 </div>
               </div>
               <div className="text-right">
@@ -2858,7 +2851,31 @@ onBeforeUnmount(() => {
       {/* Bot list */}
       {loading ? (
         <div className="space-y-3">
-          {[...Array(3)].map((_, i) => <div key={i} className="h-24 bg-zinc-900 animate-pulse rounded-2xl" />)}
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="card p-5 rounded-2xl">
+              <div className="flex items-center gap-4">
+                <div className="w-11 h-11 rounded-xl bg-zinc-900 border border-zinc-800 animate-pulse shrink-0" />
+
+                <div className="flex-1 min-w-0 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-4 w-36 rounded bg-zinc-900 animate-pulse" />
+                    <div className="h-4 w-20 rounded bg-zinc-900 animate-pulse" />
+                    <div className="h-4 w-24 rounded bg-zinc-900 animate-pulse" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="h-4 w-16 rounded bg-zinc-900 animate-pulse" />
+                    <div className="h-4 w-28 rounded bg-zinc-900 animate-pulse" />
+                    <div className="h-4 w-24 rounded bg-zinc-900 animate-pulse" />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="h-8 w-24 rounded-lg bg-zinc-900 animate-pulse" />
+                  <div className="h-8 w-8 rounded-lg bg-zinc-900 animate-pulse" />
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       ) : bots.length === 0 ? (
         <div className="card p-16 flex flex-col items-center text-center border border-dashed border-zinc-800">

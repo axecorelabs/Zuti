@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query, Body, Patch, Post, UseGuards, HttpCode, HttpStatus, Req } from '@nestjs/common';
-import { IsString, IsNotEmpty, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, IsIn, IsEmail, IsBoolean } from 'class-validator';
 import { ApiProperty, ApiBearerAuth, ApiOperation, ApiQuery, ApiTags, ApiPropertyOptional } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -37,12 +37,68 @@ class UpdateConversationDto {
   escalationTopic?: string;
 }
 
+class StartInternalConversationDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty()
+  botId!: string;
+
+  @ApiProperty()
+  @IsEmail()
+  customerEmail!: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  customerName?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  subject?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  sourceRecordType?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  sourceRecordId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  sourceActionTaskId?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  sourceConversationId?: string;
+
+  @ApiPropertyOptional({ description: 'Allow external email delivery for this internal follow-up' })
+  @IsOptional()
+  @IsBoolean()
+  allowExternalDelivery?: boolean;
+}
+
 @ApiTags('conversations')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, OrgMemberGuard)
 @Controller('organizations/:id/conversations')
 export class ConversationsController {
   constructor(private readonly service: ConversationsService) {}
+
+  @Post('start-internal')
+  @ApiOperation({ summary: 'Start an internal-only inbox conversation (no external send)' })
+  startInternal(
+    @Param('id') orgId: string,
+    @Body() dto: StartInternalConversationDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.service.startInternalConversation(orgId, user.id, dto);
+  }
 
   @Get()
   @ApiOperation({ summary: 'List conversations' })
@@ -123,5 +179,17 @@ export class ConversationsController {
     @Req() req: any,
   ) {
     return this.service.addNote(orgId, conversationId, dto.content, req.user.id);
+  }
+
+  @Post(':conversationId/retry-email-delivery')
+  @ApiOperation({ summary: 'Retry delivery of the latest agent email message' })
+  retryEmailDelivery(
+    @Param('id') orgId: string,
+    @Param('conversationId') conversationId: string,
+    @Req() req: any,
+  ) {
+    const agentId = req.user.id;
+    const isAgent = req.memberRole === 'AGENT';
+    return this.service.retryEmailDelivery(orgId, conversationId, agentId, isAgent);
   }
 }

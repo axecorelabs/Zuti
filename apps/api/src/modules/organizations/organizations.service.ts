@@ -616,7 +616,7 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
       },
     });
 
@@ -664,7 +664,7 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
       },
     });
 
@@ -710,7 +710,7 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
       },
     });
 
@@ -757,7 +757,7 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
       },
     });
 

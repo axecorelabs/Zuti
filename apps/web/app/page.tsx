@@ -4,46 +4,35 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 
-import { ArrowRight, MessageSquareText, ShieldCheck, Sparkles, Leaf } from 'lucide-react';
+import {
+  ArrowRight,
+  Leaf,
+} from 'lucide-react';
 import { gsap } from 'gsap';
-import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import { useAuthStore } from '@/lib/store';
 
 type RevealElement = HTMLElement & { dataset: { reveal?: string } };
 
-const pillars = [
-  {
-    title: 'AI-first inbox',
-    desc: 'Answers routine customer questions instantly while keeping every reply on-brand and policy-aware.',
-    icon: Sparkles,
-  },
-  {
-    title: 'Human takeover',
-    desc: 'Escalate to the right teammate with the full thread, customer context, and clear ownership.',
-    icon: MessageSquareText,
-  },
-  {
-    title: 'Knowledge-grounded',
-    desc: 'Grounded replies come from approved URLs and writeups, not guesses or hidden rules.',
-    icon: ShieldCheck,
-  },
-];
-
 const heroWalkthrough = [
   {
-    title: 'A customer sends a message',
-    desc: 'You see the full conversation in one place, so you know what happened before.',
-    badge: 'Message',
+    title: '1. Every customer message lands in one place',
+    desc: 'Whether customers reach out by chat, email, or Telegram, every conversation is captured in one thread with full context.',
+    badge: 'Step 1',
   },
   {
-    title: 'AI replies to the customer right away',
-    desc: 'It answers using your approved help content, so replies stay accurate and consistent.',
-    badge: 'AI Reply',
+    title: '2. AI prepares a clear first response',
+    desc: 'Zuti drafts replies using your approved help content, so answers are fast, accurate, and consistent with your brand voice.',
+    badge: 'Step 2',
   },
   {
-    title: 'Need a person? Pass it to a teammate',
-    desc: 'The next person gets the full chat, so customers never have to repeat themselves.',
-    badge: 'Handoff',
+    title: '3. Complex cases are handed to the right person',
+    desc: 'If a conversation needs a human, Zuti routes it with the full history so your team can pick up instantly without customers repeating themselves.',
+    badge: 'Step 3',
+  },
+  {
+    title: '4. Action forwarding keeps things moving',
+    desc: 'When a request needs a next step (like billing, ops, or a specialist), Zuti forwards the action to the right team with full context and keeps the customer updated.',
+    badge: 'Step 4',
   },
 ];
 
@@ -52,7 +41,6 @@ export default function Home() {
     user: s.user,
     loadFromStorage: s.loadFromStorage,
   }));
-  const heroSectionRef = useRef<HTMLElement | null>(null);
   const heroStepTitleRef = useRef<HTMLHeadingElement | null>(null);
   const heroStepDescRef = useRef<HTMLParagraphElement | null>(null);
   const heroStepBadgeRef = useRef<HTMLSpanElement | null>(null);
@@ -96,43 +84,17 @@ export default function Home() {
   }, [activeHeroStep]);
 
   useEffect(() => {
-    gsap.registerPlugin(ScrollTrigger);
-
-    const section = heroSectionRef.current;
-
-    if (!section) return;
-
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     if (prefersReducedMotion) {
       return undefined;
     }
 
-    const context = gsap.context(() => {
-      let currentStep = -1;
+    const intervalId = window.setInterval(() => {
+      setActiveHeroStep((prev) => (prev + 1) % heroWalkthrough.length);
+    }, 5200);
 
-      ScrollTrigger.create({
-        trigger: section,
-        start: 'top top',
-        end: '+=220%',
-        scrub: true,
-        pin: true,
-        anticipatePin: 1,
-        onUpdate: (self) => {
-          const nextStep = Math.min(
-            heroWalkthrough.length - 1,
-            Math.floor(self.progress * heroWalkthrough.length),
-          );
-
-          if (nextStep !== currentStep) {
-            currentStep = nextStep;
-            setActiveHeroStep(nextStep);
-          }
-        },
-      });
-    }, section);
-
-    return () => context.revert();
+    return () => window.clearInterval(intervalId);
   }, []);
 
   useEffect(() => {
@@ -188,8 +150,8 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="relative z-10 pb-20 md:pb-28">
-        <section ref={heroSectionRef} className="px-4 sm:px-6 md:px-10 lg:px-16 min-h-screen flex items-center justify-center relative overflow-hidden">
+      <main className="relative z-10 bg-[#020817]">
+        <section className="px-4 sm:px-6 md:px-10 lg:px-16 min-h-screen flex items-center justify-center relative overflow-hidden">
           <Leaf aria-hidden="true" className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[1300px] h-[1300px] md:w-[1750px] md:h-[1750px] text-blue-300/10 dark:text-blue-300/10" />
           <div className="mx-auto max-w-5xl w-full text-center flex flex-col items-center justify-center relative z-10">
             <div data-reveal className="reveal-block max-w-4xl mx-auto">
@@ -203,13 +165,17 @@ export default function Home() {
 
               <div className="mt-6 sm:mt-8 mx-auto max-w-2xl rounded-2xl sm:rounded-3xl border border-zinc-800/90 bg-zinc-950/65 backdrop-blur px-4 sm:px-5 py-3 sm:py-4 text-left text-xs sm:text-sm">
                 <div className="flex items-center justify-between gap-4">
-                  <p className="text-[11px] uppercase tracking-[0.32em] text-zinc-500">Walkthrough</p>
+                  <p className="text-[11px] uppercase tracking-[0.32em] text-zinc-500">System process</p>
                   <div className="flex items-center gap-2" aria-label="Walkthrough progress">
                     {heroWalkthrough.map((step, index) => (
-                      <span
+                      <button
                         key={step.badge}
+                        type="button"
+                        aria-label={`Go to ${step.badge}`}
+                        aria-current={index === activeHeroStep ? 'step' : undefined}
+                        onClick={() => setActiveHeroStep(index)}
                         className={`h-1.5 rounded-full transition-all duration-300 ${
-                          index === activeHeroStep ? 'w-7 bg-blue-300' : 'w-3 bg-zinc-700'
+                          index === activeHeroStep ? 'w-7 bg-blue-300' : 'w-3 bg-zinc-700 hover:bg-zinc-500'
                         }`}
                       />
                     ))}
@@ -253,81 +219,8 @@ export default function Home() {
 
           </div>
         </section>
-
-
-
-        <section className="px-4 sm:px-6 md:px-10 lg:px-16 mt-16 sm:mt-20 md:mt-24">
-          <div className="mx-auto max-w-5xl rounded-[2rem] border border-zinc-800 bg-zinc-950 overflow-hidden">
-            <div className="grid md:grid-cols-[0.95fr_1.05fr]">
-              <div data-reveal className="reveal-block p-4 sm:p-6 md:p-8 lg:p-10">
-                <p className="text-[11px] uppercase tracking-[0.3em] text-zinc-500">Why Zuti</p>
-                <h2 className="mt-4 font-brand font-semibold text-2xl sm:text-3xl md:text-4xl lg:text-5xl tracking-tight leading-tight max-w-xl">
-                  One clear surface for every support thread.
-                </h2>
-                <p className="mt-3 sm:mt-5 text-sm sm:text-base text-zinc-400 leading-relaxed max-w-xl">
-                  Zuti keeps support structured without making the interface feel heavy. The composition stays sparse so the product can breathe.
-                </p>
-
-                <div className="mt-6 sm:mt-8 space-y-3 sm:space-y-4 max-w-xl">
-                  {pillars.map((item, index) => (
-                    <div key={item.title} className="flex items-start gap-3">
-                      <div className="w-8 h-8 rounded-xl bg-white/5 border border-zinc-800 flex items-center justify-center shrink-0">
-                        <item.icon className={`w-4 h-4 ${index === 0 ? 'text-blue-200' : index === 1 ? 'text-pink-200' : 'text-zinc-300'}`} />
-                      </div>
-                      <div>
-                        <h3 className="text-sm sm:text-base font-medium text-white">{item.title}</h3>
-                        <p className="mt-1 text-xs sm:text-sm text-zinc-400 leading-relaxed">{item.desc}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div data-reveal className="reveal-block reveal-delay-1 p-4 sm:p-6 md:p-8 lg:p-10 border-t md:border-t-0 md:border-l border-zinc-800 relative overflow-hidden">
-                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(circle_at_50%_15%,rgba(191,219,254,0.12),transparent_26%),radial-gradient(circle_at_70%_70%,rgba(251,207,232,0.08),transparent_22%)]" />
-                <div className="relative z-10">
-                  <p className="text-[11px] uppercase tracking-[0.3em] text-zinc-500">Lightweight proof</p>
-                  <div className="mt-4 sm:mt-5 rounded-[1.5rem] sm:rounded-[1.75rem] border border-zinc-800 bg-zinc-900/80 p-3 sm:p-5 md:p-6">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 sm:w-9 h-8 sm:h-9 rounded-2xl overflow-hidden border border-zinc-800 bg-blue-600/90 flex items-center justify-center shrink-0">
-                          <Image src="/icon.png" alt="Zuti logo" width={32} height={32} className="w-full h-full object-cover" />
-                        </div>
-                        <div>
-                          <p className="text-[11px] sm:text-sm text-zinc-100">Live support thread</p>
-                          <p className="text-[9px] sm:text-xs text-zinc-500">AI response + human handoff</p>
-                        </div>
-                      </div>
-                      <span className="text-[8px] sm:text-[10px] px-2 py-1 rounded-full bg-blue-500/15 text-blue-300 border border-blue-400/20 whitespace-nowrap">Active</span>
-                    </div>
-
-                    <div className="mt-4 sm:mt-6 rounded-[1.25rem] sm:rounded-[1.5rem] border border-zinc-800 bg-zinc-950/80 p-3 sm:p-4 space-y-2 sm:space-y-3">
-                      <div className="max-w-[85%] rounded-2xl border border-zinc-800 bg-zinc-900 px-3 py-2">
-                        <p className="text-[9px] uppercase tracking-[0.12em] text-zinc-500">Customer</p>
-                        <p className="mt-1 text-[11px] sm:text-sm text-zinc-200">Hi, where is my refund status?</p>
-                      </div>
-
-                      <div className="ml-auto max-w-[85%] rounded-2xl border border-blue-400/25 bg-blue-500/10 px-3 py-2">
-                        <p className="text-[9px] uppercase tracking-[0.12em] text-blue-200">AI reply sent</p>
-                        <p className="mt-1 text-[11px] sm:text-sm text-zinc-100">Your refund is being processed and should arrive in 3 to 5 business days.</p>
-                      </div>
-
-                      <div className="rounded-2xl border border-orange-400/25 bg-orange-500/10 px-3 py-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-[9px] uppercase tracking-[0.12em] text-orange-200">Handoff</p>
-                          <span className="text-[8px] sm:text-[9px] px-2 py-0.5 rounded-full bg-zinc-900/70 text-zinc-300 whitespace-nowrap">Assigned to Billing</span>
-                        </div>
-                        <p className="mt-1 text-[11px] sm:text-sm text-zinc-200">Full chat was passed to a human agent with context.</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
       </main>
-      <footer className="w-full border-t border-zinc-800 bg-black/80 py-6 sm:py-8 px-4 sm:px-6 md:px-10 lg:px-16 text-zinc-400 text-xs sm:text-sm flex flex-col md:flex-row items-center justify-between gap-3 sm:gap-4">
+      <footer className="w-full border-t border-zinc-800 bg-[#020817]/90 py-6 sm:py-8 px-4 sm:px-6 md:px-10 lg:px-16 text-zinc-400 text-xs sm:text-sm flex flex-col md:flex-row items-center justify-between gap-3 sm:gap-4">
         <div className="flex items-center gap-2">
           <Image src="/icon.png" alt="Zuti logo" width={28} height={28} className="rounded-xl border border-zinc-800 bg-zinc-900" />
           <span className="font-brand font-semibold text-base sm:text-lg text-white">Zuti</span>

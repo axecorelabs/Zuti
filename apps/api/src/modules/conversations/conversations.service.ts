@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Inject, forwardRef, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
+import { Prisma } from '@prisma/client';
 import { firstValueFrom } from 'rxjs';
 import { render } from '@react-email/render';
 import * as React from 'react';
@@ -22,6 +23,18 @@ interface FindAllFilters {
   q?: string;
   /** When set, only return conversations assigned to this agent or unassigned */
   agentId?: string;
+}
+
+interface StartInternalConversationInput {
+  botId: string;
+  customerEmail: string;
+  customerName?: string;
+  subject?: string;
+  sourceRecordType?: string;
+  sourceRecordId?: string;
+  sourceActionTaskId?: string;
+  sourceConversationId?: string;
+  allowExternalDelivery?: boolean;
 }
 
 function escapeHtml(text: string): string {
@@ -61,6 +74,8 @@ function buildBrandedFromName(
 
 @Injectable()
 export class ConversationsService {
+  private readonly logger = new Logger(ConversationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
@@ -230,6 +245,11 @@ export class ConversationsService {
       conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata)
         ? (conversation.metadata as Record<string, unknown>)
         : {};
+    const isInternalOnly = existingMetadata.internalOnly === true;
+    const allowExternalDelivery = isInternalOnly
+      ? existingMetadata.allowExternalDelivery !== false
+      : true;
+    const canSendExternalEmail = conversation.channel === 'EMAIL' && (!isInternalOnly || allowExternalDelivery);
 
     const updated = await this.prisma.conversation.update({
       where: { id: conversationId },
@@ -260,7 +280,7 @@ export class ConversationsService {
 
     // Helper: send a plain-text notification email to the customer
     const sendCustomerEmail = async (text: string) => {
-      if (conversation.channel !== 'EMAIL') return;
+      if (!canSendExternalEmail) return;
       const emailApiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
       const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
       const fromName = buildBrandedFromName(organization?.name, conversation.bot.emailAddress, baseFromName);
@@ -461,7 +481,7 @@ export class ConversationsService {
       }
 
       // Send resolution email
-      if (conversation.channel === 'EMAIL') {
+      if (canSendExternalEmail) {
         const emailApiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
         const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
         const fromName = buildBrandedFromName(organization?.name, conversation.bot.emailAddress, baseFromName);
@@ -535,6 +555,127 @@ export class ConversationsService {
     return updated;
   }
 
+  async startInternalConversation(
+    organizationId: string,
+    actorId: string,
+    input: StartInternalConversationInput,
+  ) {
+    const bot = await this.prisma.bot.findFirst({
+      where: { id: input.botId, organizationId },
+      select: { id: true, name: true },
+    });
+    if (!bot) throw new NotFoundException('Bot not found');
+
+    const customerEmail = input.customerEmail.trim().toLowerCase();
+    const metadataFilters: any[] = [
+      { metadata: { path: ['internalOnly'], equals: true } },
+      { metadata: { path: ['initiatedFrom'], equals: 'OPERATIONS' } },
+    ];
+    if (input.sourceRecordType) {
+      metadataFilters.push({ metadata: { path: ['sourceRecordType'], equals: input.sourceRecordType } });
+    }
+    if (input.sourceRecordId) {
+      metadataFilters.push({ metadata: { path: ['sourceRecordId'], equals: input.sourceRecordId } });
+    }
+
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const result = await this.prisma.$transaction(async (tx) => {
+          const existing = await tx.conversation.findFirst({
+            where: {
+              organizationId,
+              botId: bot.id,
+              channel: 'EMAIL',
+              customerEmail,
+              status: { in: ['OPEN', 'PENDING', 'ESCALATED'] },
+              AND: metadataFilters,
+            },
+            orderBy: { updatedAt: 'desc' },
+          });
+
+          if (existing) {
+            const existingMetadata =
+              existing.metadata && typeof existing.metadata === 'object' && !Array.isArray(existing.metadata)
+                ? (existing.metadata as Record<string, unknown>)
+                : {};
+            const shouldAllowExternalDelivery = input.allowExternalDelivery !== false;
+            const needsMetadataUpdate = shouldAllowExternalDelivery && existingMetadata.allowExternalDelivery === false;
+            const needsAssignmentUpdate = !existing.assignedAgentId;
+
+            if (!needsMetadataUpdate && !needsAssignmentUpdate) {
+              return { conversation: existing, reused: true, assignedUpdated: false, isNew: false };
+            }
+
+            const updated = await tx.conversation.update({
+              where: { id: existing.id },
+              data: {
+                ...(needsMetadataUpdate
+                  ? { metadata: { ...existingMetadata, allowExternalDelivery: true } as Prisma.InputJsonValue }
+                  : {}),
+                ...(needsAssignmentUpdate ? { assignedAgentId: actorId } : {}),
+              },
+            });
+            return { conversation: updated, reused: true, assignedUpdated: needsAssignmentUpdate, isNew: false };
+          }
+
+          const metadata: Record<string, unknown> = {
+            internalOnly: true,
+            allowExternalDelivery: input.allowExternalDelivery !== false,
+            initiatedFrom: 'OPERATIONS',
+            initiatedByUserId: actorId,
+            ...(input.sourceRecordType ? { sourceRecordType: input.sourceRecordType } : {}),
+            ...(input.sourceRecordId ? { sourceRecordId: input.sourceRecordId } : {}),
+            ...(input.sourceActionTaskId ? { sourceActionTaskId: input.sourceActionTaskId } : {}),
+            ...(input.sourceConversationId ? { sourceConversationId: input.sourceConversationId } : {}),
+          };
+
+          const created = await tx.conversation.create({
+            data: {
+              organizationId,
+              botId: bot.id,
+              channel: 'EMAIL',
+              customerEmail,
+              customerName: input.customerName?.trim() || null,
+              emailSubject: input.subject?.trim() || 'Support follow-up',
+              status: 'OPEN',
+              mode: 'HUMAN',
+              assignedAgentId: actorId,
+              metadata: metadata as Prisma.InputJsonValue,
+              lastMessageAt: new Date(),
+            },
+          });
+
+          return { conversation: created, reused: false, assignedUpdated: false, isNew: true };
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+        if (result.assignedUpdated) {
+          this.events.emitConversationUpdate(organizationId, {
+            conversationId: result.conversation.id,
+            assignedAgentId: actorId,
+          });
+        }
+
+        if (result.isNew) {
+          this.events.emitNewConversation(organizationId, {
+            ...result.conversation,
+            bot: { id: bot.id, name: bot.name },
+            messages: [],
+          });
+        }
+
+        return { ...result.conversation, reused: result.reused };
+      } catch (error: any) {
+        if (error?.code === 'P2034' && attempt < maxAttempts) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new BadRequestException('Failed to start internal conversation');
+  }
+
   async sendMessage(organizationId: string, conversationId: string, content: string, agentId?: string, restrictToOwn = false) {
     const where: Record<string, unknown> = { id: conversationId, organizationId };
     if (agentId && restrictToOwn) {
@@ -548,6 +689,14 @@ export class ConversationsService {
       include: { bot: true },
     });
     if (!conversation) throw new NotFoundException('Conversation not found');
+    const conversationMetadata =
+      conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata)
+        ? (conversation.metadata as Record<string, unknown>)
+        : {};
+    const isInternalOnly = conversationMetadata.internalOnly === true;
+    const allowExternalDelivery = isInternalOnly
+      ? conversationMetadata.allowExternalDelivery !== false
+      : true;
     if (conversation.mode !== 'HUMAN') {
       throw new BadRequestException('Can only send messages in HUMAN mode');
     }
@@ -581,59 +730,31 @@ export class ConversationsService {
       },
     });
 
-    if (conversation.channel === 'EMAIL') {
+    if (conversation.channel === 'EMAIL' && (!isInternalOnly || allowExternalDelivery)) {
+      await this.setEmailDeliveryMeta(organizationId, conversationId, message.id, 'ATTEMPTED');
       // Send reply via ZeptoMail
       const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
-      if (apiKey && conversation.bot.emailAddress && conversation.customerEmail) {
-        const org = await this.prisma.organization.findUnique({
-          where: { id: organizationId },
-          select: { name: true },
-        });
-        const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
-        const fromName = buildBrandedFromName(org?.name, conversation.bot.emailAddress, baseFromName);
-        // from = {orgSlug}@bords.app (verified sending domain); reply_to = bot's actual address
-        const botEmail = conversation.bot.emailAddress;
-        const botDomain = botEmail.split('@')[1] ?? '';
-        const orgSlug = botDomain.replace(/\.bords\.app$/, '');
-        const fromAddress = orgSlug && orgSlug !== botDomain
-          ? `${orgSlug}@bords.app`
-          : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
-        const mimeHeaders: Record<string, string> = conversation.emailThreadId
-          ? { 'In-Reply-To': `<${conversation.emailThreadId}>`, References: `<${conversation.emailThreadId}>` }
-          : {};
-
-        const botName = conversation.bot.name ?? 'Support';
-        const orgName = orgSlug || botName;
-        const htmlbody = await render(
-          React.createElement(BotReplyEmail, { botName: agentName, orgName, replyText: signedContent }),
+      if (!apiKey) {
+        await this.setEmailDeliveryMeta(organizationId, conversationId, message.id, 'FAILED', 'Email provider not configured');
+        throw new BadRequestException('Email provider not configured');
+      }
+      if (!conversation.bot.emailAddress || !conversation.customerEmail) {
+        await this.setEmailDeliveryMeta(organizationId, conversationId, message.id, 'FAILED', 'Bot email or customer email is missing');
+        throw new BadRequestException('Bot email or customer email is missing for outbound email delivery');
+      }
+      try {
+        await this.deliverEmailReply(
+          organizationId,
+          conversation as any,
+          signedContent,
+          agentName,
         );
-        const textbody = signedContent
-          .replace(/\*\*([^*]+)\*\*/g, '$1')
-          .replace(/\*([^*]+)\*/g, '$1')
-          .replace(/^#+\s*/gm, '')
-          .replace(/^[-*]\s/gm, '\u2022 ')
-          .trim();
-
-        await firstValueFrom(
-          this.http.post(
-            'https://api.zeptomail.com/v1.1/email',
-            {
-              from: { address: fromAddress, name: fromName },
-              reply_to: [{ address: botEmail }],
-              to: [{ email_address: { address: conversation.customerEmail } }],
-              subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-              htmlbody,
-              textbody,
-              ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
-            },
-            {
-              headers: {
-                Authorization: `Zoho-enczapikey ${apiKey}`,
-                'Content-Type': 'application/json',
-              },
-            },
-          ),
-        ).catch(() => null);
+        await this.setEmailDeliveryMeta(organizationId, conversationId, message.id, 'SENT');
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        await this.setEmailDeliveryMeta(organizationId, conversationId, message.id, 'FAILED', errorMessage);
+        this.logger.warn(`Failed to send outbound email for conversation ${conversationId}: ${errorMessage}`);
+        throw new BadRequestException('Failed to send outbound email');
       }
     } else if (conversation.bot.telegramToken && conversation.telegramChatId) {
       // Send via Telegram
@@ -652,6 +773,65 @@ export class ConversationsService {
     });
 
     return message;
+  }
+
+  async retryEmailDelivery(
+    organizationId: string,
+    conversationId: string,
+    agentId?: string,
+    restrictToOwn = false,
+  ) {
+    const where: Record<string, unknown> = { id: conversationId, organizationId };
+    if (agentId && restrictToOwn) {
+      (where as any).OR = [
+        { assignedAgentId: agentId },
+        { assignedAgentId: null },
+      ];
+    }
+
+    const conversation = await this.prisma.conversation.findFirst({
+      where: where as any,
+      include: { bot: true },
+    });
+    if (!conversation) throw new NotFoundException('Conversation not found');
+    if (conversation.channel !== 'EMAIL') throw new BadRequestException('Conversation is not an email conversation');
+
+    const conversationMetadata =
+      conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata)
+        ? (conversation.metadata as Record<string, unknown>)
+        : {};
+    const isInternalOnly = conversationMetadata.internalOnly === true;
+    const allowExternalDelivery = isInternalOnly
+      ? conversationMetadata.allowExternalDelivery !== false
+      : true;
+    if (!allowExternalDelivery) {
+      throw new BadRequestException('External delivery is disabled for this conversation');
+    }
+
+    const latestAgentMessage = await this.prisma.message.findFirst({
+      where: { conversationId, role: 'AGENT' },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, content: true },
+    });
+    if (!latestAgentMessage) {
+      throw new BadRequestException('No agent message available to retry');
+    }
+
+    await this.setEmailDeliveryMeta(organizationId, conversationId, latestAgentMessage.id, 'ATTEMPTED', undefined, true);
+    try {
+      await this.deliverEmailReply(
+        organizationId,
+        conversation as any,
+        latestAgentMessage.content,
+      );
+      await this.setEmailDeliveryMeta(organizationId, conversationId, latestAgentMessage.id, 'SENT');
+      return { ok: true };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await this.setEmailDeliveryMeta(organizationId, conversationId, latestAgentMessage.id, 'FAILED', errorMessage);
+      this.logger.warn(`Retry email delivery failed for conversation ${conversationId}: ${errorMessage}`);
+      throw new BadRequestException('Failed to retry email delivery');
+    }
   }
 
   async addNote(
@@ -831,5 +1011,122 @@ export class ConversationsService {
         return m?.csatRating === 'positive' || m?.csatRating === 'negative';
       }).length,
     };
+  }
+
+  private async setEmailDeliveryMeta(
+    organizationId: string,
+    conversationId: string,
+    messageId: string,
+    status: 'ATTEMPTED' | 'SENT' | 'FAILED',
+    errorMessage?: string,
+    incrementRetry = false,
+  ) {
+    const latestConversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { metadata: true },
+    });
+    const latestMetadata =
+      latestConversation?.metadata && typeof latestConversation.metadata === 'object' && !Array.isArray(latestConversation.metadata)
+        ? (latestConversation.metadata as Record<string, unknown>)
+        : {};
+
+    const existingDelivery =
+      latestMetadata.emailDelivery && typeof latestMetadata.emailDelivery === 'object' && !Array.isArray(latestMetadata.emailDelivery)
+        ? (latestMetadata.emailDelivery as Record<string, unknown>)
+        : {};
+    const previousRetryCount = typeof existingDelivery.retryCount === 'number' ? existingDelivery.retryCount : 0;
+    const retryCount = incrementRetry ? previousRetryCount + 1 : previousRetryCount;
+    const payload = {
+      status,
+      attemptedAt: new Date().toISOString(),
+      messageId,
+      retryCount,
+      ...(status === 'SENT' ? { sentAt: new Date().toISOString() } : {}),
+      ...(status === 'FAILED' ? { failedAt: new Date().toISOString() } : {}),
+      ...(errorMessage ? { error: errorMessage.slice(0, 500) } : {}),
+    };
+
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        metadata: {
+          ...latestMetadata,
+          emailDelivery: payload,
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    this.events.emitConversationUpdate(organizationId, {
+      conversationId,
+      metadata: { emailDelivery: payload },
+    });
+  }
+
+  private async deliverEmailReply(
+    organizationId: string,
+    conversation: {
+      bot: { emailAddress: string | null; name: string | null };
+      customerEmail: string | null;
+      emailThreadId: string | null;
+      emailSubject: string | null;
+    },
+    replyText: string,
+    authorName?: string,
+  ) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    if (!apiKey) throw new Error('Email provider not configured');
+    if (!conversation.bot.emailAddress || !conversation.customerEmail) {
+      throw new Error('Bot email or customer email is missing');
+    }
+
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { name: true },
+    });
+    const baseFromName = this.config.get<string>('ZEPTOMAIL_FROM_NAME') ?? 'Zuti';
+    const fromName = buildBrandedFromName(org?.name, conversation.bot.emailAddress, baseFromName);
+
+    const botEmail = conversation.bot.emailAddress;
+    const botDomain = botEmail.split('@')[1] ?? '';
+    const orgSlug = botDomain.replace(/\.bords\.app$/, '');
+    const fromAddress = orgSlug && orgSlug !== botDomain
+      ? `${orgSlug}@bords.app`
+      : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
+    const mimeHeaders: Record<string, string> = conversation.emailThreadId
+      ? { 'In-Reply-To': `<${conversation.emailThreadId}>`, References: `<${conversation.emailThreadId}>` }
+      : {};
+
+    const botName = authorName ?? conversation.bot.name ?? 'Support';
+    const orgName = orgSlug || botName;
+    const htmlbody = await render(
+      React.createElement(BotReplyEmail, { botName, orgName, replyText }),
+    );
+    const textbody = replyText
+      .replace(/\*\*([^*]+)\*\*/g, '$1')
+      .replace(/\*([^*]+)\*/g, '$1')
+      .replace(/^#+\s*/gm, '')
+      .replace(/^[-*]\s/gm, '\u2022 ')
+      .trim();
+
+    await firstValueFrom(
+      this.http.post(
+        'https://api.zeptomail.com/v1.1/email',
+        {
+          from: { address: fromAddress, name: fromName },
+          reply_to: [{ address: botEmail }],
+          to: [{ email_address: { address: conversation.customerEmail } }],
+          subject: `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+          htmlbody,
+          textbody,
+          ...(Object.keys(mimeHeaders).length > 0 ? { mime_headers: mimeHeaders } : {}),
+        },
+        {
+          headers: {
+            Authorization: `Zoho-enczapikey ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      ),
+    );
   }
 }

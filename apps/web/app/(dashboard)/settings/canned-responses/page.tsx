@@ -75,7 +75,7 @@ export default function CannedResponsesPage() {
   };
 
   return (
-    <div className="w-full px-4 py-4 md:px-8 md:py-8">
+    <div className="settings-page settings-canned-page w-full px-4 py-4 md:px-8 md:py-8">
     <div className="mx-auto w-full max-w-4xl">
       {/* Header */}
       <div className="flex items-start justify-between mb-8 gap-4 flex-wrap">

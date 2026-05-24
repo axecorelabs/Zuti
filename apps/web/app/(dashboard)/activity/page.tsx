@@ -273,7 +273,7 @@ export default function ActivityPage() {
   const newestVisibleAt = filteredLogs[0]?.createdAt;
 
   return (
-    <div className="flex-1 overflow-y-auto bg-zinc-950 min-h-screen">
+    <div className="activity-page flex-1 overflow-y-auto bg-zinc-950 min-h-screen">
       <div className="w-full p-4 md:p-8">
         {/* Header */}
         <div className="flex items-center gap-3 mb-8">
@@ -291,22 +291,22 @@ export default function ActivityPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
-          <div className="rounded-xl border border-blue-600/25 bg-blue-600/5 p-3">
-            <p className="text-[11px] text-zinc-500">Visible events</p>
-            <p className="mt-1 text-xl font-semibold text-zinc-100">{visibleCounts.ALL}</p>
+        <div className="activity-stat-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3 mb-5">
+          <div className="activity-stat-card rounded-xl border border-blue-600/25 bg-blue-600/5 p-3">
+            <p className="activity-stat-label text-[11px] text-zinc-500">Visible events</p>
+            <p className="activity-stat-value mt-1 text-xl font-semibold text-zinc-100">{visibleCounts.ALL}</p>
           </div>
-          <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-3">
-            <p className="text-[11px] text-zinc-500">Conversations + Escalations</p>
-            <p className="mt-1 text-xl font-semibold text-zinc-100">{visibleCounts.CONVERSATIONS + visibleCounts.ESCALATIONS}</p>
+          <div className="activity-stat-card rounded-xl border border-zinc-900 bg-zinc-950/40 p-3">
+            <p className="activity-stat-label text-[11px] text-zinc-500">Conversations + Escalations</p>
+            <p className="activity-stat-value mt-1 text-xl font-semibold text-zinc-100">{visibleCounts.CONVERSATIONS + visibleCounts.ESCALATIONS}</p>
           </div>
-          <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-3">
-            <p className="text-[11px] text-zinc-500">Access + Invites</p>
-            <p className="mt-1 text-xl font-semibold text-zinc-100">{visibleCounts.ACCESS + visibleCounts.INVITES}</p>
+          <div className="activity-stat-card rounded-xl border border-zinc-900 bg-zinc-950/40 p-3">
+            <p className="activity-stat-label text-[11px] text-zinc-500">Access + Invites</p>
+            <p className="activity-stat-value mt-1 text-xl font-semibold text-zinc-100">{visibleCounts.ACCESS + visibleCounts.INVITES}</p>
           </div>
-          <div className="rounded-xl border border-zinc-900 bg-zinc-950/40 p-3">
-            <p className="text-[11px] text-zinc-500">Newest event</p>
-            <p className="mt-1 text-sm font-medium text-zinc-300">{newestVisibleAt ? timeAgo(newestVisibleAt) : 'N/A'}</p>
+          <div className="activity-stat-card rounded-xl border border-zinc-900 bg-zinc-950/40 p-3">
+            <p className="activity-stat-label text-[11px] text-zinc-500">Newest event</p>
+            <p className="activity-stat-subtext mt-1 text-sm font-medium text-zinc-300">{newestVisibleAt ? timeAgo(newestVisibleAt) : 'N/A'}</p>
           </div>
         </div>
 
@@ -379,7 +379,7 @@ export default function ActivityPage() {
             />
           </div>
 
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="activity-category-filters flex flex-wrap items-center gap-1.5">
             {(
               [
                 ['ALL', 'All'],
@@ -393,9 +393,9 @@ export default function ActivityPage() {
               <button
                 key={value}
                 onClick={() => setCategory(value)}
-                className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                className={`activity-filter-btn text-[11px] px-2 py-1 rounded-md border transition-colors ${
                   category === value
-                    ? 'border-blue-600/30 bg-blue-600/10 text-blue-200'
+                    ? 'is-active border-blue-600/30 bg-blue-600/10 text-blue-200'
                     : 'border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
                 }`}
               >
@@ -404,7 +404,7 @@ export default function ActivityPage() {
             ))}
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="activity-range-filters flex items-center gap-1.5">
             {(
               [
                 ['24H', '24h'],
@@ -416,9 +416,9 @@ export default function ActivityPage() {
               <button
                 key={value}
                 onClick={() => setRange(value)}
-                className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                className={`activity-filter-btn text-[11px] px-2 py-1 rounded-md border transition-colors ${
                   range === value
-                    ? 'border-blue-600/30 bg-blue-600/10 text-blue-200'
+                    ? 'is-active border-blue-600/30 bg-blue-600/10 text-blue-200'
                     : 'border-zinc-800 text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
                 }`}
               >

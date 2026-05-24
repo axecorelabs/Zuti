@@ -19,7 +19,7 @@ import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
-import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
@@ -278,7 +278,7 @@ export class EmailProcessor {
       }
     }
 
-    const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
+    const aiConfig = (bot.aiConfig as Record<string, unknown>) ?? {};
     const systemPrompt = buildAgentSystemPrompt(aiConfig, bot.name);
     const routeToRoles = Array.isArray(bot.routeToRoles) && bot.routeToRoles.length > 0
       ? bot.routeToRoles
@@ -286,6 +286,7 @@ export class EmailProcessor {
     await this.callAiAndRespond(
       conversation, botId, toAddress, fromEmail, organizationId,
       bodyText.trim(), bot.name, systemPrompt,
+      buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
       forwardingResult,
@@ -303,6 +304,7 @@ export class EmailProcessor {
     userText: string,
     botName: string,
     systemPrompt: string | null,
+    skillBehaviorPrompt: string | null,
     orgName: string | null,
     orgSlug: string | null,
     forwardingResult: ActionForwardingResult,
@@ -429,6 +431,7 @@ export class EmailProcessor {
 
     const effectiveSystemPrompt = [
       systemPrompt,
+      skillBehaviorPrompt,
       buildOperationalIntegrityPromptBlock(
         forwardingResult.status,
         forwardingResult.reason,

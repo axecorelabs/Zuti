@@ -229,10 +229,26 @@ export const conversationsApi = {
     api.get(`/organizations/${orgId}/conversations`, { params }),
   get: (orgId: string, convId: string) =>
     api.get(`/organizations/${orgId}/conversations/${convId}`),
+  startInternal: (
+    orgId: string,
+    data: {
+      botId: string;
+      customerEmail: string;
+      customerName?: string;
+      subject?: string;
+      sourceRecordType?: string;
+      sourceRecordId?: string;
+      sourceActionTaskId?: string;
+      sourceConversationId?: string;
+      allowExternalDelivery?: boolean;
+    },
+  ) => api.post(`/organizations/${orgId}/conversations/start-internal`, data),
   update: (orgId: string, convId: string, data: Record<string, unknown>) =>
     api.patch(`/organizations/${orgId}/conversations/${convId}`, data),
   sendMessage: (orgId: string, convId: string, content: string) =>
     api.post(`/organizations/${orgId}/conversations/${convId}/messages`, { content }),
+  retryEmailDelivery: (orgId: string, convId: string) =>
+    api.post(`/organizations/${orgId}/conversations/${convId}/retry-email-delivery`),
   addNote: (orgId: string, convId: string, content: string) =>
     api.post(`/organizations/${orgId}/conversations/${convId}/notes`, { content }),
   analytics: (orgId: string, days = 30, botId?: string) =>

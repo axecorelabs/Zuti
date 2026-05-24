@@ -9,6 +9,12 @@ import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
 import { botsApi, conversationsApi, orgsApi, cannedResponsesApi } from '@/lib/api';
 
+interface EmailDeliveryMeta {
+  status?: 'ATTEMPTED' | 'SENT' | 'FAILED';
+  error?: string;
+  retryCount?: number;
+}
+
 interface Conversation {
   id: string;
   channel?: string | null;
@@ -52,11 +58,13 @@ interface BotOption {
 }
 
 const STATUS_CONFIG: Record<string, { label: string; cls: string; icon: React.ElementType }> = {
-  OPEN: { label: 'Open', cls: 'bg-blue-500/15 text-blue-400', icon: Clock },
-  PENDING: { label: 'Pending', cls: 'bg-orange-500/15 text-orange-400', icon: Clock },
-  RESOLVED: { label: 'Resolved', cls: 'bg-zinc-800 text-zinc-500', icon: CheckCircle2 },
+  OPEN: { label: 'Open', cls: 'bg-blue-500/15 text-blue-300 border border-blue-500/30', icon: Clock },
+  PENDING: { label: 'Pending', cls: 'bg-blue-500/12 text-blue-300 border border-blue-500/25', icon: Clock },
+  RESOLVED: { label: 'Resolved', cls: 'bg-blue-500/10 text-blue-200 border border-blue-500/20', icon: CheckCircle2 },
   ESCALATED: { label: 'Escalated', cls: 'bg-red-500/15 text-red-400', icon: AlertTriangle },
 };
+
+const ESCALATED_SEEN_STORAGE_KEY = 'zuti:inbox:escalated-seen-v1';
 
 function timeSince(date: string) {
   const diff = Date.now() - new Date(date).getTime();
@@ -96,8 +104,14 @@ function messageDateLabel(date: string) {
   });
 }
 
+function getMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | null {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
 export default function InboxPage() {
-  useSearchParams();
+  const searchParams = useSearchParams();
+  const requestedConversationId = searchParams.get('conversationId');
   const [orgId, setOrgId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<ConversationDetails | null>(null);
@@ -123,16 +137,61 @@ export default function InboxPage() {
   const [mobileCustomerPanelOpen, setMobileCustomerPanelOpen] = useState(false);
   const [showHandoffQuickButton, setShowHandoffQuickButton] = useState(false);
   const [handoffPopupOpen, setHandoffPopupOpen] = useState(false);
-  const [actionLoading, setActionLoading] = useState<'takeover' | 'handback' | 'resolve' | null>(null);
+  const [actionLoading, setActionLoading] = useState<'takeover' | 'handback' | 'resolve' | 'retry-email' | null>(null);
+  const [escalatedUnreadMap, setEscalatedUnreadMap] = useState<Record<string, boolean>>({});
   const handoffSummaryRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const socketRef = useRef<Socket | null>(null);
   const filterRef = useRef({ statusFilter, botFilter, agentFilter });
+  const selectedIdRef = useRef<string | null>(null);
+  const escalatedSeenRef = useRef<Record<string, string>>({});
+
+  const setEscalatedSeenAt = (conversationId: string, seenAt: string) => {
+    escalatedSeenRef.current = { ...escalatedSeenRef.current, [conversationId]: seenAt };
+    try {
+      localStorage.setItem(ESCALATED_SEEN_STORAGE_KEY, JSON.stringify(escalatedSeenRef.current));
+    } catch {
+      // Ignore localStorage write issues.
+    }
+  };
+
+  const refreshEscalatedUnreadMap = (list: Conversation[]) => {
+    const next: Record<string, boolean> = {};
+    for (const conv of list) {
+      if (conv.status !== 'ESCALATED') continue;
+      const latestUserMessage = [...(conv.messages ?? [])]
+        .reverse()
+        .find((msg) => msg.role === 'USER');
+      if (!latestUserMessage?.createdAt) continue;
+
+      const seenAt = escalatedSeenRef.current[conv.id];
+      const hasNew = !seenAt || new Date(latestUserMessage.createdAt).getTime() > new Date(seenAt).getTime();
+      if (hasNew) next[conv.id] = true;
+    }
+    setEscalatedUnreadMap(next);
+  };
 
   useEffect(() => {
     filterRef.current = { statusFilter, botFilter, agentFilter };
   }, [statusFilter, botFilter, agentFilter]);
+
+  useEffect(() => {
+    selectedIdRef.current = selected?.id ?? null;
+  }, [selected?.id]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ESCALATED_SEEN_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        escalatedSeenRef.current = parsed as Record<string, string>;
+      }
+    } catch {
+      // Ignore localStorage parse issues.
+    }
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
@@ -187,10 +246,20 @@ export default function InboxPage() {
       .then((res) => {
         const list = res.data as Conversation[];
         setConversations(list);
+        refreshEscalatedUnreadMap(list);
         if (list.length === 0) {
           setSelected(null);
           return;
         }
+
+        if (requestedConversationId) {
+          const requested = list.find((conv) => conv.id === requestedConversationId);
+          if (requested) {
+            setSelected(requested);
+            return;
+          }
+        }
+
         if (!selected) {
           setSelected(list[0]);
           return;
@@ -200,7 +269,23 @@ export default function InboxPage() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [orgId, statusFilter, botFilter, agentFilter, debouncedSearch]);
+  }, [orgId, statusFilter, botFilter, agentFilter, debouncedSearch, requestedConversationId]);
+
+  useEffect(() => {
+    if (!orgId || !requestedConversationId || loading) return;
+    if (conversations.some((conv) => conv.id === requestedConversationId)) return;
+
+    conversationsApi.get(orgId, requestedConversationId)
+      .then((res) => {
+        const conversation = res.data as ConversationDetails;
+        setConversations((prev) => {
+          if (prev.some((item) => item.id === conversation.id)) return prev;
+          return [conversation, ...prev];
+        });
+        setSelected(conversation);
+      })
+      .catch(() => {});
+  }, [orgId, requestedConversationId, loading, conversations]);
 
   useEffect(() => {
     if (!orgId || !selected) return;
@@ -211,6 +296,16 @@ export default function InboxPage() {
       .catch(() => {})
       .finally(() => setLoadingSelected(false));
   }, [selected?.id, orgId]);
+
+  useEffect(() => {
+    if (!selected || selected.status !== 'ESCALATED') return;
+    const latestUserMessage = [...(selected.messages ?? [])]
+      .reverse()
+      .find((msg) => msg.role === 'USER');
+    const seenAt = latestUserMessage?.createdAt ?? selected.updatedAt;
+    if (seenAt) setEscalatedSeenAt(selected.id, seenAt);
+    setEscalatedUnreadMap((prev) => ({ ...prev, [selected.id]: false }));
+  }, [selected?.id, selected?.status, selected?.messages?.length, selected?.updatedAt]);
 
   useEffect(() => {
     if (!selected || loadingSelected) return;
@@ -288,12 +383,25 @@ export default function InboxPage() {
         setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
         return { ...prev, messages: [...(prev.messages ?? []), payload.message] };
       });
-      setConversations((prev) =>
-        [...prev.map((c) => c.id === payload.conversationId
+      setConversations((prev) => {
+        const target = prev.find((c) => c.id === payload.conversationId);
+        const isEscalated = target?.status === 'ESCALATED';
+        const isSelected = selectedIdRef.current === payload.conversationId;
+
+        if (payload.message.role === 'USER' && isEscalated) {
+          if (isSelected) {
+            setEscalatedSeenAt(payload.conversationId, payload.message.createdAt);
+            setEscalatedUnreadMap((curr) => ({ ...curr, [payload.conversationId]: false }));
+          } else {
+            setEscalatedUnreadMap((curr) => ({ ...curr, [payload.conversationId]: true }));
+          }
+        }
+
+        return [...prev.map((c) => c.id === payload.conversationId
           ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }
           : c,
-        )].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()),
-      );
+        )].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      });
     });
 
     socket.on('conversation:new', (conv: Conversation) => {
@@ -383,9 +491,32 @@ export default function InboxPage() {
         const res = await conversationsApi.sendMessage(orgId, selected.id, reply.trim());
         setReply('');
         setSelected((prev) => prev ? { ...prev, messages: [...(prev.messages ?? []), res.data] } : prev);
+        const latest = await conversationsApi.get(orgId, selected.id);
+        setSelected(latest.data as ConversationDetails);
       }
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-    } catch { /* ignore */ } finally { setSending(false); }
+    } catch (error: any) {
+      const message = error?.response?.data?.message;
+      if (typeof message === 'string') toast.error(message);
+      else toast.error('Failed to send message');
+    } finally { setSending(false); }
+  };
+
+  const handleRetryEmailDelivery = async () => {
+    if (!orgId || !selected || actionLoading) return;
+    setActionLoading('retry-email');
+    try {
+      await conversationsApi.retryEmailDelivery(orgId, selected.id);
+      const latest = await conversationsApi.get(orgId, selected.id);
+      setSelected(latest.data as ConversationDetails);
+      toast.success('Email delivery retried');
+    } catch (error: any) {
+      const message = error?.response?.data?.message;
+      if (typeof message === 'string') toast.error(message);
+      else toast.error('Failed to retry email delivery');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   // Canned response helpers
@@ -456,6 +587,14 @@ export default function InboxPage() {
     return map[action] ?? action;
   };
 
+  const selectedMetadata = selected?.metadata as Record<string, unknown> | undefined;
+  const isInternalFollowUp = selectedMetadata?.internalOnly === true && selectedMetadata?.initiatedFrom === 'OPERATIONS';
+  const emailDeliveryMeta = (selectedMetadata?.emailDelivery as EmailDeliveryMeta | undefined) ?? undefined;
+  const deliveryStatus = emailDeliveryMeta?.status;
+  const sourceRecordType = getMetadataString(selectedMetadata, 'sourceRecordType');
+  const sourceRecordId = getMetadataString(selectedMetadata, 'sourceRecordId');
+  const sourceConversationId = getMetadataString(selectedMetadata, 'sourceConversationId');
+
   const CustomerPanelContent = () => (
     <>
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
@@ -488,6 +627,40 @@ export default function InboxPage() {
           )}
         </div>
       </section>
+
+      {isInternalFollowUp && (
+        <section className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-3">
+          <h3 className="text-xs font-semibold text-blue-200 mb-2">Internal follow-up source</h3>
+          <div className="space-y-1.5 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-blue-300/70">Origin</span>
+              <span className="text-blue-100">Operations</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-blue-300/70">Record type</span>
+              <span className="text-blue-100">{sourceRecordType || '-'}</span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-blue-300/70">Record ID</span>
+              <span className="text-blue-100 font-mono truncate max-w-[180px] text-right">{sourceRecordId || '-'}</span>
+            </div>
+            {sourceConversationId ? (
+              <a
+                href={`/inbox?conversationId=${encodeURIComponent(sourceConversationId)}`}
+                className="inline-flex mt-1 text-[10px] px-2 py-1 rounded border border-blue-400/30 text-blue-100 hover:bg-blue-400/10"
+              >
+                Open source conversation
+              </a>
+            ) : null}
+            <a
+              href="/operations"
+              className="inline-flex mt-1 ml-2 text-[10px] px-2 py-1 rounded border border-blue-400/30 text-blue-100 hover:bg-blue-400/10"
+            >
+              Open operations
+            </a>
+          </div>
+        </section>
+      )}
 
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
         <h3 className="text-xs font-semibold text-zinc-300 mb-2">Previous conversations</h3>
@@ -556,9 +729,9 @@ export default function InboxPage() {
   );
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="inbox-page flex h-full overflow-hidden">
       {/* ── Left panel ── */}
-      <div className={`${mobileShowConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-[340px] xl:w-[360px] shrink-0 border-r border-zinc-900 h-full bg-zinc-950/70`}>
+      <div className={`inbox-sidebar ${mobileShowConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-[340px] xl:w-[360px] shrink-0 border-r border-zinc-900 h-full bg-zinc-950/70`}>
         {/* Header */}
         <div className="px-3.5 md:px-4 pt-4 md:pt-5 pb-3.5 md:pb-4 border-b border-zinc-900/80 bg-zinc-950/90 backdrop-blur-sm">
           <div className="flex items-start justify-between mb-3">
@@ -579,7 +752,7 @@ export default function InboxPage() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search customer or message"
-              className="w-full h-8.5 rounded-lg bg-zinc-900/90 border border-zinc-800 pl-9 pr-3 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-blue-600/50"
+              className="w-full h-10 rounded-lg bg-zinc-900/90 border border-zinc-800 pl-10 pr-3 text-xs text-zinc-200 placeholder-zinc-600 focus:outline-none focus:border-blue-600/50"
             />
           </div>
 
@@ -659,10 +832,17 @@ export default function InboxPage() {
                 return (
                   <button
                     key={conv.id}
-                    onClick={() => { setSelected(conv); setMobileShowConv(true); }}
-                    className={`w-full text-left px-2.5 md:px-3 py-2.5 md:py-3 rounded-xl border transition-all ${
+                    onClick={() => {
+                      if (conv.status === 'ESCALATED') {
+                        setEscalatedSeenAt(conv.id, new Date().toISOString());
+                        setEscalatedUnreadMap((prev) => ({ ...prev, [conv.id]: false }));
+                      }
+                      setSelected(conv);
+                      setMobileShowConv(true);
+                    }}
+                    className={`inbox-conversation-row w-full text-left px-2.5 md:px-3 py-2.5 md:py-3 rounded-xl border transition-all ${
                       isActive
-                        ? 'bg-blue-600/10 border-blue-600/30 shadow-[0_0_0_1px_rgba(59,130,246,0.15)]'
+                        ? 'is-active bg-blue-600/10 border-blue-600/30 shadow-[0_0_0_1px_rgba(59,130,246,0.15)]'
                         : 'bg-zinc-950/40 border-zinc-900 hover:bg-zinc-900/60 hover:border-zinc-800'
                     }`}
                   >
@@ -678,30 +858,38 @@ export default function InboxPage() {
                           <span className={`text-[13px] md:text-sm font-medium truncate ${isActive ? 'text-white' : 'text-zinc-300'}`}>
                             {displayName}
                           </span>
-                          <span className="text-[10px] text-zinc-600 shrink-0">{timeSince(conv.updatedAt)}</span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {conv.status === 'ESCALATED' && escalatedUnreadMap[conv.id] && (
+                              <span className="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-300 border border-red-500/30">
+                                <span className="w-1.5 h-1.5 rounded-full bg-red-300" />
+                                New
+                              </span>
+                            )}
+                            <span className="text-[10px] text-zinc-600">{timeSince(conv.updatedAt)}</span>
+                          </div>
                         </div>
                         <p className="text-[11px] text-zinc-600 font-light truncate mb-1.5">
                           {lastMsg?.content ?? 'No messages yet'}
                         </p>
                         <div className="flex gap-1 flex-wrap">
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium ${cfg.cls}`}>
+                          <span className={`inbox-pill text-[9px] px-1.5 py-0.5 rounded-md font-medium ${cfg.cls} ${conv.status === 'ESCALATED' ? '' : 'inbox-pill-blue'}`}>
                             {cfg.label}
                           </span>
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium ${
-                            conv.mode === 'AI' ? 'bg-blue-500/15 text-blue-400' : 'bg-orange-500/15 text-orange-400'
+                          <span className={`inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium ${
+                            conv.mode === 'AI' ? 'bg-blue-500/15 text-blue-300 border border-blue-500/30' : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
                           }`}>
                             {conv.mode === 'AI' ? 'AI' : 'Human'}
                           </span>
                           {conv.channel === 'EMAIL' && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800 text-zinc-400">email</span>
+                            <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/10 text-blue-200 border border-blue-500/25">email</span>
                           )}
                           {conv.bot?.name && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800/80 text-zinc-500 max-w-[90px] truncate">
+                            <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/10 text-blue-200 border border-blue-500/20 max-w-[90px] truncate">
                               {conv.bot.name}
                             </span>
                           )}
                           {conv.assignedAgent?.name && (
-                            <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-emerald-500/10 text-emerald-400 max-w-[120px] truncate">
+                            <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/15 text-blue-200 border border-blue-500/25 max-w-[120px] truncate">
                               {conv.assignedAgent.name}
                             </span>
                           )}
@@ -717,7 +905,7 @@ export default function InboxPage() {
       </div>
 
       {/* ── Right panel ── */}
-      <div className={`${mobileShowConv ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 h-full overflow-hidden`}>
+      <div className={`inbox-thread ${mobileShowConv ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 h-full overflow-hidden`}>
         {selected ? (
           <div className="flex-1 min-w-0 min-h-0 flex">
             <div className="flex-1 min-w-0 flex flex-col h-full overflow-hidden relative">
@@ -741,15 +929,31 @@ export default function InboxPage() {
                     </h2>
                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       <span className="text-xs text-zinc-600 font-light">via {selected.bot?.name}</span>
-                      <span className={`text-[9px] px-1.5 py-0.5 rounded-md font-medium ${STATUS_CONFIG[selected.status]?.cls}`}>
+                      {selected.channel === 'EMAIL' && deliveryStatus && (
+                        <span className={`inbox-pill text-[9px] px-1.5 py-0.5 rounded-md font-medium border ${
+                          deliveryStatus === 'SENT'
+                            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                            : deliveryStatus === 'FAILED'
+                              ? 'bg-red-500/15 text-red-300 border-red-500/30'
+                              : 'bg-zinc-800 text-zinc-300 border-zinc-700'
+                        }`}>
+                          email {deliveryStatus.toLowerCase()}
+                        </span>
+                      )}
+                      {isInternalFollowUp && (
+                        <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/20 text-blue-200 border border-blue-500/30">
+                          Internal follow-up
+                        </span>
+                      )}
+                      <span className={`inbox-pill text-[9px] px-1.5 py-0.5 rounded-md font-medium ${STATUS_CONFIG[selected.status]?.cls} ${selected.status === 'ESCALATED' ? '' : 'inbox-pill-blue'}`}>
                         {STATUS_CONFIG[selected.status]?.label}
                       </span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium flex items-center gap-1 bg-zinc-800 text-zinc-300">
+                      <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium flex items-center gap-1 bg-zinc-800 text-zinc-300">
                         {selected.mode === 'AI' ? <Sparkles className="w-2.5 h-2.5" /> : <User2 className="w-2.5 h-2.5" />}
                         {selected.mode === 'AI' ? 'AI handling' : 'Human handling'}
                       </span>
                       {selected.assignedAgent?.name && (
-                        <span className="text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800 text-zinc-300">
+                        <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-zinc-800 text-zinc-300">
                           {selected.assignedAgent.name}
                         </span>
                       )}
@@ -780,6 +984,16 @@ export default function InboxPage() {
                       <AlertTriangle className="w-3 h-3" />
                       Escalation view unavailable
                     </span>
+                  )}
+
+                  {selected.channel === 'EMAIL' && deliveryStatus === 'FAILED' && (
+                    <button
+                      onClick={handleRetryEmailDelivery}
+                      disabled={actionLoading !== null}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-red-500/30 text-red-300 hover:bg-red-500/10 transition-colors text-[11px] font-medium disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {actionLoading === 'retry-email' ? 'Retrying...' : 'Retry delivery'}
+                    </button>
                   )}
 
                   {selected.mode === 'HUMAN' && selected.status !== 'RESOLVED' && (
@@ -855,8 +1069,15 @@ export default function InboxPage() {
                 </div>
               </div>
 
+              {selected.channel === 'EMAIL' && deliveryStatus === 'FAILED' && emailDeliveryMeta?.error && (
+                <div className="mx-6 mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                  <span className="font-semibold">Delivery failed: </span>
+                  {emailDeliveryMeta.error}
+                </div>
+              )}
+
               {/* Messages */}
-              <div ref={messagesScrollRef} className="flex-1 overflow-y-auto px-6 py-6 space-y-3">
+              <div ref={messagesScrollRef} className="inbox-messages flex-1 overflow-y-auto px-6 py-6 space-y-3">
                 {/* AI handoff summary banner */}
                 {typeof selected.metadata?.handoffSummary === 'string' && selected.mode === 'HUMAN' && (
                   <div ref={handoffSummaryRef} className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200/90 text-xs">
@@ -888,7 +1109,7 @@ export default function InboxPage() {
                     <div key={msg.id}>
                       {showDateSeparator && (
                         <div className="flex justify-center py-1.5">
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-500">
+                          <span className="message-date-chip text-[10px] px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-500">
                             {messageDateLabel(msg.createdAt)}
                           </span>
                         </div>
@@ -914,12 +1135,12 @@ export default function InboxPage() {
                             {nameInitials(selected.customerName || 'U')}
                           </div>
                         )}
-                        <div className={`max-w-[62%] px-3 py-2 rounded-xl text-xs leading-snug ${
+                        <div className={`message-bubble max-w-[62%] px-3 py-2 rounded-xl text-xs leading-snug ${
                           isUser
-                            ? 'bg-zinc-900 text-zinc-200 rounded-tl-md'
+                            ? 'message-bubble-user bg-zinc-900 text-zinc-200 rounded-tl-md'
                             : isAgent
-                              ? 'bg-orange-500/15 text-orange-100 border border-orange-500/20 rounded-tr-md'
-                              : 'bg-blue-600/20 text-blue-100 border border-blue-500/20 rounded-tr-md'
+                              ? 'message-bubble-agent bg-orange-500/15 text-orange-100 border border-orange-500/20 rounded-tr-md'
+                              : 'message-bubble-ai bg-blue-600/20 text-blue-100 border border-blue-500/20 rounded-tr-md'
                         }`}>
                           {isUser || isAgent ? (
                             <p className="font-light whitespace-pre-wrap">{msg.content}</p>

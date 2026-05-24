@@ -172,14 +172,67 @@ export default function ForwardingSettingsPage() {
 
   if (loading) {
     return (
-      <div className="p-8">
-        <div className="h-12 rounded-xl bg-zinc-900 animate-pulse" />
+      <div className="settings-page settings-forwarding-page p-4 md:p-8">
+        <div className="mb-8 space-y-2">
+          <div className="h-8 w-56 rounded-xl bg-zinc-900 animate-pulse" />
+          <div className="h-4 w-96 max-w-full rounded-lg bg-zinc-900 animate-pulse" />
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <section className="card p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="h-4 w-36 rounded bg-zinc-900 animate-pulse" />
+              <div className="h-3 w-20 rounded bg-zinc-900 animate-pulse" />
+            </div>
+
+            <div className="space-y-2">
+              {[...Array(3)].map((_, i) => (
+                <div key={i} className="rounded-lg border border-zinc-800 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="space-y-2">
+                      <div className="h-4 w-32 rounded bg-zinc-900 animate-pulse" />
+                      <div className="h-3 w-48 rounded bg-zinc-900 animate-pulse" />
+                    </div>
+                    <div className="h-7 w-16 rounded border border-zinc-800 bg-zinc-900 animate-pulse" />
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-4 rounded-lg border border-zinc-800 p-3 space-y-2">
+              <div className="h-3 w-24 rounded bg-zinc-900 animate-pulse" />
+              <div className="h-9 w-full rounded-lg bg-zinc-900 animate-pulse" />
+              <div className="grid grid-cols-2 gap-2">
+                <div className="h-9 rounded-lg bg-zinc-900 animate-pulse" />
+                <div className="h-9 rounded-lg bg-zinc-900 animate-pulse" />
+              </div>
+              <div className="h-9 w-36 rounded-lg bg-zinc-900 animate-pulse" />
+            </div>
+          </section>
+
+          <section className="card p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <div className="h-4 w-40 rounded bg-zinc-900 animate-pulse" />
+              <div className="h-4 w-4 rounded bg-zinc-900 animate-pulse" />
+            </div>
+            <div className="h-3 w-72 max-w-full rounded bg-zinc-900 animate-pulse mb-3" />
+            <div className="h-9 w-full rounded-lg bg-zinc-900 animate-pulse" />
+            <div className="h-9 w-44 rounded-lg bg-zinc-900 animate-pulse mt-3" />
+
+            <div className="mt-5 rounded-lg border border-zinc-800 p-3 space-y-2">
+              <div className="h-3 w-24 rounded bg-zinc-900 animate-pulse" />
+              {[...Array(2)].map((_, i) => (
+                <div key={i} className="h-8 rounded border border-zinc-800 bg-zinc-900 animate-pulse" />
+              ))}
+            </div>
+          </section>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="settings-page settings-forwarding-page p-4 md:p-8">
       <div className="mb-8">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Forwarding Settings</h1>
         <p className="mt-1 text-sm text-zinc-500 font-light">

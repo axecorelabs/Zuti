@@ -866,6 +866,7 @@ export class ActionForwardingService {
         const existingPayload = ((existingTask.payload as Record<string, unknown> | null) ?? {});
         const currentFollowUpMissingFields = Array.from(new Set<string>(followUpMissingFields));
         const actionAiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
+        let existingBookingId: string | null = null;
 
         if (detected.actionType === 'MEETING_REQUEST') {
           const customContract = this.getCustomIntakeFields(actionAiConfig, detected.actionType);
@@ -886,6 +887,7 @@ export class ActionForwardingService {
           });
 
           if (existingBooking) {
+            existingBookingId = existingBooking.id;
             const existingBookingMetadata = ((existingBooking.metadata as Record<string, unknown> | null) ?? {});
             await prismaAny.booking.update({
               where: { id: existingBooking.id },
@@ -1052,7 +1054,7 @@ export class ActionForwardingService {
             notification.body,
             {
               actionTaskId: existingTask.id,
-              bookingId: existingBooking?.id ?? null,
+              bookingId: existingBookingId,
               botId: input.botId,
               customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
               preferredDatetime: collectedFields.preferred_datetime ?? null,

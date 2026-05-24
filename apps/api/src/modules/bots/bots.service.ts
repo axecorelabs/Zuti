@@ -18,7 +18,7 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
-import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
@@ -776,9 +776,10 @@ export class BotsService {
     await this.billing.assertMinimumCredits(bot.organizationId, preflightCredits);
     try {
       const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
-      const aiConfig = (bot.aiConfig as Record<string, string>) ?? {};
+      const aiConfig = (bot.aiConfig as Record<string, unknown>) ?? {};
       const effectiveSystemPrompt = [
         buildAgentSystemPrompt(aiConfig, bot.name),
+        buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
         buildOperationalIntegrityPromptBlock(
           forwardingResult.status,
           forwardingResult.reason,

@@ -15,7 +15,7 @@ import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
-import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
+import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
@@ -299,14 +299,14 @@ export class TelegramProcessor {
         }
       }
       const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
-      const aiConfig = (bot?.aiConfig as Record<string, string>) ?? {};
+      const aiConfig = (bot?.aiConfig as Record<string, unknown>) ?? {};
       const systemPrompt = buildAgentSystemPrompt(aiConfig, bot?.name ?? 'Assistant');
       const routeToRoles = Array.isArray(bot?.routeToRoles) && bot.routeToRoles.length > 0
         ? bot.routeToRoles
         : ['AGENT'];
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
-        bot?.name ?? 'Assistant', systemPrompt, org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
+        bot?.name ?? 'Assistant', systemPrompt, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
       );
     }
   }
@@ -320,6 +320,7 @@ export class TelegramProcessor {
     userText: string,
     botName: string = 'Assistant',
     systemPrompt: string | null = null,
+    skillBehaviorPrompt: string | null = null,
     orgName: string | null = null,
     forwardingResult: ActionForwardingResult,
     routeToRoles: string[] = ['AGENT'],
@@ -328,6 +329,7 @@ export class TelegramProcessor {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
     const effectiveSystemPrompt = [
       systemPrompt,
+      skillBehaviorPrompt,
       buildOperationalIntegrityPromptBlock(
         forwardingResult.status,
         forwardingResult.reason,

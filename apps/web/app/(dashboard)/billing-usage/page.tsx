@@ -384,7 +384,7 @@ export default function BillingUsagePage() {
   }, [wallet, runwayDays]);
 
   return (
-    <div className="p-5 md:p-10">
+    <div className="billing-usage-page p-5 md:p-10">
       {paymentModal.open ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm px-4">
           <div className="w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
@@ -436,19 +436,19 @@ export default function BillingUsagePage() {
               <p className="mt-2 text-sm text-zinc-400 max-w-2xl">
                 Monitor credit health, predict runway, and top up quickly with one-time or monthly auto-renew purchases.
               </p>
-              <div className="mt-4 inline-flex items-center gap-1 bg-zinc-900/70 border border-zinc-800 rounded-xl p-1">
+              <div className="billing-tabs mt-4 inline-flex items-center gap-1 bg-zinc-900/70 border border-zinc-800 rounded-xl p-1">
                 <button
                   onClick={() => setActiveTab('OVERVIEW')}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                    activeTab === 'OVERVIEW' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  className={`billing-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    activeTab === 'OVERVIEW' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   Overview
                 </button>
                 <button
                   onClick={() => setActiveTab('BUY_CREDITS')}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                    activeTab === 'BUY_CREDITS' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  className={`billing-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    activeTab === 'BUY_CREDITS' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   Buy credits
@@ -456,13 +456,13 @@ export default function BillingUsagePage() {
               </div>
             </div>
             <div className={`items-center gap-2 ${activeTab === 'OVERVIEW' ? 'flex' : 'hidden'}`}>
-              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1">
+              <div className="billing-days-tabs flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1">
                 {DAYS_OPTIONS.map((d) => (
                   <button
                     key={d}
                     onClick={() => setDays(d)}
-                    className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                      days === d ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                    className={`billing-days-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                      days === d ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                     }`}
                   >
                     {d}d
@@ -489,42 +489,42 @@ export default function BillingUsagePage() {
 
         {activeTab === 'OVERVIEW' ? (
           <>
-            <section className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-          <div className="card p-6">
+            <section className="billing-stat-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          <div className="billing-stat-card card p-6">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-xs text-zinc-500 font-normal">Remaining credits</p>
+              <p className="billing-stat-label text-xs text-zinc-500 font-normal">Remaining credits</p>
               <div className="w-8 h-8 rounded-lg border flex items-center justify-center bg-blue-500/15 border-blue-500/20 text-blue-300">
                 <Wallet className="w-4 h-4" />
               </div>
             </div>
-            <p className="font-brand font-semibold text-3xl text-white tracking-tight">
+            <p className="billing-stat-value font-brand font-semibold text-3xl text-white tracking-tight">
               {wallet ? wallet.creditBalance.toLocaleString() : '—'}
             </p>
-            <p className="text-xs text-zinc-600 mt-1">current available balance</p>
+            <p className="billing-stat-subtext text-xs text-zinc-600 mt-1">current available balance</p>
           </div>
 
-          <div className="card p-6">
+          <div className="billing-stat-card card p-6">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-xs text-zinc-500 font-normal">Burn rate</p>
+              <p className="billing-stat-label text-xs text-zinc-500 font-normal">Burn rate</p>
               <div className="w-8 h-8 rounded-lg border flex items-center justify-center bg-rose-500/15 border-rose-500/20 text-rose-300">
                 <Gauge className="w-4 h-4" />
               </div>
             </div>
-            <p className="font-brand font-semibold text-3xl text-white tracking-tight">
+            <p className="billing-stat-value font-brand font-semibold text-3xl text-white tracking-tight">
               {burnRatePerDay === null ? '—' : `${burnRatePerDay.toLocaleString()} /day`}
             </p>
-            <p className="text-xs text-zinc-600 mt-1">based on last {estimates?.sourceWindowDays ?? 30} days</p>
+            <p className="billing-stat-subtext text-xs text-zinc-600 mt-1">based on last {estimates?.sourceWindowDays ?? 30} days</p>
           </div>
 
-          <div className="card p-6">
+          <div className="billing-stat-card card p-6">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-xs text-zinc-500 font-normal">Runway</p>
+              <p className="billing-stat-label text-xs text-zinc-500 font-normal">Runway</p>
               <div className="w-8 h-8 rounded-lg border flex items-center justify-center bg-violet-500/15 border-violet-500/20 text-violet-300">
                 <Gauge className="w-4 h-4" />
               </div>
             </div>
-            <p className="font-brand font-semibold text-3xl text-white tracking-tight">{runwayDisplay}</p>
-            <p className="text-xs text-zinc-600 mt-1">
+            <p className="billing-stat-value font-brand font-semibold text-3xl text-white tracking-tight">{runwayDisplay}</p>
+            <p className="billing-stat-subtext text-xs text-zinc-600 mt-1">
               {isLowConfidence ? 'collecting enough activity to project stable runway' : 'at your current usage pace'}
             </p>
           </div>
@@ -585,19 +585,19 @@ export default function BillingUsagePage() {
                   Same packs, two purchase modes: one-time top-up or monthly auto-renew.
                 </p>
               </div>
-              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1">
+              <div className="billing-purchase-tabs flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-xl p-1">
                 <button
                   onClick={() => setPurchaseMode('ONE_TIME')}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                    purchaseMode === 'ONE_TIME' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  className={`billing-purchase-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    purchaseMode === 'ONE_TIME' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   One-time
                 </button>
                 <button
                   onClick={() => setPurchaseMode('AUTO_RENEW')}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                    purchaseMode === 'AUTO_RENEW' ? 'bg-blue-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  className={`billing-purchase-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    purchaseMode === 'AUTO_RENEW' ? 'is-active bg-blue-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   Auto-renew monthly

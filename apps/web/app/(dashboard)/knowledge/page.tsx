@@ -326,7 +326,7 @@ export default function KnowledgePage() {
   };
 
   return (
-    <div className="p-8">
+    <div className="knowledge-page p-8">
       <div className="mb-8">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Knowledge</h1>
         <p className="mt-1 text-sm text-zinc-500 font-light">
@@ -334,10 +334,10 @@ export default function KnowledgePage() {
         </p>
       </div>
 
-      <div className="mb-6 card p-2 flex items-center gap-1 w-fit">
+      <div className="knowledge-tabs mb-6 card p-2 flex items-center gap-1 w-fit">
         <button
           onClick={() => setPageTab('sources')}
-          className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+          className={`knowledge-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
             pageTab === 'sources' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
           }`}
         >
@@ -345,7 +345,7 @@ export default function KnowledgePage() {
         </button>
         <button
           onClick={() => setPageTab('suggestions')}
-          className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+          className={`knowledge-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
             pageTab === 'suggestions' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
           }`}
         >
@@ -353,7 +353,7 @@ export default function KnowledgePage() {
         </button>
         <button
           onClick={() => setPageTab('gaps')}
-          className={`px-3 py-1.5 text-xs rounded-lg transition-colors ${
+          className={`knowledge-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
             pageTab === 'gaps' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
           }`}
         >
@@ -384,12 +384,12 @@ export default function KnowledgePage() {
             <div className="card p-6">
               <h2 className="font-brand font-semibold text-base tracking-tight text-white mb-4">Add source</h2>
 
-              <div className="flex gap-1 bg-zinc-900 rounded-lg p-1 mb-6">
+              <div className="knowledge-ingest-tabs flex gap-1 bg-zinc-900 rounded-lg p-1 mb-6">
                 {(['url', 'text'] as IngestTab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setIngestTab(t)}
-                    className={`flex-1 flex items-center justify-center gap-1.5 text-xs py-2 rounded-md transition-colors font-normal ${
+                    className={`knowledge-ingest-tab-btn flex-1 flex items-center justify-center gap-1.5 text-xs py-2 rounded-md transition-colors font-normal ${
                       ingestTab === t ? 'bg-zinc-800 text-white' : 'text-zinc-600 hover:text-zinc-300'
                     }`}
                   >
@@ -465,7 +465,7 @@ export default function KnowledgePage() {
 
               <div className="mt-5 rounded-xl border border-emerald-900/40 bg-emerald-950/20 p-3 flex items-start gap-2.5">
                 <ShieldCheck className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-                <p className="text-xs text-emerald-200/90 leading-relaxed">
+                <p className="text-xs text-zinc-300 leading-relaxed">
                   Safety: secret-like values and private/local URLs are blocked during ingestion.
                 </p>
               </div>
@@ -715,15 +715,15 @@ export default function KnowledgePage() {
                       </div>
                       <p className="text-xs text-zinc-400 mt-2 whitespace-pre-wrap">{gap.question}</p>
                       <p className="text-[11px] text-zinc-600 mt-1">Last seen: {new Date(gap.lastSeenAt).toLocaleString()}</p>
-                      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <div className="knowledge-gap-status-group mt-3 flex flex-wrap items-center gap-1.5">
                         {(['OPEN', 'ANSWERED', 'RESOLVED', 'DISMISSED'] as GapStatus[]).map((status) => (
                           <button
                             key={status}
                             onClick={() => updateGapStatus(gap.id, status)}
                             disabled={updatingGapId === gap.id || gap.status === status}
-                            className={`text-[10px] px-2 py-1 rounded border transition-colors disabled:opacity-50 ${
+                            className={`knowledge-gap-status-btn text-[10px] px-2 py-1 rounded border transition-colors disabled:opacity-50 ${
                               gap.status === status
-                                ? 'border-amber-500/40 text-amber-200 bg-amber-500/10'
+                                ? 'is-active border-amber-500/40 text-amber-200 bg-amber-500/10'
                                 : 'border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
                             }`}
                           >

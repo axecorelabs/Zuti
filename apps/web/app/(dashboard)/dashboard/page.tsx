@@ -60,7 +60,7 @@ const STATUS_COLORS: Record<string, string> = {
 const CustomTooltip = ({ active, payload }: any) => {
   if (active && payload?.length) {
     return (
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300">
+      <div className="overview-tooltip bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300">
         {payload[0].value} conversations
       </div>
     );
@@ -143,13 +143,13 @@ export default function DashboardPage() {
         { href: '/activity', icon: AlertCircle, label: 'Your activity', sub: 'Review your recent actions' },
       ]
     : [
-        { href: '/bots', icon: Bot, label: 'Add a bot', sub: 'Connect Telegram' },
+        { href: '/bots', icon: Bot, label: 'Add AI agent', sub: 'Connect Telegram' },
         { href: '/inbox', icon: MessageSquare, label: 'Open inbox', sub: 'View messages' },
         { href: '/knowledge', icon: BookOpen, label: 'Add knowledge', sub: 'Train your AI' },
       ];
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="overview-page p-4 md:p-8">
       {/* Header */}
       <div className="mb-8">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">
@@ -165,18 +165,18 @@ export default function DashboardPage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      <div className="overview-stat-grid grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {statCards.map(({ label, value, icon: Icon, accent }) => (
-          <div key={label} className="card p-5">
+          <div key={label} className="overview-stat-card card p-5">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-xs text-zinc-500 font-normal">{label}</p>
+              <p className="overview-stat-label text-xs text-zinc-500 font-normal">{label}</p>
               <div className={`w-7 h-7 rounded-lg border flex items-center justify-center ${accent}`}>
                 <Icon className="w-3.5 h-3.5" />
               </div>
             </div>
             {loading
               ? <div className="w-10 h-7 bg-zinc-800 animate-pulse rounded" />
-              : <p className="font-brand font-semibold text-3xl text-white tracking-tight">{value}</p>}
+              : <p className="overview-stat-value font-brand font-semibold text-3xl text-white tracking-tight">{value}</p>}
           </div>
         ))}
       </div>

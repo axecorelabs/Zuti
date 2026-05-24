@@ -49,7 +49,7 @@ function shortDate(iso: string, days: Days): string {
 const VolumeTooltip = ({ active, payload, label }: any) => {
   if (active && payload?.length) {
     return (
-      <div className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300">
+      <div className="analytics-tooltip bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-xs text-zinc-300">
         <p className="text-zinc-500 mb-0.5">{label}</p>
         {payload[0].value} conversations
       </div>
@@ -101,17 +101,17 @@ export default function AnalyticsPage() {
     accent: string,
     subtitle?: string,
   ) => (
-    <div className="card p-5">
+    <div className="analytics-stat-card card p-5">
       <div className="flex items-center justify-between mb-4">
-        <p className="text-xs text-zinc-500 font-normal">{label}</p>
+        <p className="analytics-stat-label text-xs text-zinc-500 font-normal">{label}</p>
         <div className={`w-7 h-7 rounded-lg border flex items-center justify-center ${accent}`}>
           {icon}
         </div>
       </div>
       {loading ? skeleton() : (
-        <p className="font-brand font-semibold text-3xl text-white tracking-tight">{fmt(value)}</p>
+        <p className="analytics-stat-value font-brand font-semibold text-3xl text-white tracking-tight">{fmt(value)}</p>
       )}
-      {subtitle && <p className="text-xs text-zinc-600 mt-1">{subtitle}</p>}
+      {subtitle && <p className="analytics-stat-subtext text-xs text-zinc-600 mt-1">{subtitle}</p>}
     </div>
   );
 
@@ -130,7 +130,7 @@ export default function AnalyticsPage() {
     : [];
 
   return (
-    <div className="p-4 md:p-8">
+    <div className="analytics-page p-4 md:p-8">
       {/* Header */}
       <div className="flex items-start justify-between mb-8 gap-4 flex-wrap">
         <div>
@@ -174,19 +174,19 @@ export default function AnalyticsPage() {
       </div>
 
       {/* Top stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      <div className="analytics-stat-grid grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {/* Total */}
-        <div className="card p-5">
+        <div className="analytics-stat-card card p-5">
           <div className="flex items-center justify-between mb-4">
-            <p className="text-xs text-zinc-500 font-normal">Conversations</p>
+            <p className="analytics-stat-label text-xs text-zinc-500 font-normal">Conversations</p>
             <div className="w-7 h-7 rounded-lg border flex items-center justify-center bg-blue-600/15 border-blue-600/20 text-blue-400">
               <MessageSquare className="w-3.5 h-3.5" />
             </div>
           </div>
           {loading ? skeleton() : (
-            <p className="font-brand font-semibold text-3xl text-white tracking-tight">{data?.totals.conversations ?? 0}</p>
+            <p className="analytics-stat-value font-brand font-semibold text-3xl text-white tracking-tight">{data?.totals.conversations ?? 0}</p>
           )}
-          <p className="text-xs text-zinc-600 mt-1">in {days} days</p>
+          <p className="analytics-stat-subtext text-xs text-zinc-600 mt-1">in {days} days</p>
         </div>
 
         {/* Resolution rate */}

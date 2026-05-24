@@ -54,7 +54,7 @@ export default function SettingsPage() {
   const displayName = user?.name || currentMember?.user?.name || user?.email || '—';
 
   return (
-    <div className="w-full px-4 py-4 md:px-8 md:py-8">
+    <div className="settings-page w-full px-4 py-4 md:px-8 md:py-8">
       <div className="mx-auto w-full max-w-5xl lg:max-w-6xl">
       {/* Header */}
       <div className="mb-8">
@@ -63,14 +63,14 @@ export default function SettingsPage() {
       </div>
 
       {/* Tab nav */}
-      <div className="flex gap-1 mb-6 bg-zinc-900 rounded-xl p-1 w-fit mx-auto md:mx-0">
+      <div className="settings-tabs flex gap-1 mb-6 bg-zinc-900 rounded-xl p-1 w-fit mx-auto md:mx-0">
         {TABS.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all font-normal ${
+            className={`settings-tab-btn flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-all font-normal ${
               tab === key
-                ? 'bg-zinc-800 text-white shadow-sm'
+                ? 'is-active bg-zinc-800 text-white shadow-sm'
                 : 'text-zinc-600 hover:text-zinc-300'
             }`}
           >
