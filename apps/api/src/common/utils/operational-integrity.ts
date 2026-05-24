@@ -136,7 +136,7 @@ export function buildOperationalIntegrityPromptBlock(
     '- Do not say the request was forwarded to the owner, sent to the team, or that the meeting was booked/scheduled unless that is explicitly confirmed.',
     '- If the user asked to book a meeting, but the system only logged an action task, say it was noted for review; do not say a meeting was scheduled or a booking exists.',
     '- If forwarding failed due to missing customer data, ask only for the missing fields before promising escalation.',
-    '- If completion is not confirmed, use capability language such as "I can help prepare this as a request for review" or "I can help note this as a meeting request."',
+    '- If completion is not confirmed, use capability language such as "I can help prepare this as a request for review" or "I can help note this for review."',
     '- Never auto-correct or normalize customer-provided identifiers (emails, phone numbers, names, dates). If a value looks invalid or incomplete, ask the user to confirm or correct it.',
     '- Never append or infer missing email/domain/date parts that the user did not provide.',
     '- Do not claim you checked or verified arbitrary customer records/emails in the system unless that lookup was explicitly confirmed by backend data for this turn.',

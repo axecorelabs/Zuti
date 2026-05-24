@@ -70,7 +70,6 @@ export interface AppNotification {
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
-  { label: 'Escalations', href: '/resolution', icon: MessagesSquare, agentVisible: true, disabled: true },
   { label: 'Ai Support Bots', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
@@ -399,36 +398,20 @@ export default function Sidebar({ isOpen = false, onClose }: { isOpen?: boolean;
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
           {navItems
             .filter((item) => item.agentVisible || (roleResolved && !isAgent))
-            .map(({ label, href, icon: Icon, disabled }) => {
+            .map(({ label, href, icon: Icon }) => {
             const isActive =
               pathname === href || (href !== '/dashboard' && pathname.startsWith(`${href}/`));
-            const classes = `flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all relative ${
-              disabled
-                ? 'text-zinc-700 cursor-not-allowed opacity-70'
-                : isActive
-                  ? 'bg-blue-600/10 text-white font-normal'
-                  : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light'
-            }`;
-
-            if (disabled) {
-              return (
-                <span
-                  key={href}
-                  aria-disabled="true"
-                  className={classes}
-                >
-                  <Icon className="w-4 h-4 shrink-0 text-zinc-700" />
-                  {label}
-                </span>
-              );
-            }
 
             return (
               <Link
                 key={href}
                 href={href}
                 onClick={onClose}
-                className={classes}
+                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all relative ${
+                  isActive
+                    ? 'bg-blue-600/10 text-white font-normal'
+                    : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light'
+                }`}
               >
                 {isActive && (
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-blue-500 rounded-r-full" />
