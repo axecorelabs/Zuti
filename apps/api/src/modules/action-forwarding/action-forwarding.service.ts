@@ -159,8 +159,8 @@ function isStrictEmail(value: string): boolean {
   return /^(?=.{6,254}$)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(value.trim());
 }
 
-function rankBookingPriority(reason: string | null, fallbackText: string): 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT' {
-  const source = `${reason ?? ''} ${fallbackText}`.toLowerCase();
+function rankActionPriority(sourceText: string): 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT' {
+  const source = sourceText.toLowerCase();
   if (/(urgent|asap|critical|emergency|outage|immediately|today)/i.test(source)) return 'URGENT';
   if (/(enterprise|contract|procurement|migration|security|incident|priority)/i.test(source)) return 'HIGH';
   if (/(demo|pricing|plan|feature|onboarding|integration)/i.test(source)) return 'NORMAL';
@@ -1044,8 +1044,10 @@ export class ActionForwardingService {
           ? 'PENDING_CONFIRMATION'
           : 'QUEUED',
         priority: detected.actionType === 'MEETING_REQUEST'
-          ? rankBookingPriority(collectedFields.booking_reason ?? null, input.messageText)
-          : 'HIGH',
+          ? rankActionPriority(`${collectedFields.booking_reason ?? ''} ${input.messageText}`)
+          : detected.actionType === 'TECHNICAL_ISSUE'
+            ? rankActionPriority(`${collectedFields.issue_summary ?? ''} ${input.messageText}`)
+            : 'HIGH',
         summary: detected.summary,
         confidence: detected.confidence,
         dedupeKey,
