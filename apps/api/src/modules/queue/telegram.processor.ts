@@ -17,6 +17,7 @@ import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
 import {
+  buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
   sanitizeOperationalClaims,
 } from '../../common/utils/operational-integrity';
@@ -577,13 +578,19 @@ export class TelegramProcessor {
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
       });
+      const deterministicFollowUp = buildDeterministicFollowUpMessage({
+        actionType: forwardingResult.actionType,
+        missingFields: forwardingResult.missingFields,
+        canClaimCompleted: forwardingResult.canClaimCompleted,
+      });
+      const finalAiText = deterministicFollowUp ?? safeAiText;
 
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
         data: {
           conversationId,
           role: 'ASSISTANT',
-          content: safeAiText,
+          content: finalAiText,
         },
       });
 
@@ -600,7 +607,7 @@ export class TelegramProcessor {
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
           chat_id: telegramChatId,
-          text: markdownToTelegramHtml(safeAiText),
+          text: markdownToTelegramHtml(finalAiText),
           parse_mode: 'HTML',
         }),
       );

@@ -20,6 +20,7 @@ import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
 import {
+  buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
   sanitizeOperationalClaims,
 } from '../../common/utils/operational-integrity';
@@ -896,6 +897,15 @@ export class BotsService {
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
       });
+
+      const deterministicFollowUp = buildDeterministicFollowUpMessage({
+        actionType: forwardingResult.actionType,
+        missingFields: forwardingResult.missingFields,
+        canClaimCompleted: forwardingResult.canClaimCompleted,
+      });
+      if (deterministicFollowUp) {
+        aiReply = deterministicFollowUp;
+      }
 
       // Store AI message
       const aiMessage = await this.prisma.message.create({

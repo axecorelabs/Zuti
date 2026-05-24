@@ -21,6 +21,7 @@ import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt } from '../../common/utils/agent-config';
 import {
+  buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
   sanitizeOperationalClaims,
 } from '../../common/utils/operational-integrity';
@@ -561,10 +562,16 @@ export class EmailProcessor {
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
       });
+      const deterministicFollowUp = buildDeterministicFollowUpMessage({
+        actionType: forwardingResult.actionType,
+        missingFields: forwardingResult.missingFields,
+        canClaimCompleted: forwardingResult.canClaimCompleted,
+      });
+      const finalAiText = deterministicFollowUp ?? safeAiText;
 
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
-        data: { conversationId: conversation.id, role: 'ASSISTANT', content: safeAiText },
+        data: { conversationId: conversation.id, role: 'ASSISTANT', content: finalAiText },
       });
       this.events.emitNewMessage(organizationId, {
         conversationId: conversation.id,
@@ -580,7 +587,7 @@ export class EmailProcessor {
       await this.sendEmail(
         fromAddress, toAddress, customerEmail,
         `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-        safeAiText,
+        finalAiText,
         conversation.emailThreadId,
         botName, orgName ?? '',
       );

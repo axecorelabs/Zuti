@@ -22,6 +22,12 @@ interface OperationalClaimGuardOptions {
   blockedCapability?: string;
 }
 
+interface DeterministicFollowUpOptions {
+  actionType?: string;
+  missingFields?: string[];
+  canClaimCompleted?: boolean;
+}
+
 const ESCALATION_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:escalated|forwarded|notified)\b/gi,
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:sent|passed)\s+(?:this\s+)?(?:to\s+)?(?:our\s+)?(?:team|owner|manager)\b/gi,
@@ -125,6 +131,8 @@ export function buildOperationalIntegrityPromptBlock(
     '- If the user asked to book a meeting, but the system only logged an action task, say it was noted for review; do not say a meeting was scheduled or a booking exists.',
     '- If forwarding failed due to missing customer data, ask only for the missing fields before promising escalation.',
     '- If completion is not confirmed, use capability language such as "I can help prepare this as a request for review" or "I can help note this as a meeting request."',
+    '- Never auto-correct or normalize customer-provided identifiers (emails, phone numbers, names, dates). If a value looks invalid or incomplete, ask the user to confirm or correct it.',
+    '- Never append or infer missing email/domain/date parts that the user did not provide.',
     '- Do not claim you checked or verified arbitrary customer records/emails in the system unless that lookup was explicitly confirmed by backend data for this turn.',
     '- Be explicit about uncertainty and next steps; do not imply actions already happened when they have not.',
   ].join('\n');
@@ -199,4 +207,40 @@ export function sanitizeOperationalClaims(
   }
 
   return sanitized;
+}
+
+function humanizeField(field: string): string {
+  switch (field) {
+    case 'customer_name':
+      return 'full name';
+    case 'customer_email':
+      return 'valid email address';
+    case 'preferred_datetime':
+      return 'preferred date and time';
+    case 'booking_reason':
+      return 'meeting subject/reason';
+    case 'issue_summary':
+      return 'issue summary';
+    case 'product':
+      return 'product/service requested';
+    default:
+      return field.replace(/_/g, ' ');
+  }
+}
+
+export function buildDeterministicFollowUpMessage(
+  options: DeterministicFollowUpOptions = {},
+): string | null {
+  const missingFields = (options.missingFields ?? []).filter((field) => field.trim().length > 0);
+  if (missingFields.length === 0) return null;
+  if (options.canClaimCompleted === true) return null;
+
+  const subject = options.actionType === 'MEETING_REQUEST'
+    ? 'meeting request'
+    : options.actionType === 'TECHNICAL_ISSUE'
+      ? 'technical issue request'
+      : 'request';
+  const needed = missingFields.map(humanizeField).join(', ');
+
+  return `To continue with your ${subject}, please provide: ${needed}. I cannot submit this as completed until these details are confirmed.`;
 }

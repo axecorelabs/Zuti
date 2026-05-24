@@ -155,6 +155,10 @@ function normalizeFieldKey(value: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
+function isStrictEmail(value: string): boolean {
+  return /^(?=.{6,254}$)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(value.trim());
+}
+
 @Injectable()
 export class ActionForwardingService {
   constructor(
@@ -290,10 +294,6 @@ export class ActionForwardingService {
 
     const emailMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
     if (emailMatch?.[0]) extracted.customer_email = emailMatch[0].toLowerCase();
-    // Fallback for user-typed but incomplete emails (e.g. missing TLD) so requests can still be captured.
-    const emailLikeMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]{2,}\b/i);
-    if (!extracted.customer_email && emailLikeMatch?.[0]) extracted.customer_email = emailLikeMatch[0].toLowerCase();
-
     const nameMatch = text.match(/\b(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z\s'-]{1,60})\b/i);
     if (nameMatch?.[1]) extracted.customer_name = nameMatch[1].trim();
 
@@ -365,6 +365,47 @@ export class ActionForwardingService {
     }
 
     return extracted;
+  }
+
+  private applyFieldCorrectnessChecks(
+    actionType: ActionType,
+    fields: Record<string, string>,
+  ): { normalized: Record<string, string>; invalidFields: string[] } {
+    const normalized = { ...fields };
+    const invalidFields = new Set<string>();
+
+    const email = normalized.customer_email;
+    if (email && !isStrictEmail(email)) {
+      delete normalized.customer_email;
+      invalidFields.add('customer_email');
+    }
+
+    const name = normalized.customer_name;
+    if (name && name.trim().length < 2) {
+      delete normalized.customer_name;
+      invalidFields.add('customer_name');
+    }
+
+    if (actionType === 'MEETING_REQUEST') {
+      const reason = normalized.booking_reason;
+      if (reason && reason.trim().length < 4) {
+        delete normalized.booking_reason;
+        invalidFields.add('booking_reason');
+      }
+    }
+
+    if (actionType === 'TECHNICAL_ISSUE') {
+      const summary = normalized.issue_summary;
+      if (summary && summary.trim().length < 8) {
+        delete normalized.issue_summary;
+        invalidFields.add('issue_summary');
+      }
+    }
+
+    return {
+      normalized,
+      invalidFields: Array.from(invalidFields),
+    };
   }
 
   private skillForAction(actionType: ActionType): SkillKey | null {
@@ -534,8 +575,11 @@ export class ActionForwardingService {
     blockedCapability?: string;
     capabilityKey?: CapabilityKey;
   }): ActionForwardingResult {
+    const hasMissingOrInvalid = Array.isArray(result.missingFields) && result.missingFields.length > 0;
     const canClaimCompleted =
-      (result.status === 'QUEUED' || result.status === 'DUPLICATE') && Boolean(result.actionTaskId);
+      (result.status === 'QUEUED' || result.status === 'DUPLICATE')
+      && Boolean(result.actionTaskId)
+      && !hasMissingOrInvalid;
 
     return {
       status: result.status,
@@ -668,29 +712,36 @@ export class ActionForwardingService {
         ),
       };
 
+      const correctness = this.applyFieldCorrectnessChecks(detected.actionType, collectedFields);
+      collectedFields = correctness.normalized;
+
       const missingFields = requiredFieldKeys.filter((field) => {
         const value = collectedFields[field];
         return !value || value.trim().length === 0;
       });
+      const missingOrInvalidFields = Array.from(new Set<string>([
+        ...missingFields,
+        ...correctness.invalidFields,
+      ]));
 
       await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
-        status: missingFields.length > 0 ? 'COLLECTING' : 'READY',
+        status: missingOrInvalidFields.length > 0 ? 'COLLECTING' : 'READY',
         requiredFields: requiredFieldKeys,
-        missingFields,
+        missingFields: missingOrInvalidFields,
         collected: collectedFields,
       });
 
-      if (missingFields.length > 0) {
+      if (missingOrInvalidFields.length > 0) {
         if (detected.actionType === 'MEETING_REQUEST') {
           // Capture meeting requests even when some intake fields are missing.
-          followUpMissingFields = Array.from(new Set([...followUpMissingFields, ...missingFields]));
+          followUpMissingFields = Array.from(new Set([...followUpMissingFields, ...missingOrInvalidFields]));
         } else {
         return this.buildForwardingResult({
           status: 'NO_INTENT',
           reason: 'MISSING_REQUIRED_FIELDS',
           actionType: detected.actionType,
           capabilityKey,
-          missingFields,
+          missingFields: missingOrInvalidFields,
         });
         }
       }
@@ -700,6 +751,44 @@ export class ActionForwardingService {
           followUpMissingFields.push('customer_email');
         }
       }
+    }
+
+    const activeStatuses = [
+      'DETECTED',
+      'PENDING_CONFIRMATION',
+      'QUEUED',
+      'ROUTED',
+      'SENT',
+      'DELIVERED',
+      'ACKNOWLEDGED',
+      'CONFIGURATION_NEEDED',
+    ];
+    const activeConversationTask = await prismaAny.actionTask.findFirst({
+      where: {
+        orgId: input.organizationId,
+        botId: input.botId,
+        conversationId: input.conversationId,
+        actionType: detected.actionType,
+        status: { in: activeStatuses },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+      },
+    });
+    if (!existingContractActionTaskId && activeConversationTask?.id) {
+      existingContractActionTaskId = activeConversationTask.id;
+    }
+
+    if (detected.actionType !== 'MEETING_REQUEST' && existingContractActionTaskId) {
+      return this.buildForwardingResult({
+        status: 'DUPLICATE',
+        reason: 'DUPLICATE_ACTION',
+        actionType: detected.actionType,
+        capabilityKey,
+        actionTaskId: existingContractActionTaskId,
+        missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
+      });
     }
 
     if (detected.actionType === 'MEETING_REQUEST' && existingContractActionTaskId) {
