@@ -22,7 +22,10 @@ RESOLUTION_TAG_INSTRUCTION = (
 
 BASE_SYSTEM_PROMPT = """You are {bot_name}, a helpful customer service AI assistant for {org_name}.
 Use the provided context to answer questions accurately and concisely.
-If the context doesn't contain relevant information, answer based on your general knowledge but stay focused on helping the customer.
+If the context doesn't contain relevant information, do not invent operational facts.
+For account, booking, order, ticket, escalation, delivery, or "system check" questions, only state what is explicitly confirmed in provided context.
+If confirmation is missing, say you cannot verify from here and ask for a verifiable reference (for example: booking id, ticket id, or conversation context).
+Never claim you checked internal systems, records, databases, or customer-specific status unless that check result is explicitly provided in context.
 Keep responses friendly and professional. Do not mention that you are an AI unless directly asked.
 IMPORTANT: Reply in plain text only. Do not use markdown formatting such as headers (##), bold (**), italics, bullet lists with *, or horizontal rules (---). Use short paragraphs or simple numbered lists (1. 2. 3.) if needed.
 """
@@ -91,7 +94,7 @@ class LlmService:
             model=model,
             messages=messages,
             max_tokens=1500,
-            temperature=0.7,
+            temperature=0.2,
         )
         return response.choices[0].message.content or ""
 

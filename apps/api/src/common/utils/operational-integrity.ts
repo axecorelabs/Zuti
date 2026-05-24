@@ -34,6 +34,18 @@ const BOOKING_CLAIM_PATTERNS: RegExp[] = [
   /\b(?:the\s+)?owner\s+(?:has been|has|was|is)\s+(?:notified|updated|alerted)\b/gi,
 ];
 
+const ISSUE_LOG_CLAIM_PATTERNS: RegExp[] = [
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:now\s+|already\s+)?(?:logged|reported|filed|created)\s+(?:this\s+)?(?:issue|ticket|incident)\b/gi,
+  /\b(?:this|the)\s+(?:issue|ticket|incident)\s+(?:has been|was)\s+(?:logged|reported|filed|created)\b/gi,
+  /\b(?:our\s+)?(?:technical|support)\s+team\s+(?:is|has been)\s+(?:notified|alerted)\b/gi,
+];
+
+const LOOKUP_CLAIM_PATTERNS: RegExp[] = [
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:looked up|checked|checked in|checked on)\s+(?:our\s+)?(?:system|records?)\b/gi,
+  /\b(i\s+can\s+confirm|i\s+confirm|i\s+can\s+see)\b[^.!?\n]{0,160}\b(?:noted for review|logged for review|in our system|in the system)\b/gi,
+  /\b(?:meeting\s+request\s+for\s+[^\s,;:.!?]+@[^\s,;:.!?]+\s+has\s+(?:also\s+)?been\s+(?:noted|logged))\b/gi,
+];
+
 function describeForwardingStatus(status: ForwardingTruthStatus): string {
   switch (status) {
     case 'QUEUED':
@@ -95,6 +107,7 @@ export function buildOperationalIntegrityPromptBlock(
     '- If the user asked to book a meeting, but the system only logged an action task, say it was noted for review; do not say a meeting was scheduled or a booking exists.',
     '- If forwarding failed due to missing customer data, ask only for the missing fields before promising escalation.',
     '- If completion is not confirmed, use capability language such as "I can help log this for review" or "I can help note this as a meeting request."',
+    '- Do not claim you checked or verified arbitrary customer records/emails in the system unless that lookup was explicitly confirmed by backend data for this turn.',
     '- Be explicit about uncertainty and next steps; do not imply actions already happened when they have not.',
   ].join('\n');
 }
@@ -109,6 +122,7 @@ export function sanitizeOperationalClaims(
   const missingFields = options.missingFields ?? [];
   const blockedCapability = options.blockedCapability;
   const canConfirmForwardingRequest = forwardingStatus === 'QUEUED' || forwardingStatus === 'DUPLICATE';
+  const hasFollowUpMissingFields = missingFields.length > 0;
   const isMissingContactIssue = forwardingReason === 'MISSING_CONTACT_INFO' || forwardingReason === 'MISSING_REQUIRED_FIELDS';
   const isSkillDisabled = forwardingReason === 'SKILL_NOT_ENABLED';
 
@@ -129,6 +143,26 @@ export function sanitizeOperationalClaims(
 
   for (const pattern of BOOKING_CLAIM_PATTERNS) {
     sanitized = sanitized.replace(pattern, 'I can help note this for review');
+  }
+
+  for (const pattern of ISSUE_LOG_CLAIM_PATTERNS) {
+    sanitized = sanitized.replace(
+      pattern,
+      canConfirmForwardingRequest
+        ? hasFollowUpMissingFields
+          ? `I have logged this for review for our technical team. To follow up with you, please share: ${missingFields.join(', ')}.`
+          : 'I have logged this for review for our technical team'
+        : missingFieldPrompt,
+    );
+  }
+
+  for (const pattern of LOOKUP_CLAIM_PATTERNS) {
+    sanitized = sanitized.replace(
+      pattern,
+      canConfirmForwardingRequest
+        ? 'I can only confirm requests created in this conversation context'
+        : 'I cannot verify unrelated customer records from here without a confirmed booking/request reference',
+    );
   }
 
   if (sanitized !== text && !/cannot confirm operational actions as completed/i.test(sanitized)) {

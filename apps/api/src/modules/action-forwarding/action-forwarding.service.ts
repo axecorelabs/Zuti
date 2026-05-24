@@ -68,7 +68,7 @@ const ACTION_CONTRACTS: Partial<Record<ActionType, ActionContractDefinition>> = 
     requiredFields: ['customer_name', 'customer_email', 'product'],
   },
   TECHNICAL_ISSUE: {
-    requiredFields: ['customer_name', 'customer_email', 'issue_summary'],
+    requiredFields: ['issue_summary'],
   },
 };
 
@@ -473,6 +473,7 @@ export class ActionForwardingService {
 
     const contract = ACTION_CONTRACTS[detected.actionType];
     let collectedFields: Record<string, string> = {};
+    let followUpMissingFields: string[] = [];
     if (contract) {
       const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
       const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
@@ -529,6 +530,12 @@ export class ActionForwardingService {
           missingFields,
         };
       }
+
+      if (detected.actionType === 'TECHNICAL_ISSUE') {
+        if (!collectedFields.customer_email || collectedFields.customer_email.trim().length === 0) {
+          followUpMissingFields.push('customer_email');
+        }
+      }
     }
 
     const fingerprint = this.buildFingerprint(detected.actionType, input.messageText);
@@ -567,6 +574,7 @@ export class ActionForwardingService {
           messageText: input.messageText,
           customerName: input.customerName ?? null,
           customerEmail: input.customerEmail ?? null,
+          followUpMissingFields,
         },
       },
       select: { id: true, actionType: true },
@@ -590,6 +598,7 @@ export class ActionForwardingService {
           metadata: {
             customFields,
             customFieldVersion: customContract.version,
+            followUpMissingFields,
           },
         },
       });
@@ -658,7 +667,7 @@ export class ActionForwardingService {
         `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
         {
           actionTaskId: task.id,
-          bookingId: null,
+          bookingId: booking.id,
           botId: input.botId,
           customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
           preferredDatetime: collectedFields.preferred_datetime ?? null,
@@ -695,6 +704,7 @@ export class ActionForwardingService {
       status: 'QUEUED',
       reason: 'QUEUED_ACTION',
       actionType: detected.actionType,
+      missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
     };
   }
 }
