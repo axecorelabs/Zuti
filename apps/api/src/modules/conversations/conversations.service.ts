@@ -226,12 +226,19 @@ export class ConversationsService {
       where: { id: organizationId },
       select: { name: true },
     });
+    const existingMetadata =
+      conversation.metadata && typeof conversation.metadata === 'object' && !Array.isArray(conversation.metadata)
+        ? (conversation.metadata as Record<string, unknown>)
+        : {};
 
     const updated = await this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
         ...(dto.status && { status: dto.status as any }),
         ...(dto.mode && { mode: dto.mode as any }),
+        ...(dto.status === 'RESOLVED'
+          ? { metadata: { ...existingMetadata, awaitingCsat: false } }
+          : {}),
         // When switching to HUMAN mode, auto-assign the actor if no one is assigned yet
         ...(dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN' && !conversation.assignedAgentId
           ? { assignedAgentId: actorId }
