@@ -809,6 +809,7 @@ export class ActionForwardingService {
         },
         select: {
           id: true,
+          status: true,
           payload: true,
         },
       });
@@ -867,6 +868,38 @@ export class ActionForwardingService {
           },
         });
 
+        if (mergedFollowUpMissingFields.length === 0 && existingTask.status === 'PENDING_CONFIRMATION') {
+          await prismaAny.actionTask.update({
+            where: { id: existingTask.id },
+            data: { status: 'QUEUED' },
+          });
+
+          await this.queue.add(
+            { actionTaskId: existingTask.id, organizationId: input.organizationId },
+            {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 15000 },
+              removeOnComplete: true,
+            },
+          );
+
+          await this.notifications.createOrgNotification(
+            input.organizationId,
+            'booking_requested',
+            'New booking request captured',
+            `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
+            {
+              actionTaskId: existingTask.id,
+              bookingId: existingBooking?.id ?? null,
+              botId: input.botId,
+              customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+              preferredDatetime: collectedFields.preferred_datetime ?? null,
+              bookingReason: collectedFields.booking_reason ?? null,
+              followUpMissingFields: mergedFollowUpMissingFields,
+            },
+          );
+        }
+
         if (contract) {
           const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
           const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
@@ -920,7 +953,9 @@ export class ActionForwardingService {
         conversationId: input.conversationId,
         sourceMessageId: input.messageId,
         actionType: detected.actionType,
-        status: 'QUEUED',
+        status: detected.actionType === 'MEETING_REQUEST' && followUpMissingFields.length > 0
+          ? 'PENDING_CONFIRMATION'
+          : 'QUEUED',
         priority: detected.actionType === 'MEETING_REQUEST'
           ? rankBookingPriority(collectedFields.booking_reason ?? null, input.messageText)
           : 'HIGH',
@@ -935,7 +970,7 @@ export class ActionForwardingService {
           followUpMissingFields,
         },
       },
-      select: { id: true, actionType: true },
+      select: { id: true, actionType: true, status: true },
     });
 
     if (task.actionType === 'SALES_ORDER_REQUEST') {
@@ -1022,31 +1057,35 @@ export class ActionForwardingService {
         },
       });
 
-      await this.notifications.createOrgNotification(
-        input.organizationId,
-        'booking_requested',
-        'New booking request captured',
-        `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
+      if (task.status === 'QUEUED') {
+        await this.notifications.createOrgNotification(
+          input.organizationId,
+          'booking_requested',
+          'New booking request captured',
+          `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
+          {
+            actionTaskId: task.id,
+            bookingId: booking.id,
+            botId: input.botId,
+            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+            preferredDatetime: collectedFields.preferred_datetime ?? null,
+            bookingReason: collectedFields.booking_reason ?? null,
+            followUpMissingFields,
+          },
+        );
+      }
+    }
+
+    if (task.status === 'QUEUED') {
+      await this.queue.add(
+        { actionTaskId: task.id, organizationId: input.organizationId },
         {
-          actionTaskId: task.id,
-          bookingId: booking.id,
-          botId: input.botId,
-          customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
-          preferredDatetime: collectedFields.preferred_datetime ?? null,
-          bookingReason: collectedFields.booking_reason ?? null,
-          followUpMissingFields,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 15000 },
+          removeOnComplete: true,
         },
       );
     }
-
-    await this.queue.add(
-      { actionTaskId: task.id, organizationId: input.organizationId },
-      {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 15000 },
-        removeOnComplete: true,
-      },
-    );
 
     if (contract) {
       const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});

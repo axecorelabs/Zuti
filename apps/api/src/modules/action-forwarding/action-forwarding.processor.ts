@@ -195,7 +195,7 @@ export class ActionForwardingProcessor {
 
     const deliveryText = this.formatActionText(action);
     const payload = (action.payload as Record<string, unknown> | null) ?? {};
-    const actionHtml = render(
+    const actionHtml = await render(
       React.createElement(ActionForwardingEmail, {
         botName: action.bot?.name ?? 'Bot',
         actionType: action.actionType,
