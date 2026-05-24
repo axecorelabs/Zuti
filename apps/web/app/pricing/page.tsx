@@ -1,4 +1,6 @@
-import Link from 'next/link';
+import { headers } from 'next/headers';
+import { SiteHeader } from '../components/site-header';
+import { PricingPlans } from './pricing-plans';
 
 type CreditPack = {
   name: string;
@@ -19,72 +21,116 @@ const usPacks: CreditPack[] = [
   { name: 'Scale', credits: 50_000, amount: '$450' },
 ];
 
-function Table({ title, rows }: { title: string; rows: CreditPack[] }) {
+type PricingRegion = {
+  key: 'NGN' | 'USD';
+  title: string;
+  rows: CreditPack[];
+};
+
+function PricingFAQ() {
+  const faqs = [
+    {
+      question: 'What is the difference between one-time and monthly plans?',
+      answer:
+        'One-time plans charge once and add credits immediately. Monthly plans renew automatically every month with the same credit volume.',
+    },
+    {
+      question: 'Do unused credits roll over to the next month?',
+      answer:
+        'Unused credits expire at the end of the billing cycle. This helps keep plan usage predictable and pricing transparent.',
+    },
+    {
+      question: 'Can I upgrade or downgrade my monthly commitment?',
+      answer:
+        'Yes. You can switch to a higher or lower plan as your support volume changes, and your next billing cycle will reflect the update.',
+    },
+    {
+      question: 'How is my region-based pricing selected?',
+      answer:
+        'We detect your location from request headers and automatically show either NGN or USD packs to match your billing region.',
+    },
+    {
+      question: 'Do I get any free credits?',
+      answer:
+        'Yes. Your first organization includes starter credits. Additional organizations require paid credit packs.',
+    },
+  ];
+
   return (
-    <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
-      <h3 className="text-sm text-zinc-100 mb-4">{title}</h3>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-left text-zinc-500 border-b border-zinc-800">
-            <th className="py-2 pr-4 font-normal">Pack</th>
-            <th className="py-2 pr-4 font-normal">Credits</th>
-            <th className="py-2 pr-4 font-normal">One-time top-up</th>
-            <th className="py-2 font-normal">Monthly commitment</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.name} className="border-b border-zinc-900/70">
-              <td className="py-2 pr-4 text-zinc-200">{row.name}</td>
-              <td className="py-2 pr-4 text-zinc-400">{row.credits.toLocaleString()}</td>
-              <td className="py-2 pr-4 text-zinc-300">{row.amount}</td>
-              <td className="py-2 text-zinc-300">{row.amount} / month</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <section className="mt-14">
+      <div className="text-center">
+        <h3 className="text-3xl font-semibold tracking-tight text-zinc-100">Frequently asked questions</h3>
+        <p className="mt-3 text-zinc-400 max-w-2xl mx-auto">
+          Everything you need to know about our plans, credits, and billing.
+        </p>
+      </div>
+
+      <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4">
+        {faqs.map((item) => (
+          <article key={item.question} className="rounded-2xl border border-blue-300/20 bg-blue-300/10 p-5">
+            <h4 className="text-base font-medium text-zinc-100">{item.question}</h4>
+            <p className="mt-2 text-sm leading-relaxed text-zinc-400">{item.answer}</p>
+          </article>
+        ))}
+      </div>
+    </section>
   );
 }
 
+function detectPricingRegion(): PricingRegion {
+  const requestHeaders = headers();
+  const country =
+    requestHeaders.get('x-vercel-ip-country') ||
+    requestHeaders.get('cf-ipcountry') ||
+    requestHeaders.get('x-country-code') ||
+    '';
+
+  if (country.toUpperCase() === 'NG') {
+    return {
+      key: 'NGN',
+      title: 'Nigeria (NGN) credit packs',
+      rows: ngPacks,
+    };
+  }
+
+  return {
+    key: 'USD',
+    title: 'US / Global (USD) credit packs',
+    rows: usPacks,
+  };
+}
+
 export default function PricingPage() {
+  const pricingRegion = detectPricingRegion();
+
   return (
-    <main className="min-h-screen bg-black text-white px-4 sm:px-6 md:px-10 py-10 md:py-14">
-      <div className="mx-auto max-w-5xl">
-        <div className="flex items-center justify-between gap-4 flex-wrap mb-8">
-          <div>
-            <p className="text-[11px] uppercase tracking-[0.28em] text-zinc-500">Pricing</p>
-            <h1 className="mt-2 text-3xl sm:text-4xl font-semibold tracking-tight">Credits + Commitments</h1>
-            <p className="mt-3 text-sm text-zinc-400 max-w-2xl">
-              Same credit packs, two ways to buy: one-time top-up or a monthly auto-renew commitment.
+    <div className="min-h-screen bg-black text-white overflow-x-hidden">
+      <SiteHeader active="pricing" showHomeLink />
+
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(255,255,255,0.08),transparent_24%),radial-gradient(circle_at_20%_12%,rgba(191,219,254,0.10),transparent_26%),radial-gradient(circle_at_80%_18%,rgba(251,207,232,0.08),transparent_22%),radial-gradient(circle_at_50%_70%,rgba(255,255,255,0.04),transparent_18%)]" />
+
+      <main className="relative z-10 min-h-screen overflow-hidden px-4 sm:px-6 md:px-10 pt-28 sm:pt-32 pb-10 md:pb-14 bg-[#020817]">
+
+        <div className="relative z-10 mx-auto max-w-6xl">
+          <section className="text-center">
+            <h1 className="text-4xl sm:text-5xl md:text-6xl font-semibold tracking-tight text-zinc-100">
+              Find the perfect plan for your project
+            </h1>
+            <p className="mt-4 text-zinc-400 max-w-3xl mx-auto text-base sm:text-lg">
+              Choose a flexible credit plan that matches your support volume and scale with confidence.
             </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Link href="/login" className="px-4 py-2 rounded-full border border-zinc-700 text-zinc-300 hover:text-white hover:bg-zinc-900 text-sm">
-              Sign in
-            </Link>
-            <Link href="/register" className="px-4 py-2 rounded-full bg-white text-black hover:bg-zinc-100 text-sm">
-              Start free
-            </Link>
-          </div>
-        </div>
+          </section>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-          <Table title="Nigeria (NGN) Credit Packs" rows={ngPacks} />
-          <Table title="US / Global (USD) Credit Packs" rows={usPacks} />
-        </div>
+          <section className="mt-10">
+            <p className="text-center text-sm text-zinc-500">{pricingRegion.title}</p>
+            <div className="mt-6">
+              <PricingPlans rows={pricingRegion.rows} />
+            </div>
+          </section>
 
-        <div className="rounded-2xl border border-zinc-800 bg-zinc-950/60 p-5">
-          <h3 className="text-sm text-zinc-100 mb-2">How commitments work</h3>
-          <p className="text-sm text-zinc-400">
-            A commitment is the same pack set to renew every month. If you pick a one-time top-up, it charges once.
-            If you pick a commitment, it auto-renews monthly for the same amount and credits.
-          </p>
-          <p className="text-xs text-zinc-500 mt-3">
-            First organization still receives the free starter credits; additional organizations require paid credits.
-          </p>
+          <PricingFAQ />
         </div>
-      </div>
-    </main>
+      </main>
+    </div>
   );
 }
