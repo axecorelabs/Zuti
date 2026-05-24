@@ -167,6 +167,76 @@ function rankActionPriority(sourceText: string): 'LOW' | 'NORMAL' | 'HIGH' | 'UR
   return 'LOW';
 }
 
+function buildPendingWorkflowSummary(actionType: ActionType, messageText: string): string {
+  const trimmed = messageText.trim();
+  const firstSentence = trimmed.split(/[.!?\n]/).map((part) => part.trim()).find((part) => part.length > 0) ?? trimmed;
+  const snippet = firstSentence.slice(0, 120);
+
+  switch (actionType) {
+    case 'MEETING_REQUEST':
+      return snippet
+        ? `Customer provided additional details for a meeting request: ${snippet}`
+        : 'Customer provided additional details for a meeting request.';
+    case 'SALES_ORDER_REQUEST':
+      return snippet
+        ? `Customer provided additional details for an order request: ${snippet}`
+        : 'Customer provided additional details for an order request.';
+    case 'TECHNICAL_ISSUE':
+      return snippet
+        ? `Customer provided additional technical issue details: ${snippet}`
+        : 'Customer provided additional technical issue details.';
+    case 'OWNER_ATTENTION_NEEDED':
+      return snippet
+        ? `Customer provided additional details for owner review: ${snippet}`
+        : 'Customer provided additional details for owner review.';
+    default:
+      return snippet
+        ? `Customer provided additional details: ${snippet}`
+        : 'Customer provided additional details.';
+  }
+}
+
+function buildQueuedActionNotification(
+  actionType: ActionType,
+  fields: Record<string, string>,
+  input: { organizationId: string; botId: string; customerName?: string | null },
+): { type: string; title: string; body: string } {
+  const customerName = fields.customer_name ?? input.customerName ?? 'A customer';
+
+  switch (actionType) {
+    case 'MEETING_REQUEST':
+      return {
+        type: 'booking_requested',
+        title: 'New booking request captured',
+        body: `${customerName} requested a meeting${fields.preferred_datetime ? ` for ${fields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
+      };
+    case 'SALES_ORDER_REQUEST':
+      return {
+        type: 'sales_order_requested',
+        title: 'New order request captured',
+        body: `${customerName} requested an order${fields.product ? ` for ${fields.product}` : ''}. Review the order request in Operations.`,
+      };
+    case 'TECHNICAL_ISSUE':
+      return {
+        type: 'technical_issue_requested',
+        title: 'New technical issue captured',
+        body: `${customerName} reported a technical issue${fields.issue_summary ? `: ${fields.issue_summary}` : ''}. Review the issue in Operations.`,
+      };
+    case 'OWNER_ATTENTION_NEEDED':
+      return {
+        type: 'owner_attention_requested',
+        title: 'New owner attention request captured',
+        body: `${customerName} requested owner or management attention. Review the request in Operations.`,
+      };
+    default:
+      return {
+        type: 'action_task_queued',
+        title: 'New action request captured',
+        body: `${customerName} submitted a request. Review it in Operations.`,
+      };
+  }
+}
+
 @Injectable()
 export class ActionForwardingService {
   constructor(
@@ -636,7 +706,7 @@ export class ActionForwardingService {
       detected = {
         actionType: pendingActionType,
         confidence: 0.5,
-        summary: 'Customer provided additional details for pending workflow.',
+        summary: buildPendingWorkflowSummary(pendingActionType, input.messageText),
       };
     }
 
@@ -778,12 +848,12 @@ export class ActionForwardingService {
     }
 
     if (existingContractActionTaskId) {
-      const existingTask = await prismaAny.actionTask.findFirst({
+        const existingTask = await prismaAny.actionTask.findFirst({
         where: {
           id: existingContractActionTaskId,
           orgId: input.organizationId,
           botId: input.botId,
-          actionType: 'MEETING_REQUEST',
+            actionType: detected.actionType,
         },
         select: {
           id: true,
@@ -839,6 +909,7 @@ export class ActionForwardingService {
           await prismaAny.actionTask.update({
             where: { id: existingTask.id },
             data: {
+              summary: buildPendingWorkflowSummary(detected.actionType, input.messageText),
               payload: {
                 ...existingPayload,
                 channel: input.channel,
@@ -891,6 +962,7 @@ export class ActionForwardingService {
           await prismaAny.actionTask.update({
             where: { id: existingTask.id },
             data: {
+              summary: buildPendingWorkflowSummary(detected.actionType, input.messageText),
               payload: {
                 ...existingPayload,
                 channel: input.channel,
@@ -942,6 +1014,7 @@ export class ActionForwardingService {
           await prismaAny.actionTask.update({
             where: { id: existingTask.id },
             data: {
+              summary: buildPendingWorkflowSummary(detected.actionType, input.messageText),
               payload: {
                 ...existingPayload,
                 channel: input.channel,
@@ -971,11 +1044,12 @@ export class ActionForwardingService {
             },
           );
 
+          const notification = buildQueuedActionNotification(detected.actionType, collectedFields, input);
           await this.notifications.createOrgNotification(
             input.organizationId,
-            'booking_requested',
-            'New booking request captured',
-            `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
+            notification.type,
+            notification.title,
+            notification.body,
             {
               actionTaskId: existingTask.id,
               bookingId: existingBooking?.id ?? null,
@@ -1174,24 +1248,35 @@ export class ActionForwardingService {
           },
         },
       });
+    }
 
-      if (task.status === 'QUEUED') {
-        await this.notifications.createOrgNotification(
-          input.organizationId,
-          'booking_requested',
-          'New booking request captured',
-          `${collectedFields.customer_name ?? input.customerName ?? 'A customer'} requested a meeting${collectedFields.preferred_datetime ? ` for ${collectedFields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
-          {
-            actionTaskId: task.id,
-            bookingId: booking.id,
-            botId: input.botId,
-            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
-            preferredDatetime: collectedFields.preferred_datetime ?? null,
-            bookingReason: collectedFields.booking_reason ?? null,
-            followUpMissingFields,
-          },
-        );
-      }
+    if (task.status === 'QUEUED') {
+      const notification = buildQueuedActionNotification(task.actionType, collectedFields, input);
+      await this.notifications.createOrgNotification(
+        input.organizationId,
+        notification.type,
+        notification.title,
+        notification.body,
+        {
+          actionTaskId: task.id,
+          bookingId: task.actionType === 'MEETING_REQUEST' ? await (async () => {
+            const booking = await prismaAny.booking.findFirst({
+              where: {
+                orgId: input.organizationId,
+                botId: input.botId,
+                actionTaskId: task.id,
+              },
+              select: { id: true },
+            });
+            return booking?.id ?? null;
+          })() : null,
+          botId: input.botId,
+          customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+          preferredDatetime: collectedFields.preferred_datetime ?? null,
+          bookingReason: collectedFields.booking_reason ?? null,
+          followUpMissingFields,
+        },
+      );
     }
 
     if (task.status === 'QUEUED') {
