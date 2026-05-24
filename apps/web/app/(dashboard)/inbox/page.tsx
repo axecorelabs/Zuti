@@ -809,13 +809,18 @@ export default function InboxPage() {
                   {selected.mode === 'AI' ? (
                     <button
                       onClick={handleTakeOver}
-                      disabled={actionLoading !== null}
-                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-orange-500/15 text-orange-300 hover:bg-orange-500/25 transition-colors text-xs font-medium border border-orange-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
+                      disabled={actionLoading !== null || selected.status === 'RESOLVED'}
+                      className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-orange-500/15 text-orange-300 hover:bg-orange-500/25 transition-colors text-xs font-medium border border-orange-500/20 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:bg-orange-500/15"
                     >
                       {actionLoading === 'takeover' ? (
                         <>
                           <span className="w-3.5 h-3.5 border border-orange-300/60 border-t-orange-100 rounded-full animate-spin" />
                           Taking over...
+                        </>
+                      ) : selected.status === 'RESOLVED' ? (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Resolved
                         </>
                       ) : (
                         <>

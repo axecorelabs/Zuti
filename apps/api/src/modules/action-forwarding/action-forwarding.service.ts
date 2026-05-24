@@ -816,10 +816,7 @@ export class ActionForwardingService {
 
       if (existingTask) {
         const existingPayload = ((existingTask.payload as Record<string, unknown> | null) ?? {});
-        const mergedFollowUpMissingFields = Array.from(new Set<string>([
-          ...((existingPayload.followUpMissingFields as string[] | undefined) ?? []),
-          ...followUpMissingFields,
-        ]));
+        const currentFollowUpMissingFields = Array.from(new Set<string>(followUpMissingFields));
 
         const existingBooking = await prismaAny.booking.findFirst({
           where: {
@@ -846,7 +843,7 @@ export class ActionForwardingService {
               metadata: {
                 ...existingBookingMetadata,
                 bookingReason: collectedFields.booking_reason ?? existingBookingMetadata.bookingReason ?? null,
-                followUpMissingFields: mergedFollowUpMissingFields,
+                followUpMissingFields: currentFollowUpMissingFields,
               },
             },
           });
@@ -863,12 +860,12 @@ export class ActionForwardingService {
               customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
               preferredDatetime: collectedFields.preferred_datetime ?? null,
               bookingReason: collectedFields.booking_reason ?? null,
-              followUpMissingFields: mergedFollowUpMissingFields,
+              followUpMissingFields: currentFollowUpMissingFields,
             },
           },
         });
 
-        if (mergedFollowUpMissingFields.length === 0 && existingTask.status === 'PENDING_CONFIRMATION') {
+        if (currentFollowUpMissingFields.length === 0 && existingTask.status === 'PENDING_CONFIRMATION') {
           await prismaAny.actionTask.update({
             where: { id: existingTask.id },
             data: { status: 'QUEUED' },
@@ -895,7 +892,7 @@ export class ActionForwardingService {
               customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
               preferredDatetime: collectedFields.preferred_datetime ?? null,
               bookingReason: collectedFields.booking_reason ?? null,
-              followUpMissingFields: mergedFollowUpMissingFields,
+              followUpMissingFields: currentFollowUpMissingFields,
             },
           );
         }
@@ -908,9 +905,9 @@ export class ActionForwardingService {
             ...customContract.requiredKeys,
           ]));
           await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
-            status: mergedFollowUpMissingFields.length > 0 ? 'COLLECTING' : 'COMMITTED',
+            status: currentFollowUpMissingFields.length > 0 ? 'COLLECTING' : 'COMMITTED',
             requiredFields: requiredFieldKeys,
-            missingFields: mergedFollowUpMissingFields,
+            missingFields: currentFollowUpMissingFields,
             collected: collectedFields,
             actionTaskId: existingTask.id,
           });

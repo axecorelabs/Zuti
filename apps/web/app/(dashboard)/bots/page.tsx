@@ -540,7 +540,7 @@ export default function BotsPage() {
   const [editSkillIntakeConfig, setEditSkillIntakeConfig] = useState<SkillIntakeConfigMap>({});
   const [skillIntakeOpen, setSkillIntakeOpen] = useState<SkillIntakeOpenState>({
     SALES: true,
-    BOOKING: true,
+    BOOKING: false,
     TECHNICAL: true,
   });
   const [showSkillEnableModal, setShowSkillEnableModal] = useState(false);
