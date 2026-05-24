@@ -342,7 +342,15 @@ export const billingApi = {
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 export const notificationsApi = {
-  list: (orgId: string) => api.get(`/organizations/${orgId}/notifications`),
+  list: (orgId: string, includeRead = false, includeAllUsers = false) =>
+    api.get(`/organizations/${orgId}/notifications`, {
+      params: includeRead || includeAllUsers
+        ? {
+            ...(includeRead ? { includeRead: 'true' } : {}),
+            ...(includeAllUsers ? { includeAllUsers: 'true' } : {}),
+          }
+        : undefined,
+    }),
   markRead: (orgId: string, notifId: string) =>
     api.post(`/organizations/${orgId}/notifications/${notifId}/read`),
   markAllRead: (orgId: string) =>

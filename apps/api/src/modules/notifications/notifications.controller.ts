@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Param, UseGuards, Req } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, UseGuards, Req } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -13,9 +13,21 @@ export class NotificationsController {
   constructor(private readonly service: NotificationsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'List unread notifications for the current user' })
-  list(@Param('id') orgId: string, @CurrentUser() user: { id: string }, @Req() req: any) {
-    return this.service.listForUser(orgId, user.id, req.memberRole);
+  @ApiOperation({ summary: 'List notifications for the current user (unread by default)' })
+  list(
+    @Param('id') orgId: string,
+    @CurrentUser() user: { id: string },
+    @Req() req: any,
+    @Query('includeRead') includeRead?: string,
+    @Query('includeAllUsers') includeAllUsers?: string,
+  ) {
+    return this.service.listForUser(
+      orgId,
+      user.id,
+      req.memberRole,
+      includeRead === 'true',
+      includeAllUsers === 'true',
+    );
   }
 
   @Post(':notifId/read')

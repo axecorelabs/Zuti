@@ -28,6 +28,12 @@ export class InvitationsController {
     return this.service.findMine(user.email);
   }
 
+  @Get('mine/debug')
+  @ApiOperation({ summary: 'Debug pending invitation lookup for the current user' })
+  debugMine(@CurrentUser() user: { id: string; email: string }) {
+    return this.service.findMineDebug(user.email);
+  }
+
   @Get('org/:orgId')
   @ApiOperation({ summary: 'Get pending invitations sent by an org (OWNER/ADMIN only)' })
   listByOrg(

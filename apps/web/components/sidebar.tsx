@@ -46,7 +46,7 @@ interface PendingInvite {
   email: string;
   role: string;
   organization: { id: string; name: string; slug: string };
-  invitedBy: { name?: string; email: string };
+  invitedBy?: { name?: string; email?: string } | null;
 }
 
 // ─── General notification model ──────────────────────────────────────────────
@@ -63,6 +63,7 @@ export interface AppNotification {
   type: NotificationType;
   title: string;
   body: string;
+  isRead?: boolean;
   /** Invitation-specific payload — present when type === 'invitation' */
   inviteMeta?: PendingInvite;
   /** Server notification id for markRead calls */
@@ -100,12 +101,15 @@ export default function Sidebar({
   const [activeOrg, setActiveOrg] = useState<Org | null>(null);
   const [orgOpen, setOrgOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [notifView, setNotifView] = useState<'unread' | 'all'>('unread');
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [actingToken, setActingToken] = useState<string | null>(null);
 
   const activeOrgRole = activeOrg ? getRoleForOrg(activeOrg.id) : undefined;
   const isAgent = activeOrgRole === 'AGENT';
   const roleResolved = !activeOrg || activeOrgRole !== undefined;
+  const canViewOrgWideNotifications = activeOrgRole === 'OWNER' || activeOrgRole === 'ADMIN';
+  const isOrgWideAllView = notifView === 'all' && canViewOrgWideNotifications;
 
   const fetchOrgs = useCallback(() => {
     orgsApi
@@ -133,7 +137,7 @@ export default function Sidebar({
           id: `invite-${inv.id}`,
           type: 'invitation',
           title: `Join ${inv.organization.name}`,
-          body: `Invited by ${inv.invitedBy.name ?? inv.invitedBy.email} · ${inv.role}`,
+          body: `Invited by ${inv.invitedBy?.name ?? inv.invitedBy?.email ?? 'a teammate'} · ${inv.role}`,
           inviteMeta: inv,
         }));
         setNotifications((prev) => [
@@ -148,15 +152,16 @@ export default function Sidebar({
   const fetchServerNotifications = useCallback(() => {
     if (!activeOrg) return;
     notificationsApi
-      .list(activeOrg.id)
+      .list(activeOrg.id, notifView === 'all', isOrgWideAllView)
       .then((res) => {
-        interface ServerNotif { id: string; type: string; title: string; body: string; }
+        interface ServerNotif { id: string; type: string; title: string; body: string; isRead: boolean; }
         const serverNotifs: AppNotification[] = (res.data as ServerNotif[]).map((n) => ({
           id: `server-${n.id}`,
           serverId: n.id,
           type: n.type,
           title: n.title,
           body: n.body,
+          isRead: n.isRead,
         }));
         setNotifications((prev) => [
           ...prev.filter((n) => !n.serverId),
@@ -164,7 +169,7 @@ export default function Sidebar({
         ]);
       })
       .catch(() => {});
-  }, [activeOrg]);
+  }, [activeOrg, notifView, isOrgWideAllView]);
 
   useEffect(() => {
     fetchOrgs();
@@ -178,6 +183,12 @@ export default function Sidebar({
     const interval = setInterval(fetchServerNotifications, 60_000);
     return () => clearInterval(interval);
   }, [fetchServerNotifications]);
+
+  useEffect(() => {
+    if (!notifOpen) return;
+    fetchNotifications();
+    fetchServerNotifications();
+  }, [notifOpen, fetchNotifications, fetchServerNotifications]);
 
   const handleAccept = async (token: string) => {
     setActingToken(token);
@@ -214,20 +225,36 @@ export default function Sidebar({
     router.push('/login');
   };
 
-  const notifCount = notifications.length;
   const isLight = theme === 'light';
 
   const handleDismissServer = async (notif: AppNotification) => {
     if (!notif.serverId || !activeOrg) return;
-    setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    if (isOrgWideAllView) return;
+    if (notifView === 'all') {
+      setNotifications((prev) => prev.map((n) => (n.id === notif.id ? { ...n, isRead: true } : n)));
+    } else {
+      setNotifications((prev) => prev.filter((n) => n.id !== notif.id));
+    }
     await notificationsApi.markRead(activeOrg.id, notif.serverId).catch(() => {});
   };
 
   const handleMarkAllRead = async () => {
     if (!activeOrg) return;
-    setNotifications((prev) => prev.filter((n) => n.type === 'invitation'));
+    if (isOrgWideAllView) return;
     await notificationsApi.markAllRead(activeOrg.id).catch(() => {});
+    if (notifView === 'all') {
+      setNotifications((prev) => prev.map((n) => (n.serverId ? { ...n, isRead: true } : n)));
+      return;
+    }
+    setNotifications((prev) => prev.filter((n) => n.type === 'invitation'));
   };
+
+  const unreadServerCount = notifications.filter((n) => n.serverId && n.isRead !== true).length;
+  const inviteCount = notifications.filter((n) => n.type === 'invitation').length;
+  const notifCount = inviteCount + unreadServerCount;
+  const visibleNotifications = notifView === 'all'
+    ? notifications
+    : notifications.filter((n) => n.type === 'invitation' || n.isRead !== true);
 
   return (
     <>
@@ -247,25 +274,43 @@ export default function Sidebar({
           notifOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
-        <div className={`flex items-center justify-between px-4 py-4 border-b shrink-0 ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
-          <div className="flex items-center gap-2">
-            <Bell className={`w-4 h-4 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`} />
-            <span className={`text-sm font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>Notifications</span>
-            {notifCount > 0 && (
-              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-600 text-white">
-                {notifCount}
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {notifCount > 0 && (
+        <div className={`flex items-start justify-between px-4 py-4 border-b shrink-0 ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center gap-2">
+              <Bell className={`w-4 h-4 ${isLight ? 'text-slate-500' : 'text-zinc-400'}`} />
+              <span className={`text-sm font-medium ${isLight ? 'text-slate-900' : 'text-white'}`}>Notifications</span>
+              {notifCount > 0 && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-blue-600 text-white">
+                  {notifCount}
+                </span>
+              )}
+            </div>
+            {visibleNotifications.length > 0 && !isOrgWideAllView ? (
               <button
                 onClick={handleMarkAllRead}
-                className={`text-[10px] transition-colors ${isLight ? 'text-slate-500 hover:text-slate-800' : 'text-zinc-500 hover:text-zinc-300'}`}
+                className={`w-fit text-[10px] transition-colors ${isLight ? 'text-slate-500 hover:text-slate-800' : 'text-zinc-500 hover:text-zinc-300'}`}
               >
                 Mark all read
               </button>
-            )}
+            ) : null}
+          </div>
+          <div className="flex items-start gap-3">
+            <div className="flex flex-col items-end gap-1.5">
+              <div className={`inline-flex rounded-full border px-1 py-1 ${isLight ? 'border-slate-200 bg-slate-100' : 'border-zinc-700 bg-zinc-900'}`}>
+                <button
+                  onClick={() => setNotifView('unread')}
+                  className={`px-2 py-1 text-[10px] rounded-full transition-colors ${notifView === 'unread' ? 'bg-blue-600 text-white' : isLight ? 'text-slate-600 hover:text-slate-800' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  Unread
+                </button>
+                <button
+                  onClick={() => setNotifView('all')}
+                  className={`px-2 py-1 text-[10px] rounded-full transition-colors ${notifView === 'all' ? 'bg-blue-600 text-white' : isLight ? 'text-slate-600 hover:text-slate-800' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  All
+                </button>
+              </div>
+            </div>
             <button
               onClick={() => setNotifOpen(false)}
               className={`transition-colors ${isLight ? 'text-slate-500 hover:text-slate-800' : 'text-zinc-600 hover:text-zinc-300'}`}
@@ -276,13 +321,15 @@ export default function Sidebar({
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
-          {notifCount === 0 ? (
+          {visibleNotifications.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-center">
               <Bell className={`w-8 h-8 mb-3 ${isLight ? 'text-slate-300' : 'text-zinc-800'}`} />
-              <p className={`text-sm font-light ${isLight ? 'text-slate-500' : 'text-zinc-600'}`}>No new notifications</p>
+              <p className={`text-sm font-light ${isLight ? 'text-slate-500' : 'text-zinc-600'}`}>
+                {notifView === 'all' ? 'No notifications found' : 'No new notifications'}
+              </p>
             </div>
           ) : (
-            notifications.map((notif) => {
+            visibleNotifications.map((notif) => {
               if (notif.type === 'invitation' && notif.inviteMeta) {
                 const inv = notif.inviteMeta;
                 const busy = actingToken === inv.token;
@@ -294,7 +341,7 @@ export default function Sidebar({
                     </div>
                     <p className={`text-sm font-medium mb-0.5 ${isLight ? 'text-slate-900' : 'text-white'}`}>{inv.organization.name}</p>
                     <p className={`text-xs font-light mb-1 ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>
-                      Invited by {inv.invitedBy.name ?? inv.invitedBy.email}
+                      Invited by {inv.invitedBy?.name ?? inv.invitedBy?.email ?? 'a teammate'}
                     </p>
                     <span className="inline-block text-[10px] px-2 py-0.5 rounded-lg bg-blue-500/15 text-blue-400 font-medium mb-3">
                       {inv.role}
@@ -322,15 +369,20 @@ export default function Sidebar({
               }
               // Server notification card (with dismiss button)
               return (
-                <div key={notif.id} className={`rounded-xl p-4 relative ${isLight ? 'bg-slate-50 border border-slate-200' : 'bg-zinc-900 border border-zinc-800'}`}>
-                  <button
-                    onClick={() => handleDismissServer(notif)}
-                    className={`absolute top-2 right-2 transition-colors ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-600 hover:text-zinc-300'}`}
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
+                <div key={notif.id} className={`rounded-xl p-4 relative ${isLight ? 'bg-slate-50 border border-slate-200' : 'bg-zinc-900 border border-zinc-800'} ${notif.isRead ? 'opacity-75' : ''}`}>
+                  {!notif.isRead && !isOrgWideAllView ? (
+                    <button
+                      onClick={() => handleDismissServer(notif)}
+                      className={`absolute top-2 right-2 transition-colors ${isLight ? 'text-slate-400 hover:text-slate-700' : 'text-zinc-600 hover:text-zinc-300'}`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  ) : null}
                   <p className={`text-sm font-medium mb-0.5 pr-4 ${isLight ? 'text-slate-900' : 'text-white'}`}>{notif.title}</p>
                   <p className={`text-xs font-light ${isLight ? 'text-slate-500' : 'text-zinc-500'}`}>{notif.body}</p>
+                  {notif.isRead ? (
+                    <p className={`mt-1 text-[10px] uppercase tracking-wide ${isLight ? 'text-slate-400' : 'text-zinc-600'}`}>Read</p>
+                  ) : null}
                 </div>
               );
             })

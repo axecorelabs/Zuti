@@ -33,18 +33,30 @@ export class NotificationsService {
     });
   }
 
-  async listForUser(orgId: string, userId: string, memberRole: string) {
+  async listForUser(
+    orgId: string,
+    userId: string,
+    memberRole: string,
+    includeRead = false,
+    includeAllUsers = false,
+  ) {
     const isPrivileged = memberRole === 'OWNER' || memberRole === 'ADMIN';
+    const userScopeFilter = includeAllUsers && isPrivileged
+      ? {}
+      : {
+          OR: isPrivileged
+            ? [{ targetUserId: userId }, { targetUserId: null }]
+            : [{ targetUserId: userId }],
+        };
+
     return this.prisma.notification.findMany({
       where: {
         orgId,
-        isRead: false,
-        OR: isPrivileged
-          ? [{ targetUserId: userId }, { targetUserId: null }]
-          : [{ targetUserId: userId }],
+        ...(includeRead ? {} : { isRead: false }),
+        ...userScopeFilter,
       },
       orderBy: { createdAt: 'desc' },
-      take: 50,
+      take: includeRead ? 200 : 50,
     });
   }
 

@@ -4,6 +4,7 @@ import {
   ConflictException,
   ForbiddenException,
   BadRequestException,
+  Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
@@ -15,6 +16,8 @@ import { ActivityService, ActivityAction } from '../activity/activity.service';
 
 @Injectable()
 export class InvitationsService {
+  private readonly logger = new Logger(InvitationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mail: MailService,
@@ -26,13 +29,22 @@ export class InvitationsService {
   async create(requestingUserId: string, dto: CreateInvitationDto) {
     await this.assertRole(dto.orgId, requestingUserId, ['OWNER', 'ADMIN']);
 
+    const normalizedInviteEmail = dto.email.trim().toLowerCase();
+
     const org = await this.prisma.organization.findUnique({ where: { id: dto.orgId } });
     if (!org) throw new NotFoundException('Organization not found');
 
     const requester = await this.prisma.user.findUnique({ where: { id: requestingUserId } });
 
     // If invitee already has an account, check they're not already a member
-    const existingUser = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    const existingUser = await this.prisma.user.findFirst({
+      where: {
+        email: {
+          equals: normalizedInviteEmail,
+          mode: 'insensitive',
+        },
+      },
+    });
     if (existingUser) {
       const alreadyMember = await this.prisma.organizationMember.findUnique({
         where: { organizationId_userId: { organizationId: dto.orgId, userId: existingUser.id } },
@@ -42,7 +54,14 @@ export class InvitationsService {
 
     // Prevent duplicate pending invites
     const existingInvite = await this.prisma.invitation.findFirst({
-      where: { organizationId: dto.orgId, email: dto.email, status: 'PENDING' },
+      where: {
+        organizationId: dto.orgId,
+        status: 'PENDING',
+        email: {
+          equals: normalizedInviteEmail,
+          mode: 'insensitive',
+        },
+      },
     });
     if (existingInvite) throw new ConflictException('A pending invitation already exists for this email');
 
@@ -52,7 +71,7 @@ export class InvitationsService {
     const invitation = await this.prisma.invitation.create({
       data: {
         organizationId: dto.orgId,
-        email: dto.email,
+        email: normalizedInviteEmail,
         token,
         role: (dto.role as any) ?? 'AGENT',
         invitedById: requestingUserId,
@@ -63,7 +82,7 @@ export class InvitationsService {
     const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
     try {
       await this.mail.sendInvitationEmail({
-        to: dto.email,
+        to: normalizedInviteEmail,
         orgName: org.name,
         inviterName: requester?.name ?? requester?.email ?? 'A team member',
         inviteUrl: `${appUrl}/invitations/${token}`,
@@ -83,27 +102,72 @@ export class InvitationsService {
       ActivityAction.INVITATION_SENT,
       'invitation',
       invitation.id,
-      { email: dto.email, role: invitation.role },
+      { email: normalizedInviteEmail, role: invitation.role },
     );
 
     return invitation;
   }
 
   async findMine(userEmail: string) {
+    const normalizedUserEmail = userEmail.trim().toLowerCase();
+
     // Auto-expire stale invitations
     await this.prisma.invitation.updateMany({
       where: { status: 'PENDING', expiresAt: { lt: new Date() } },
       data: { status: 'EXPIRED' },
     });
 
-    return this.prisma.invitation.findMany({
-      where: { email: userEmail, status: 'PENDING' },
+    const invites = await this.prisma.invitation.findMany({
+      where: {
+        status: 'PENDING',
+        email: {
+          equals: normalizedUserEmail,
+          mode: 'insensitive',
+        },
+      },
       include: {
         organization: { select: { id: true, name: true, slug: true } },
         invitedBy: { select: { name: true, email: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    this.logger.log(
+      `findMine lookup email=${normalizedUserEmail} pendingInvites=${invites.length}`,
+    );
+
+    return invites;
+  }
+
+  async findMineDebug(userEmail: string) {
+    const normalizedUserEmail = userEmail.trim().toLowerCase();
+
+    const invites = await this.prisma.invitation.findMany({
+      where: {
+        status: 'PENDING',
+        email: {
+          equals: normalizedUserEmail,
+          mode: 'insensitive',
+        },
+      },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        status: true,
+        createdAt: true,
+        expiresAt: true,
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      inputEmail: userEmail,
+      normalizedEmail: normalizedUserEmail,
+      pendingCount: invites.length,
+      invites,
+    };
   }
 
   async findByOrg(orgId: string, requestingUserId: string) {
@@ -134,7 +198,7 @@ export class InvitationsService {
     const invite = await this.prisma.invitation.findUnique({ where: { token } });
     if (!invite) throw new NotFoundException('Invitation not found');
 
-    if (invite.email !== user.email)
+    if (invite.email.toLowerCase() !== (user.email ?? '').toLowerCase())
       throw new ForbiddenException('This invitation is not for your account');
 
     if (invite.status !== 'PENDING')
@@ -183,7 +247,7 @@ export class InvitationsService {
     const invite = await this.prisma.invitation.findUnique({ where: { token } });
     if (!invite) throw new NotFoundException('Invitation not found');
 
-    if (invite.email !== user.email)
+    if (invite.email.toLowerCase() !== (user.email ?? '').toLowerCase())
       throw new ForbiddenException('This invitation is not for your account');
 
     if (invite.status !== 'PENDING')
