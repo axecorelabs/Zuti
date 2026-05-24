@@ -40,6 +40,8 @@ export class ActionForwardingProcessor {
     const customerName = typeof payload.customerName === 'string' ? payload.customerName : null;
     const customerEmail = typeof payload.customerEmail === 'string' ? payload.customerEmail : null;
     const messageText = typeof payload.messageText === 'string' ? payload.messageText : null;
+    const issueSummary = typeof payload.issueSummary === 'string' ? payload.issueSummary : null;
+    const issueDetails = typeof payload.issueDetails === 'string' ? payload.issueDetails : null;
     const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : null;
     const preferredDatetime = typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null;
     const bookingReason = typeof payload.bookingReason === 'string' ? payload.bookingReason : null;
@@ -51,6 +53,8 @@ export class ActionForwardingProcessor {
       customerName ? `Customer name: ${customerName}` : null,
       customerEmail ? `Customer email: ${customerEmail}` : null,
       bookingReason ? `Reason for booking: ${bookingReason}` : null,
+      issueSummary ? `Issue summary: ${issueSummary}` : null,
+      issueDetails ? `Issue details: ${issueDetails}` : null,
       preferredDatetime ? `Preferred time: ${preferredDatetime}` : null,
       bookingId ? `Booking reference: ${bookingId}` : null,
       messageText ? `Customer message: ${messageText}` : null,
@@ -204,6 +208,8 @@ export class ActionForwardingProcessor {
         customerName: typeof payload.customerName === 'string' ? payload.customerName : null,
         customerEmail: typeof payload.customerEmail === 'string' ? payload.customerEmail : null,
         bookingReason: typeof payload.bookingReason === 'string' ? payload.bookingReason : null,
+        issueSummary: typeof payload.issueSummary === 'string' ? payload.issueSummary : null,
+        issueDetails: typeof payload.issueDetails === 'string' ? payload.issueDetails : null,
         preferredDatetime: typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null,
         messageText: typeof payload.messageText === 'string' ? payload.messageText : null,
         actionTaskId: action.id,

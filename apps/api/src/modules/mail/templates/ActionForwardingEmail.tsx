@@ -16,6 +16,8 @@ interface ActionForwardingEmailProps {
   customerName?: string | null;
   customerEmail?: string | null;
   bookingReason?: string | null;
+  issueSummary?: string | null;
+  issueDetails?: string | null;
   preferredDatetime?: string | null;
   messageText?: string | null;
   actionTaskId: string;
@@ -38,6 +40,8 @@ export function ActionForwardingEmail({
   customerName,
   customerEmail,
   bookingReason,
+  issueSummary,
+  issueDetails,
   preferredDatetime,
   messageText,
   actionTaskId,
@@ -59,6 +63,8 @@ export function ActionForwardingEmail({
             <Row label="Customer name" value={customerName} />
             <Row label="Customer email" value={customerEmail} />
             <Row label="Reason for booking" value={bookingReason} />
+            <Row label="Issue summary" value={issueSummary} />
+            <Row label="Issue details" value={issueDetails} />
             <Row label="Preferred time" value={preferredDatetime} />
             <Row label="Reference ID" value={actionTaskId} />
           </Section>
