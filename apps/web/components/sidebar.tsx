@@ -96,7 +96,7 @@ export default function Sidebar({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, clearAuth, setOrgRoles, getRoleForOrg } = useAuthStore();
+  const { user, clearAuth, setOrgRoles, getRoleForOrg, activeOrgId, setActiveOrgId } = useAuthStore();
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [activeOrg, setActiveOrg] = useState<Org | null>(null);
   const [orgOpen, setOrgOpen] = useState(false);
@@ -117,7 +117,16 @@ export default function Sidebar({
       .then((res) => {
         const list: (Org & { members?: { role: string }[] })[] = res.data;
         setOrgs(list);
-        if (list.length > 0) setActiveOrg((prev) => prev ?? list[0]);
+        if (list.length > 0) {
+          const preferred = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+          setActiveOrg(preferred);
+          if (preferred.id !== activeOrgId) {
+            setActiveOrgId(preferred.id);
+          }
+        } else {
+          setActiveOrg(null);
+          if (activeOrgId) setActiveOrgId(null);
+        }
         // Store each org's role for the current user
         const roles: Record<string, string> = {};
         list.forEach((org) => {
@@ -126,7 +135,7 @@ export default function Sidebar({
         setOrgRoles(roles);
       })
       .catch(() => {});
-  }, [setOrgRoles]);
+  }, [activeOrgId, setActiveOrgId, setOrgRoles]);
 
   const fetchNotifications = useCallback(() => {
     // Invitations (personal, no org required)
@@ -443,6 +452,7 @@ export default function Sidebar({
                   key={org.id}
                   onClick={() => {
                     setActiveOrg(org);
+                    setActiveOrgId(org.id);
                     setOrgOpen(false);
                   }}
                   className={`w-full text-left px-3 py-2 text-sm transition-colors font-light ${isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'}`}

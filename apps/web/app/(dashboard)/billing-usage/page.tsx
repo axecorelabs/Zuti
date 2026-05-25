@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Calendar, CheckCircle2, Gauge, RefreshCw, Repeat, Wallet, XCircle } from 'lucide-react';
 import { aiUsageApi, billingApi, orgsApi, pricingApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 type PaymentModalState = {
   open: boolean;
@@ -140,6 +141,7 @@ function formatPackEstimateRange(
 }
 
 export default function BillingUsagePage() {
+  const { activeOrgId, setActiveOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [days, setDays] = useState<Days>(30);
   const [usage, setUsage] = useState<AiUsageSummary | null>(null);
@@ -190,7 +192,7 @@ export default function BillingUsagePage() {
           : null;
         const selected = (callbackOrgId
           ? orgs.find((item) => item.id === callbackOrgId)
-          : null) ?? orgs[0];
+          : orgs.find((item) => item.id === activeOrgId)) ?? orgs[0];
 
         if (!selected) {
           setLoading(false);
@@ -198,10 +200,13 @@ export default function BillingUsagePage() {
         }
         const nextOrg = { id: selected.id, name: selected.name };
         setOrg(nextOrg);
+        if (nextOrg.id !== activeOrgId) {
+          setActiveOrgId(nextOrg.id);
+        }
         loadUsage(nextOrg, 30);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [activeOrgId, setActiveOrgId]);
 
   useEffect(() => {
     if (!org) return;

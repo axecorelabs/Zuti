@@ -69,7 +69,7 @@ const CustomTooltip = ({ active, payload }: any) => {
 };
 
 export default function DashboardPage() {
-  const { getRoleForOrg } = useAuthStore();
+  const { getRoleForOrg, activeOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [convs, setConvs] = useState<Conv[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
@@ -81,15 +81,15 @@ export default function DashboardPage() {
     orgsApi.list().then(async (res) => {
       const orgs: (Org & { members?: { role: MemberRole }[] })[] = res.data;
       if (!orgs.length) return;
-      const first = orgs[0];
-      setOrg(first);
-      const role = (first.members?.[0]?.role ?? getRoleForOrg(first.id) ?? null) as MemberRole | null;
+      const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+      setOrg(preferred);
+      const role = (preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null) as MemberRole | null;
       setMyRole(role);
 
       const [convRes, membersRes, botRes] = await Promise.allSettled([
-        conversationsApi.list(first.id),
-        orgsApi.listMembers(first.id),
-        role === 'AGENT' ? Promise.resolve({ data: [] }) : botsApi.list(first.id),
+        conversationsApi.list(preferred.id),
+        orgsApi.listMembers(preferred.id),
+        role === 'AGENT' ? Promise.resolve({ data: [] }) : botsApi.list(preferred.id),
       ]);
 
       const conversations: Conv[] = convRes.status === 'fulfilled' ? convRes.value.data : [];
@@ -107,7 +107,7 @@ export default function DashboardPage() {
         members: teamMembers.length,
       });
     }).catch(() => {}).finally(() => setLoading(false));
-  }, [getRoleForOrg]);
+  }, [activeOrgId, getRoleForOrg]);
 
   const volumeData = buildVolumeData(convs);
 

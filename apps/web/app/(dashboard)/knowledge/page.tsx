@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, botsApi, knowledgeApi, orgsApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 type IngestTab = 'url' | 'text';
 type PageTab = 'sources' | 'suggestions' | 'gaps';
@@ -63,6 +64,7 @@ type KnowledgeGap = {
 };
 
 export default function KnowledgePage() {
+  const { activeOrgId } = useAuthStore();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -155,17 +157,18 @@ export default function KnowledgePage() {
   useEffect(() => {
     orgsApi.list()
       .then((res) => {
-        if (res.data.length > 0) {
-          const firstOrgId = res.data[0].id;
-          setOrgId(firstOrgId);
-          loadItems(firstOrgId, 'shared');
-          loadBots(firstOrgId);
-          loadSuggestions(firstOrgId);
-          loadGaps(firstOrgId);
+        const orgs = res.data as { id: string }[];
+        if (orgs.length > 0) {
+          const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+          setOrgId(preferred.id);
+          loadItems(preferred.id, 'shared');
+          loadBots(preferred.id);
+          loadSuggestions(preferred.id);
+          loadGaps(preferred.id);
         }
       })
       .catch(() => {});
-  }, []);
+  }, [activeOrgId]);
 
   useEffect(() => {
     if (!orgId) return;

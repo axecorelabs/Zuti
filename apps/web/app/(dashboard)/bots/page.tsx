@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 import { BotKnowledgeTab } from '@/components/bots/bot-knowledge-tab';
 
 interface AiConfig {
@@ -590,6 +591,7 @@ function Modal({ children, onClose }: { children: React.ReactNode; onClose: () =
 
 export default function BotsPage() {
   const router = useRouter();
+  const { activeOrgId } = useAuthStore();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [bots, setBots] = useState<BotRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -691,10 +693,13 @@ export default function BotsPage() {
 
   useEffect(() => {
     orgsApi.list().then((res) => {
-      const orgs = res.data;
-      if (orgs.length > 0) setOrgId(orgs[0].id);
+      const orgs = res.data as { id: string }[];
+      if (orgs.length > 0) {
+        const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+        setOrgId(preferred.id);
+      }
     }).catch(() => {});
-  }, []);
+  }, [activeOrgId]);
 
   useEffect(() => {
     if (!orgId) return;

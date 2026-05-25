@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MessageSquareText, RefreshCw } from 'lucide-react';
 import { orgsApi, teamChatApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 type ThreadStatus = 'OPEN' | 'ANSWERED' | 'RESOLVED' | 'DUPLICATE';
 
@@ -23,6 +24,7 @@ type EscalationThread = {
 };
 
 export default function ResolutionPage() {
+  const { activeOrgId } = useAuthStore();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -53,16 +55,17 @@ export default function ResolutionPage() {
   useEffect(() => {
     orgsApi.list()
       .then((res) => {
-        if ((res.data ?? []).length > 0) {
-          const firstOrgId = res.data[0].id;
-          setOrgId(firstOrgId);
-          loadData(firstOrgId);
+        const orgs = (res.data ?? []) as Array<{ id: string }>;
+        if (orgs.length > 0) {
+          const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+          setOrgId(preferred.id);
+          loadData(preferred.id);
         } else {
           setLoading(false);
         }
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [activeOrgId]);
 
   const highlightedThreadId = useMemo(() => {
     if (targetThreadIdParam && threads.some((t) => t.id === targetThreadIdParam)) {

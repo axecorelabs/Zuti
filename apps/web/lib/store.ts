@@ -10,19 +10,24 @@ interface AuthState {
   user: User | null;
   accessToken: string | null;
   isLoading: boolean;
+  activeOrgId: string | null;
   /** Maps orgId → MemberRole ('OWNER' | 'ADMIN' | 'AGENT') */
   orgRoles: Record<string, string>;
   setAuth: (user: User, accessToken: string, refreshToken: string) => void;
   clearAuth: () => void;
   loadFromStorage: () => void;
+  setActiveOrgId: (orgId: string | null) => void;
   setOrgRoles: (roles: Record<string, string>) => void;
   getRoleForOrg: (orgId: string) => string | undefined;
 }
+
+const ACTIVE_ORG_STORAGE_KEY = 'activeOrgId';
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   accessToken: null,
   isLoading: true,
+  activeOrgId: null,
   orgRoles: {},
 
   setAuth: (user, accessToken, refreshToken) => {
@@ -37,15 +42,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     if (typeof window !== 'undefined') {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
+      localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
     }
-    set({ user: null, accessToken: null, isLoading: false, orgRoles: {} });
+    set({ user: null, accessToken: null, isLoading: false, activeOrgId: null, orgRoles: {} });
   },
 
   loadFromStorage: () => {
     if (typeof window !== 'undefined') {
       const token = localStorage.getItem('accessToken');
+      const activeOrgId = localStorage.getItem(ACTIVE_ORG_STORAGE_KEY);
       if (!token) {
-        set({ isLoading: false });
+        set({ isLoading: false, activeOrgId: activeOrgId ?? null });
         return;
       }
       // Decode JWT payload (not verification — just extract user info)
@@ -54,20 +61,32 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (payload.exp && payload.exp * 1000 < Date.now()) {
           localStorage.removeItem('accessToken');
           localStorage.removeItem('refreshToken');
-          set({ isLoading: false });
+          set({ isLoading: false, activeOrgId: activeOrgId ?? null });
           return;
         }
         set({
           accessToken: token,
           user: { id: payload.sub, name: payload.name ?? '', email: payload.email ?? '' },
+          activeOrgId: activeOrgId ?? null,
           isLoading: false,
         });
       } catch {
-        set({ isLoading: false });
+        set({ isLoading: false, activeOrgId: activeOrgId ?? null });
       }
     } else {
       set({ isLoading: false });
     }
+  },
+
+  setActiveOrgId: (orgId) => {
+    if (typeof window !== 'undefined') {
+      if (orgId) {
+        localStorage.setItem(ACTIVE_ORG_STORAGE_KEY, orgId);
+      } else {
+        localStorage.removeItem(ACTIVE_ORG_STORAGE_KEY);
+      }
+    }
+    set({ activeOrgId: orgId });
   },
 
   setOrgRoles: (roles) => set({ orgRoles: roles }),

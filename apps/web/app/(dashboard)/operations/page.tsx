@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { Download, Search, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, conversationsApi, orgsApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 type OperationsTab = 'ACTION_TASKS' | 'LEADS' | 'BOOKINGS' | 'SALES_ORDERS' | 'TECH_ISSUES';
 
@@ -200,6 +201,7 @@ function getFollowUpCustomerName(tab: OperationsTab, row: any): string | null {
 
 export default function OperationsPage() {
   const router = useRouter();
+  const { activeOrgId } = useAuthStore();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [bots, setBots] = useState<BotItem[]>([]);
   const [tab, setTab] = useState<OperationsTab>('ACTION_TASKS');
@@ -280,16 +282,17 @@ export default function OperationsPage() {
 
   useEffect(() => {
     orgsApi.list().then(async (res) => {
-      const first = (res.data ?? [])[0] as Org | undefined;
-      if (!first) {
+      const orgs = (res.data ?? []) as Org[];
+      const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+      if (!preferred) {
         setLoading(false);
         return;
       }
-      setOrgId(first.id);
-      const botsRes = await botsApi.list(first.id).catch(() => ({ data: [] }));
+      setOrgId(preferred.id);
+      const botsRes = await botsApi.list(preferred.id).catch(() => ({ data: [] }));
       setBots((botsRes.data ?? []).map((b: BotItem) => ({ id: b.id, name: b.name })));
     }).catch(() => setLoading(false));
-  }, []);
+  }, [activeOrgId]);
 
   const getBaseParams = (overrides?: { page?: number; limit?: number }) => ({
       botId: botId !== 'ALL' ? botId : undefined,

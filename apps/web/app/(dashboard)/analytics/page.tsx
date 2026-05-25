@@ -59,7 +59,7 @@ const VolumeTooltip = ({ active, payload, label }: any) => {
 };
 
 export default function AnalyticsPage() {
-  const { getRoleForOrg } = useAuthStore();
+  const { getRoleForOrg, activeOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [bots, setBots] = useState<Bot[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<string | 'all'>('all');
@@ -71,10 +71,11 @@ export default function AnalyticsPage() {
     orgsApi.list().then(async (res) => {
       const orgs: (Org & { members?: { role: string }[] })[] = res.data;
       if (!orgs.length) return;
-      setOrg(orgs[0]);
-      botsApi.list(orgs[0].id).then((r) => setBots(r.data ?? [])).catch(() => {});
+      const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+      setOrg(preferred);
+      botsApi.list(preferred.id).then((r) => setBots(r.data ?? [])).catch(() => {});
     }).catch(() => {});
-  }, []);
+  }, [activeOrgId]);
 
   useEffect(() => {
     if (!org) return;

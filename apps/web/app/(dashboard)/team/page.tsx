@@ -57,7 +57,7 @@ const RoleBadge = ({ role }: { role: string }) => {
 };
 
 export default function TeamPage() {
-  const { user, getRoleForOrg } = useAuthStore();
+  const { user, getRoleForOrg, activeOrgId } = useAuthStore();
 
   const [orgId, setOrgId] = useState<string | null>(null);
   const [myRole, setMyRole] = useState<string | null>(null);
@@ -104,13 +104,13 @@ export default function TeamPage() {
     orgsApi.list().then((res) => {
       const list = res.data as { id: string; slug: string; members?: { role: string }[] }[];
       if (!list.length) return;
-      const first = list[0];
-      setOrgId(first.id);
-      const role = first.members?.[0]?.role ?? getRoleForOrg(first.id) ?? null;
+      const preferred = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+      setOrgId(preferred.id);
+      const role = preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null;
       setMyRole(role ?? null);
-      loadData(first.id, role);
+      loadData(preferred.id, role);
     }).catch(() => setLoading(false));
-  }, [loadData, getRoleForOrg]);
+  }, [activeOrgId, loadData, getRoleForOrg]);
 
   const handleInvite = async () => {
     if (!orgId || !inviteEmail.trim()) return;

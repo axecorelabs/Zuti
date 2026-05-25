@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
 import { botsApi, conversationsApi, orgsApi, cannedResponsesApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 interface EmailDeliveryMeta {
   status?: 'ATTEMPTED' | 'SENT' | 'FAILED';
@@ -110,6 +111,7 @@ function getMetadataString(metadata: Record<string, unknown> | undefined, key: s
 }
 
 export default function InboxPage() {
+  const { activeOrgId } = useAuthStore();
   const searchParams = useSearchParams();
   const requestedConversationId = searchParams.get('conversationId');
   const [orgId, setOrgId] = useState<string | null>(null);
@@ -200,12 +202,13 @@ export default function InboxPage() {
 
   useEffect(() => {
     orgsApi.list().then((res) => {
-      const orgs = res.data;
+      const orgs = res.data as { id: string }[];
       if (orgs.length > 0) {
-        setOrgId(orgs[0].id);
+        const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+        setOrgId(preferred.id);
       }
     }).catch(() => {});
-  }, []);
+  }, [activeOrgId]);
 
   useEffect(() => {
     if (!orgId) return;

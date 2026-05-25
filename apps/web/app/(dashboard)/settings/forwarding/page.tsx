@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { Plus, Trash2, Save, Link2 } from 'lucide-react';
 import { botsApi, orgsApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 interface Org {
   id: string;
@@ -35,6 +36,7 @@ interface BotItem {
 }
 
 export default function ForwardingSettingsPage() {
+  const { activeOrgId, setActiveOrgId, getRoleForOrg } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [bots, setBots] = useState<BotItem[]>([]);
   const [endpoints, setEndpoints] = useState<ContactEndpoint[]>([]);
@@ -49,7 +51,9 @@ export default function ForwardingSettingsPage() {
     isPrimary: false,
   });
 
-  const isReadOnly = (org?.members?.[0]?.role ?? 'AGENT') === 'AGENT';
+  const activeRole = org ? (org.members?.[0]?.role ?? getRoleForOrg(org.id) ?? 'AGENT') : 'AGENT';
+  const isOwner = activeRole === 'OWNER';
+  const isReadOnly = !isOwner;
 
   const orgDefaultPolicy = useMemo(
     () => policies.find((p) => p.scope === 'ORGANIZATION' && p.isDefault),
@@ -82,16 +86,25 @@ export default function ForwardingSettingsPage() {
     orgsApi
       .list()
       .then((res) => {
-        const first = (res.data ?? [])[0] as Org | undefined;
-        if (!first) {
+        const orgs = (res.data ?? []) as Org[];
+        const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+        if (!preferred) {
           setLoading(false);
           return;
         }
-        setOrg(first);
-        loadData(first.id);
+        setOrg(preferred);
+        if (preferred.id !== activeOrgId) {
+          setActiveOrgId(preferred.id);
+        }
+        const role = preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? 'AGENT';
+        if (role !== 'OWNER') {
+          setLoading(false);
+          return;
+        }
+        loadData(preferred.id);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [activeOrgId, getRoleForOrg, setActiveOrgId]);
 
   const handleCreateEndpoint = async () => {
     if (!org) return;
@@ -231,6 +244,17 @@ export default function ForwardingSettingsPage() {
     );
   }
 
+  if (!isOwner) {
+    return (
+      <div className="settings-page settings-forwarding-page p-4 md:p-8">
+        <div className="card p-6 max-w-2xl">
+          <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Forwarding Settings</h1>
+          <p className="mt-2 text-sm text-zinc-400">Only the workspace owner can access forwarding settings.</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="settings-page settings-forwarding-page p-4 md:p-8">
       <div className="mb-8">
@@ -242,7 +266,7 @@ export default function ForwardingSettingsPage() {
 
       {isReadOnly && (
         <div className="mb-6 rounded-xl border border-orange-500/30 bg-orange-500/10 px-4 py-3 text-sm text-orange-300">
-          You have read-only access. Owner/Admin role is required to modify forwarding settings.
+          Only the workspace owner can modify forwarding settings.
         </div>
       )}
 

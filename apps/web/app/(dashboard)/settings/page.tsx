@@ -28,7 +28,7 @@ const ROLE_COLORS: Record<string, string> = {
 };
 
 export default function SettingsPage() {
-  const { user } = useAuthStore();
+  const { user, activeOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('workspace');
@@ -37,12 +37,12 @@ export default function SettingsPage() {
     orgsApi.list().then(async (res) => {
       const orgs = res.data as Org[];
       if (orgs.length > 0) {
-        const first = orgs[0];
-        const membersRes = await orgsApi.listMembers(first.id).catch(() => ({ data: [] }));
-        setOrg({ ...first, members: membersRes.data });
+        const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+        const membersRes = await orgsApi.listMembers(preferred.id).catch(() => ({ data: [] }));
+        setOrg({ ...preferred, members: membersRes.data });
       }
     }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  }, [activeOrgId]);
 
   const TABS: { key: Tab; label: string; icon: React.ElementType }[] = [
     { key: 'workspace', label: 'Workspace', icon: Building2 },
@@ -51,6 +51,7 @@ export default function SettingsPage() {
 
   const memberCount = org?.members?.length ?? 0;
   const currentMember = org?.members?.find((m) => m.userId === user?.id);
+  const canManageForwarding = currentMember?.role === 'OWNER';
   const displayName = user?.name || currentMember?.user?.name || user?.email || '—';
 
   return (
@@ -127,14 +128,16 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </div>
-              <div className="pt-1">
-                <Link
-                  href="/settings/forwarding"
-                  className="inline-flex items-center rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900 transition-colors"
-                >
-                  Manage Forwarding Settings
-                </Link>
-              </div>
+              {canManageForwarding && (
+                <div className="pt-1">
+                  <Link
+                    href="/settings/forwarding"
+                    className="inline-flex items-center rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900 transition-colors"
+                  >
+                    Manage Forwarding Settings
+                  </Link>
+                </div>
+              )}
             </div>
           )}
         </div>

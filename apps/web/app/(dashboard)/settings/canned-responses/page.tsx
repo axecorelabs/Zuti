@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Plus, Trash2, Pencil, Check, X, Zap } from 'lucide-react';
 import { orgsApi, cannedResponsesApi } from '@/lib/api';
+import { useAuthStore } from '@/lib/store';
 
 interface CannedResponse {
   id: string;
@@ -16,6 +17,7 @@ interface Org { id: string; name: string; }
 const empty = { shortcut: '', title: '', content: '' };
 
 export default function CannedResponsesPage() {
+  const { activeOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [items, setItems] = useState<CannedResponse[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,11 +32,12 @@ export default function CannedResponsesPage() {
     orgsApi.list().then(async (res) => {
       const orgs: Org[] = res.data;
       if (!orgs.length) return;
-      setOrg(orgs[0]);
-      const r = await cannedResponsesApi.list(orgs[0].id);
+      const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+      setOrg(preferred);
+      const r = await cannedResponsesApi.list(preferred.id);
       setItems(r.data ?? []);
     }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  }, [activeOrgId]);
 
   const handleCreate = async () => {
     if (!org || !form.shortcut.trim() || !form.title.trim() || !form.content.trim()) return;

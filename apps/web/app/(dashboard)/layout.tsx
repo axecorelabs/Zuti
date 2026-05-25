@@ -18,7 +18,7 @@ function getInitialTheme(): 'dark' | 'light' {
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, isLoading, loadFromStorage, setOrgRoles } = useAuthStore();
+  const { user, isLoading, loadFromStorage, setOrgRoles, activeOrgId, setActiveOrgId } = useAuthStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [roleCheckLoading, setRoleCheckLoading] = useState(true);
   const [theme, setTheme] = useState<'dark' | 'light'>(getInitialTheme);
@@ -78,10 +78,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         setOrgRoles(roles);
 
-        const firstRole = list[0]?.members?.[0]?.role;
+        const preferredOrg = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+        if (preferredOrg?.id && preferredOrg.id !== activeOrgId) {
+          setActiveOrgId(preferredOrg.id);
+        }
+        const activeRole = preferredOrg?.members?.[0]?.role;
         const restrictedForAgent = ['/bots', '/knowledge', '/knowledge-gaps', '/billing-usage'];
         const blockedForAgent =
-          firstRole === 'AGENT' &&
+          activeRole === 'AGENT' &&
           restrictedForAgent.some((route) => pathname === route || pathname.startsWith(`${route}/`));
 
         if (active && blockedForAgent) {
@@ -102,7 +106,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => {
       active = false;
     };
-  }, [isLoading, user, pathname, router, setOrgRoles]);
+  }, [activeOrgId, isLoading, user, pathname, router, setActiveOrgId, setOrgRoles]);
 
   useEffect(() => {
     if (!isLoading && !user) {

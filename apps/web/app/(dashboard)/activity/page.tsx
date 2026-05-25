@@ -158,7 +158,7 @@ function needsAttention(log: ActivityLog) {
 }
 
 export default function ActivityPage() {
-  const { getRoleForOrg } = useAuthStore();
+  const { getRoleForOrg, activeOrgId } = useAuthStore();
   const [logs, setLogs] = useState<ActivityLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [orgId, setOrgId] = useState<string | null>(null);
@@ -171,12 +171,12 @@ export default function ActivityPage() {
     orgsApi.list().then((res) => {
       const list = res.data as { id: string; members?: { role: string }[] }[];
       if (!list.length) return;
-      const first = list[0];
-      const role = first.members?.[0]?.role ?? getRoleForOrg(first.id) ?? null;
+      const preferred = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+      const role = preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null;
       setMyRole(role);
-      setOrgId(first.id);
+      setOrgId(preferred.id);
     }).catch(() => setLoading(false));
-  }, [getRoleForOrg]);
+  }, [activeOrgId, getRoleForOrg]);
 
   useEffect(() => {
     if (!orgId) return;
