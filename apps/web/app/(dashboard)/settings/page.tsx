@@ -3,7 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Building2, Users, User, Mail, AtSign, Shield } from 'lucide-react';
-import { orgsApi } from '@/lib/api';
+import toast from 'react-hot-toast';
+import { authApi, orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 interface Member {
@@ -32,6 +33,10 @@ export default function SettingsPage() {
   const [org, setOrg] = useState<Org | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>('workspace');
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [updatingPassword, setUpdatingPassword] = useState(false);
 
   useEffect(() => {
     orgsApi.list().then(async (res) => {
@@ -55,6 +60,35 @@ export default function SettingsPage() {
   const currentMember = org?.members?.find((m) => m.userId === user?.id);
   const canManageForwarding = currentMember?.role === 'OWNER';
   const displayName = user?.name || currentMember?.user?.name || user?.email || '—';
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 8) {
+      toast.error('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast.error('New password and confirmation do not match.');
+      return;
+    }
+
+    setUpdatingPassword(true);
+    try {
+      await authApi.changePassword(currentPassword, newPassword);
+      toast.success('Password updated successfully.');
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message ??
+        'Unable to update password';
+      const normalized = Array.isArray(msg) ? msg[0] : msg;
+      toast.error(normalized);
+    } finally {
+      setUpdatingPassword(false);
+    }
+  };
 
   return (
     <div className="settings-page w-full px-4 py-4 md:px-8 md:py-8">
@@ -183,6 +217,54 @@ export default function SettingsPage() {
                 </div>
               </div>
             </div>
+
+            <form onSubmit={handleChangePassword} className="pt-5 border-t border-zinc-900 space-y-4">
+              <p className="text-sm text-zinc-300 font-medium">Change password</p>
+
+              <div>
+                <label className="block text-xs text-zinc-600 font-normal mb-2">Current password</label>
+                <input
+                  type="password"
+                  required
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="input-base"
+                  autoComplete="current-password"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-zinc-600 font-normal mb-2">New password</label>
+                <input
+                  type="password"
+                  required
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="input-base"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs text-zinc-600 font-normal mb-2">Confirm new password</label>
+                <input
+                  type="password"
+                  required
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  className="input-base"
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={updatingPassword}
+                className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50 transition-colors"
+              >
+                {updatingPassword ? 'Updating...' : 'Update password'}
+              </button>
+            </form>
           </div>
         </div>
       )}

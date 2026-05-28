@@ -24,6 +24,16 @@ export class CreateBotDto {
   telegramToken?: string;
 
   @ApiPropertyOptional({
+    description: 'Allowed website domains for embed usage (without protocol)',
+    example: ['example.com', 'app.example.com'],
+    isArray: true,
+  })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  webWidgetAllowedDomains?: string[];
+
+  @ApiPropertyOptional({
     description: 'Optional skills to enable on the bot',
     enum: ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'],
     isArray: true,

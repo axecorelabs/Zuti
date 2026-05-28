@@ -21,12 +21,15 @@ import { AiUsageModule } from './modules/ai-usage/ai-usage.module';
 import { PricingModule } from './modules/pricing/pricing.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { ActionForwardingModule } from './modules/action-forwarding/action-forwarding.module';
+import { HealthModule } from './modules/health/health.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),    ScheduleModule.forRoot(),    ThrottlerModule.forRoot([
+    ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([
       {
         name: 'default',
         ttl: 60_000,
@@ -51,6 +54,7 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     PricingModule,
     BillingModule,
     ActionForwardingModule,
+    HealthModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: RateLimitGuard },

@@ -87,6 +87,12 @@ export const authApi = {
     api.post('/auth/verify-email', { token }),
   resendVerification: (email: string) =>
     api.post('/auth/resend-verification', { email }),
+  forgotPassword: (email: string) =>
+    api.post('/auth/forgot-password', { email }),
+  resetPassword: (token: string, password: string) =>
+    api.post('/auth/reset-password', { token, password }),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    api.post('/auth/change-password', { currentPassword, newPassword }),
 };
 
 // ── Organizations ─────────────────────────────────────────────────────────────
@@ -202,6 +208,7 @@ export const botsApi = {
       name: string;
       primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
       telegramToken?: string;
+      webWidgetAllowedDomains?: string[];
       template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
       skills?: Array<'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING'>;
       actionForwardingEnabled?: boolean;

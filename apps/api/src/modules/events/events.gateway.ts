@@ -15,8 +15,25 @@ import { PrismaService } from '../prisma/prisma.service';
 
 type SocketUser = { id: string; email?: string };
 
+const configuredWsOrigins = (process.env.WS_ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedWsOrigins = new Set<string>([
+  'https://zuti.bords.app',
+  'http://localhost:3000',
+  ...configuredWsOrigins,
+]);
+
 @WebSocketGateway({
-  cors: { origin: '*' },
+  cors: {
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedWsOrigins.has(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by websocket CORS'));
+    },
+    credentials: true,
+  },
   path: '/ws',
 })
 export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {

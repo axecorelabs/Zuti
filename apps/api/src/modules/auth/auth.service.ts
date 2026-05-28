@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto, LoginDto } from './dto/auth.dto';
 import { MailService } from '../mail/mail.service';
 import { ConfigService } from '@nestjs/config';
+import { ActivityAction } from '../activity/activity.service';
 import * as bcrypt from 'bcryptjs';
 import { createHash, randomBytes } from 'crypto';
 
@@ -143,6 +144,120 @@ export class AuthService {
     }
 
     return { message: 'If an unverified account exists for this email, a new verification link has been sent.' };
+  }
+
+  async forgotPassword(email: string) {
+    const normalizedEmail = email.trim().toLowerCase();
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+      select: { id: true, email: true, name: true, emailVerifiedAt: true },
+    });
+
+    // Do not reveal whether the email exists.
+    if (!user || !user.emailVerifiedAt) {
+      return { message: 'If an account exists for this email, a password reset link has been sent.' };
+    }
+
+    const resetToken = randomBytes(32).toString('hex');
+    const resetTokenHash = this.hashToken(resetToken);
+
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordResetTokenHash: resetTokenHash,
+        passwordResetSentAt: new Date(),
+      },
+    });
+
+    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
+    try {
+      await this.mail.sendPasswordResetEmail({
+        to: user.email,
+        name: user.name ?? undefined,
+        resetUrl: `${appUrl}/reset-password?token=${resetToken}`,
+      });
+    } catch (err) {
+      // Log mail failures but keep generic response to avoid account enumeration.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to send password reset email to ${user.email}: ${msg}`);
+    }
+
+    return { message: 'If an account exists for this email, a password reset link has been sent.' };
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    const tokenHash = this.hashToken(token);
+    const user = await this.prisma.user.findFirst({
+      where: { passwordResetTokenHash: tokenHash },
+      select: { id: true, passwordResetSentAt: true },
+    });
+
+    if (!user) throw new BadRequestException('Invalid reset token');
+
+    const sentAt = user.passwordResetSentAt?.getTime() ?? 0;
+    const ageMs = Date.now() - sentAt;
+    if (!sentAt || ageMs > 60 * 60 * 1000) {
+      throw new BadRequestException('Reset link has expired');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        passwordResetTokenHash: null,
+        passwordResetSentAt: null,
+      },
+    });
+
+    return { message: 'Password reset successful. You can now sign in with your new password.' };
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    if (currentPassword === newPassword) {
+      throw new BadRequestException('New password must be different from current password');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, name: true, passwordHash: true },
+    });
+    if (!user) throw new UnauthorizedException('User not found');
+
+    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+    if (!valid) throw new UnauthorizedException('Current password is incorrect');
+
+    const nextHash = await bcrypt.hash(newPassword, 12);
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: nextHash,
+        passwordResetTokenHash: null,
+        passwordResetSentAt: null,
+      },
+    });
+
+    const memberships = await this.prisma.organizationMember.findMany({
+      where: { userId: user.id },
+      select: { organizationId: true },
+    });
+    if (memberships.length > 0) {
+      await this.prisma.activityLog.createMany({
+        data: memberships.map((member) => ({
+          orgId: member.organizationId,
+          actorId: user.id,
+          actorName: user.name ?? user.email,
+          action: ActivityAction.ACCOUNT_PASSWORD_CHANGED,
+          targetType: 'member',
+          targetId: user.id,
+          metadata: {
+            source: 'account_settings',
+          },
+        })),
+      });
+    }
+
+    return { message: 'Password updated successfully.' };
   }
 
   async refreshToken(userId: string) {

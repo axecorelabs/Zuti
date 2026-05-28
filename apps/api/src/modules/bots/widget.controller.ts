@@ -1,4 +1,4 @@
-import { Controller, Post, Param, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Param, Body, Headers, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { BotsService } from './bots.service';
 import { Public } from '../../common/decorators/public.decorator';
@@ -15,7 +15,9 @@ export class WidgetController {
   async handleWidgetMessage(
     @Param('widgetKey') widgetKey: string,
     @Body() body: { message: string; visitorId?: string; visitorEmail?: string },
+    @Headers('origin') origin: string | undefined,
+    @Headers('referer') referer: string | undefined,
   ) {
-    return this.botsService.handleWidgetMessage(widgetKey, body);
+    return this.botsService.handleWidgetMessage(widgetKey, body, origin, referer);
   }
 }

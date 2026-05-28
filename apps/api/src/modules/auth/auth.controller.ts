@@ -2,8 +2,18 @@ import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
-import { RegisterDto, LoginDto, VerifyEmailDto, ResendVerificationDto, RefreshTokenDto } from './dto/auth.dto';
+import {
+  RegisterDto,
+  LoginDto,
+  VerifyEmailDto,
+  ResendVerificationDto,
+  RefreshTokenDto,
+  ForgotPasswordDto,
+  ResetPasswordDto,
+  ChangePasswordDto,
+} from './dto/auth.dto';
 import { Public } from '../../common/decorators/public.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -52,5 +62,34 @@ export class AuthController {
   @ApiOperation({ summary: 'Refresh access token using a valid refresh token' })
   refresh(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshFromToken(dto.refreshToken);
+  }
+
+  @Post('forgot-password')
+  @Public()
+  @Throttle({ default: { limit: 4, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send password reset email if account exists' })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
+  }
+
+  @Post('reset-password')
+  @Public()
+  @Throttle({ default: { limit: 6, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reset password with a valid reset token' })
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.password);
+  }
+
+  @Post('change-password')
+  @Throttle({ default: { limit: 8, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Change password for the currently authenticated user' })
+  changePassword(
+    @CurrentUser() user: { id: string },
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.authService.changePassword(user.id, dto.currentPassword, dto.newPassword);
   }
 }

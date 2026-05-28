@@ -17,6 +17,8 @@ model User {
   emailVerifiedAt DateTime?
   emailVerificationTokenHash String?
   emailVerificationSentAt DateTime?
+  passwordResetTokenHash String?
+  passwordResetSentAt DateTime?
   name          String?
   avatarUrl     String?
   createdAt     DateTime @default(now())

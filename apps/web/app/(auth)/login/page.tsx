@@ -205,6 +205,11 @@ function LoginPageContent() {
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
+                <div className="mt-2 text-right">
+                  <Link href="/forgot-password" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
+                    Forgot password?
+                  </Link>
+                </div>
               </div>
 
               {/* CTA — extra top margin to visually separate from fields */}

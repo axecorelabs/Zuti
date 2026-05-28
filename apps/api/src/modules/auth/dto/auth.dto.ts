@@ -46,3 +46,32 @@ export class RefreshTokenDto {
   @MinLength(20)
   declare refreshToken: string;
 }
+
+export class ForgotPasswordDto {
+  @ApiProperty({ example: 'john@example.com' })
+  @IsEmail()
+  declare email: string;
+}
+
+export class ResetPasswordDto {
+  @ApiProperty({ example: 'token-from-reset-link' })
+  @IsString()
+  @MinLength(20)
+  declare token: string;
+
+  @ApiProperty({ example: 'newstrongpassword' })
+  @IsString()
+  @MinLength(8)
+  declare password: string;
+}
+
+export class ChangePasswordDto {
+  @ApiProperty({ example: 'currentpassword' })
+  @IsString()
+  declare currentPassword: string;
+
+  @ApiProperty({ example: 'newstrongpassword' })
+  @IsString()
+  @MinLength(8)
+  declare newPassword: string;
+}

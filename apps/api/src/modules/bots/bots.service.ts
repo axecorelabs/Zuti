@@ -144,6 +144,27 @@ function shouldCollapseRepeatedReply(currentReply: string, previousAssistantRepl
   return current.includes(previous) || previous.includes(current);
 }
 
+function normalizeDomain(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return '';
+
+  try {
+    return new URL(trimmed).hostname.toLowerCase();
+  } catch {
+    const withoutProtocol = trimmed.replace(/^https?:\/\//, '');
+    return withoutProtocol.split('/')[0].split(':')[0].trim();
+  }
+}
+
+function extractHostFromHeader(value: string | undefined): string | null {
+  if (!value || !value.trim()) return null;
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
 function enforceReplyTrustConsistency(reply: string, forwardingResult: ActionForwardingResult): string {
   const lower = reply.toLowerCase();
   const noDeliveryProof = forwardingResult.deliveryStatus !== 'DELIVERED_TO_TEAM';
@@ -302,6 +323,11 @@ export class BotsService {
     const primaryChannel = dto.primaryChannel ?? 'TELEGRAM';
     const telegramToken = dto.telegramToken?.trim();
     const needsTelegram = primaryChannel === 'TELEGRAM';
+    const initialAllowedDomains = Array.from(new Set(
+      (dto.webWidgetAllowedDomains ?? [])
+        .map((domain) => normalizeDomain(domain))
+        .filter(Boolean),
+    ));
     const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled ?? true);
     const template: BotTemplate = 'GENERAL';
     const capabilities = buildCapabilitiesFromSkills(requestedSkills);
@@ -314,6 +340,10 @@ export class BotsService {
 
     if (needsTelegram && !telegramToken) {
       throw new BadRequestException('Telegram token is required for Telegram bots');
+    }
+
+    if (primaryChannel === 'WEB_WIDGET' && initialAllowedDomains.length === 0) {
+      throw new BadRequestException('Set at least one allowed widget domain before enabling the web widget channel');
     }
 
     let telegramUsername: string | null = null;
@@ -340,6 +370,7 @@ export class BotsService {
         telegramUsername,
         webWidgetEnabled: primaryChannel === 'WEB_WIDGET',
         webWidgetKey: primaryChannel === 'WEB_WIDGET' ? this.generateWidgetKey() : null,
+        webWidgetAllowedDomains: initialAllowedDomains,
         isActive: true,
         template,
         capabilities: capabilities as any,
@@ -370,7 +401,16 @@ export class BotsService {
   async update(organizationId: string, botId: string, dto: UpdateBotDto) {
     const existing = await this.findOne(organizationId, botId);
     const enableWidget = dto.webWidgetEnabled === true;
-    const nextAllowedDomains = dto.webWidgetAllowedDomains?.map((d) => d.trim().toLowerCase()).filter(Boolean);
+    const currentAllowedDomains = Array.from(new Set(
+      (existing.webWidgetAllowedDomains ?? [])
+        .map((domain) => normalizeDomain(domain))
+        .filter(Boolean),
+    ));
+    const nextAllowedDomains = dto.webWidgetAllowedDomains === undefined
+      ? undefined
+      : Array.from(new Set(dto.webWidgetAllowedDomains.map((domain) => normalizeDomain(domain)).filter(Boolean)));
+    const resolvedAllowedDomains = nextAllowedDomains ?? currentAllowedDomains;
+    const widgetWillBeEnabled = dto.webWidgetEnabled === undefined ? existing.webWidgetEnabled : dto.webWidgetEnabled;
     const nextTemplate = (dto.template ?? existing.template) as BotTemplate;
     const preset = getTemplatePreset(nextTemplate);
     const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled);
@@ -382,6 +422,10 @@ export class BotsService {
     if (resolvedActionForwardingEnabled === true && existing.actionForwardingEnabled !== true) {
       const hasRoute = await this.hasForwardingRouteConfiguration(organizationId, botId);
       if (!hasRoute) this.throwForwardingConfigurationRequired();
+    }
+
+    if (widgetWillBeEnabled && resolvedAllowedDomains.length === 0) {
+      throw new BadRequestException('Set at least one allowed widget domain before enabling the web widget channel');
     }
 
     return this.prisma.bot.update({
@@ -603,14 +647,21 @@ export class BotsService {
     if (!bot) throw new NotFoundException('Bot not found');
     if (!bot.webWidgetEnabled) throw new ForbiddenException('Widget is not enabled for this bot');
     if (!bot.isActive) throw new ForbiddenException('Bot is not active');
+    const allowedDomains = (bot.webWidgetAllowedDomains ?? []).map((domain) => normalizeDomain(domain)).filter(Boolean);
+    if (allowedDomains.length === 0) {
+      throw new ForbiddenException('Widget is not configured with allowed domains');
+    }
     return bot;
   }
 
   async handleWidgetMessage(
     widgetKey: string,
     payload: { message: string; visitorId?: string; visitorEmail?: string },
+    requestOrigin?: string,
+    requestReferer?: string,
   ) {
     const bot = await this.findByWidgetKey(widgetKey);
+    this.assertWidgetDomainAllowed(bot.webWidgetAllowedDomains, requestOrigin, requestReferer);
     const { message: userText, visitorId, visitorEmail } = payload;
 
     if (!userText || !userText.trim()) {
@@ -1160,5 +1211,31 @@ export class BotsService {
       select: { userId: true },
     });
     return fallback?.userId ?? '';
+  }
+
+  private assertWidgetDomainAllowed(
+    allowedDomains: string[] | null | undefined,
+    requestOrigin?: string,
+    requestReferer?: string,
+  ) {
+    const normalizedAllowedDomains = Array.isArray(allowedDomains)
+      ? Array.from(new Set(allowedDomains.map((domain) => normalizeDomain(domain)).filter(Boolean)))
+      : [];
+
+    // Backward-compatible default: if no domains are configured for the bot, allow all.
+    if (normalizedAllowedDomains.length === 0) return;
+
+    const requestHost = extractHostFromHeader(requestOrigin) ?? extractHostFromHeader(requestReferer);
+    if (!requestHost) {
+      throw new ForbiddenException('Widget origin is not allowed');
+    }
+
+    const isAllowed = normalizedAllowedDomains.some((domain) => {
+      return requestHost === domain || requestHost.endsWith(`.${domain}`);
+    });
+
+    if (!isAllowed) {
+      throw new ForbiddenException('Widget origin is not allowed');
+    }
   }
 }

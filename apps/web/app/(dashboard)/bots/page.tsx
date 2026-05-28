@@ -416,6 +416,39 @@ function extractSkillsFromBot(bot: BotRecord): BotSkill[] {
   return Array.from(new Set(inferred));
 }
 
+function sortValues(values: string[]): string[] {
+  return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right));
+}
+
+function buildSettingsSnapshot(input: {
+  aiConfig?: AiConfig | null;
+  routeToRoles: string[];
+  webWidgetEnabled: boolean;
+  webWidgetAllowedDomains: string[];
+  skills: BotSkill[];
+  skillIntakeConfig: SkillIntakeConfigMap;
+}) {
+  const aiConfig = input.aiConfig ?? {};
+  return {
+    agentAlias: asNonEmptyString(aiConfig.agentAlias ?? ''),
+    guidedPreset: asNonEmptyString(aiConfig.guidedPreset ?? ''),
+    mission: asNonEmptyString(aiConfig.mission ?? ''),
+    persona: asNonEmptyString(aiConfig.persona ?? ''),
+    tone: asNonEmptyString(aiConfig.tone ?? ''),
+    languageStyle: asNonEmptyString(aiConfig.languageStyle ?? ''),
+    escalationPolicy: asNonEmptyString(aiConfig.escalationPolicy ?? ''),
+    prohibitedTopics: asNonEmptyString(aiConfig.prohibitedTopics ?? ''),
+    extraDetails: asNonEmptyString(aiConfig.extraDetails ?? ''),
+    creativity: toBoundedNumber(typeof aiConfig.creativity === 'number' ? aiConfig.creativity : 45),
+    verbosity: toBoundedNumber(typeof aiConfig.verbosity === 'number' ? aiConfig.verbosity : 50),
+    routeToRoles: sortValues(input.routeToRoles),
+    webWidgetEnabled: input.webWidgetEnabled,
+    webWidgetAllowedDomains: sortValues(input.webWidgetAllowedDomains.map((domain) => domain.trim()).filter(Boolean)),
+    skills: sortValues(input.skills),
+    skillIntakeConfig: serializeSkillIntakeConfig(input.skillIntakeConfig) ?? null,
+  };
+}
+
 function buildGuidedPromptPreview(config: AiConfig, botName: string): string {
   const mission = asNonEmptyString(config.mission ?? '');
   const agentAlias = asNonEmptyString(config.agentAlias ?? '');
@@ -601,6 +634,7 @@ export default function BotsPage() {
   const [createName, setCreateName] = useState('');
   const [createPrimaryChannel, setCreatePrimaryChannel] = useState<'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL'>('TELEGRAM');
   const [createTelegramToken, setCreateTelegramToken] = useState('');
+  const [createWidgetDomains, setCreateWidgetDomains] = useState('');
   const [createActionForwardingEnabled, setCreateActionForwardingEnabled] = useState(true);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
@@ -760,6 +794,63 @@ export default function BotsPage() {
     }
     return false;
   }, [editSkills, persistedSkills, settingsBot]);
+  const persistedSettingsSnapshot = useMemo(() => {
+    if (!settingsBot) return null;
+    return buildSettingsSnapshot({
+      aiConfig: settingsBot.aiConfig,
+      routeToRoles: settingsBot.routeToRoles ?? [],
+      webWidgetEnabled: Boolean(settingsBot.webWidgetEnabled),
+      webWidgetAllowedDomains: settingsBot.webWidgetAllowedDomains ?? [],
+      skills: extractSkillsFromBot(settingsBot),
+      skillIntakeConfig: normalizeSkillIntakeConfig((settingsBot.aiConfig as AiConfig | null)?.skillIntakeConfig),
+    });
+  }, [settingsBot]);
+  const currentSettingsSnapshot = useMemo(() => {
+    if (!settingsBot) return null;
+    return buildSettingsSnapshot({
+      aiConfig: {
+        ...(settingsBot.aiConfig ?? {}),
+        agentAlias: editAgentAlias,
+        guidedPreset: selectedGuidedPreset,
+        mission: editMission,
+        persona: effectivePersona,
+        tone: effectiveTone,
+        languageStyle: editLanguageStyle,
+        escalationPolicy: editEscalationPolicy,
+        prohibitedTopics: editProhibitedTopics,
+        extraDetails: editExtraDetails,
+        creativity: editCreativity,
+        verbosity: editVerbosity,
+      },
+      routeToRoles: editRouteToRoles,
+      webWidgetEnabled: editWidgetEnabled,
+      webWidgetAllowedDomains: splitList(editWidgetDomains),
+      skills: editSkills,
+      skillIntakeConfig: editSkillIntakeConfig,
+    });
+  }, [
+    editAgentAlias,
+    editCreativity,
+    editEscalationPolicy,
+    editExtraDetails,
+    editLanguageStyle,
+    editMission,
+    editProhibitedTopics,
+    editRouteToRoles,
+    editSkillIntakeConfig,
+    editSkills,
+    editVerbosity,
+    editWidgetDomains,
+    editWidgetEnabled,
+    effectivePersona,
+    effectiveTone,
+    selectedGuidedPreset,
+    settingsBot,
+  ]);
+  const hasUnsavedSettingsChanges = useMemo(() => {
+    if (!persistedSettingsSnapshot || !currentSettingsSnapshot) return false;
+    return JSON.stringify(persistedSettingsSnapshot) !== JSON.stringify(currentSettingsSnapshot);
+  }, [currentSettingsSnapshot, persistedSettingsSnapshot]);
 
   const isSkillIntakeEnabled = (skill: SkillIntakeKey, skills: BotSkill[]) => {
     if (skill === 'TECHNICAL') {
@@ -781,6 +872,7 @@ export default function BotsPage() {
     setCreateName('');
     setCreatePrimaryChannel('TELEGRAM');
     setCreateTelegramToken('');
+    setCreateWidgetDomains('');
     setCreateActionForwardingEnabled(true);
     setShowCreate(true);
   };
@@ -795,12 +887,18 @@ export default function BotsPage() {
     if (!orgId) return;
     setCreating(true);
     try {
+      const createAllowedDomains = createWidgetDomains
+        .split(/\n|,/)
+        .map((domain) => domain.trim())
+        .filter(Boolean);
+
       const payload = {
         name: createName,
         primaryChannel: createPrimaryChannel,
         skills: createActionForwardingEnabled ? (['FORWARDING'] as BotSkill[]) : ([] as BotSkill[]),
         actionForwardingEnabled: createActionForwardingEnabled,
         ...(createPrimaryChannel === 'TELEGRAM' ? { telegramToken: createTelegramToken } : {}),
+        ...(createPrimaryChannel === 'WEB_WIDGET' ? { webWidgetAllowedDomains: createAllowedDomains } : {}),
       };
       await botsApi.create(orgId, payload);
       const refreshed = await botsApi.list(orgId);
@@ -809,6 +907,7 @@ export default function BotsPage() {
       setCreateName('');
       setCreatePrimaryChannel('TELEGRAM');
       setCreateTelegramToken('');
+      setCreateWidgetDomains('');
       setCreateActionForwardingEnabled(true);
       toast.success('Bot created');
     } catch (err: unknown) {
@@ -823,7 +922,10 @@ export default function BotsPage() {
   const totalCreateSteps = 3;
   const canAdvanceCreateStep =
     createStep === 1 ||
-    (createStep === 2 && createName.trim().length > 0 && (createPrimaryChannel !== 'TELEGRAM' || createTelegramToken.trim().length > 0));
+    (createStep === 2
+      && createName.trim().length > 0
+      && (createPrimaryChannel !== 'TELEGRAM' || createTelegramToken.trim().length > 0)
+      && (createPrimaryChannel !== 'WEB_WIDGET' || createWidgetDomains.split(/\n|,/).map((d) => d.trim()).filter(Boolean).length > 0));
 
   const handleSetWebhook = async (bot: BotRecord) => {
     if (!orgId) return;
@@ -1242,6 +1344,12 @@ onBeforeUnmount(() => {
         .split(/\n|,/) // allow newline or comma separated domains
         .map((d) => d.trim())
         .filter(Boolean);
+
+      if (editWidgetEnabled && allowedDomains.length === 0) {
+        toast.error('Set at least one allowed domain before enabling the web widget channel.');
+        setSaving(false);
+        return;
+      }
 
       const nextAiConfig: AiConfig = {
         ...(settingsBot.aiConfig ?? {}),
@@ -2187,13 +2295,18 @@ onBeforeUnmount(() => {
               {settingsTab !== 'knowledge' && (
                 <button
                   onClick={handleSaveSettings}
-                  disabled={saving}
+                  disabled={saving || !hasUnsavedSettingsChanges}
                   className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
                 >
-                  {saving ? 'Saving…' : 'Save settings'}
+                  {saving ? 'Saving…' : hasUnsavedSettingsChanges ? 'Save changes' : 'All changes saved'}
                 </button>
               )}
             </div>
+            {settingsTab !== 'knowledge' && hasUnsavedSettingsChanges && !settingsValidationError && (
+              <div className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                <p className="text-xs text-amber-300">You have unsaved changes. Click &quot;Save changes&quot; to persist them.</p>
+              </div>
+            )}
             {settingsValidationError && (
               <p className="text-xs text-amber-300 mt-2">{settingsValidationError}</p>
             )}
@@ -2777,8 +2890,19 @@ onBeforeUnmount(() => {
                       </a>
                     </div>
                   ) : createPrimaryChannel === 'WEB_WIDGET' ? (
-                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
-                      Website widget channel will be enabled immediately. Embed code and domain allowlist are configured in settings.
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Allowed domains</label>
+                        <textarea
+                          required
+                          value={createWidgetDomains}
+                          onChange={(e) => setCreateWidgetDomains(e.target.value)}
+                          rows={3}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors"
+                          placeholder={'example.com\napp.example.com'}
+                        />
+                        <p className="mt-1.5 text-[11px] text-zinc-500">Add one domain per line (or comma-separated). The widget will be blocked on unlisted domains.</p>
+                      </div>
                     </div>
                   ) : (
                     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
@@ -2814,6 +2938,12 @@ onBeforeUnmount(() => {
                         <span className="text-zinc-500">Forwarding</span>
                         <span className="text-white font-medium">{createActionForwardingEnabled ? 'On' : 'Off'}</span>
                       </div>
+                      {createPrimaryChannel === 'WEB_WIDGET' ? (
+                        <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                          <span className="text-zinc-500">Allowed domains</span>
+                          <span className="text-white font-medium">{createWidgetDomains.split(/\n|,/).map((d) => d.trim()).filter(Boolean).length}</span>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                   <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
