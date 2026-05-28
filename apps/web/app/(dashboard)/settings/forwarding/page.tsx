@@ -87,7 +87,9 @@ export default function ForwardingSettingsPage() {
       .list()
       .then((res) => {
         const orgs = (res.data ?? []) as Org[];
-        const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+        const preferred = activeOrgId
+          ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
+          : orgs[0];
         if (!preferred) {
           setLoading(false);
           return;

@@ -118,7 +118,9 @@ export default function Sidebar({
         const list: (Org & { members?: { role: string }[] })[] = res.data;
         setOrgs(list);
         if (list.length > 0) {
-          const preferred = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+          const preferred = activeOrgId
+            ? (list.find((org) => org.id === activeOrgId) ?? list[0])
+            : list[0];
           setActiveOrg(preferred);
           if (preferred.id !== activeOrgId) {
             setActiveOrgId(preferred.id);

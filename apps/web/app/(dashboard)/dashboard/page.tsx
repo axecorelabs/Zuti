@@ -81,7 +81,9 @@ export default function DashboardPage() {
     orgsApi.list().then(async (res) => {
       const orgs: (Org & { members?: { role: MemberRole }[] })[] = res.data;
       if (!orgs.length) return;
-      const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+      const preferred = activeOrgId
+        ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
+        : orgs[0];
       setOrg(preferred);
       const role = (preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null) as MemberRole | null;
       setMyRole(role);

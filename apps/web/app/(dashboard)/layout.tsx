@@ -78,7 +78,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         setOrgRoles(roles);
 
-        const preferredOrg = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+        const preferredOrg = activeOrgId
+          ? (list.find((org) => org.id === activeOrgId) ?? list[0])
+          : list[0];
         if (preferredOrg?.id && preferredOrg.id !== activeOrgId) {
           setActiveOrgId(preferredOrg.id);
         }

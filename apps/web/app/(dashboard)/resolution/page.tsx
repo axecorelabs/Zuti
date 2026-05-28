@@ -57,7 +57,9 @@ export default function ResolutionPage() {
       .then((res) => {
         const orgs = (res.data ?? []) as Array<{ id: string }>;
         if (orgs.length > 0) {
-          const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+          const preferred = activeOrgId
+            ? (orgs.find((org) => org.id === activeOrgId) ?? orgs[0])
+            : orgs[0];
           setOrgId(preferred.id);
           loadData(preferred.id);
         } else {

@@ -37,7 +37,9 @@ export default function SettingsPage() {
     orgsApi.list().then(async (res) => {
       const orgs = res.data as Org[];
       if (orgs.length > 0) {
-        const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+        const preferred = activeOrgId
+          ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
+          : orgs[0];
         const membersRes = await orgsApi.listMembers(preferred.id).catch(() => ({ data: [] }));
         setOrg({ ...preferred, members: membersRes.data });
       }

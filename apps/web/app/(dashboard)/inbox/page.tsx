@@ -204,7 +204,9 @@ export default function InboxPage() {
     orgsApi.list().then((res) => {
       const orgs = res.data as { id: string }[];
       if (orgs.length > 0) {
-        const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+        const preferred = activeOrgId
+          ? (orgs.find((org) => org.id === activeOrgId) ?? orgs[0])
+          : orgs[0];
         setOrgId(preferred.id);
       }
     }).catch(() => {});

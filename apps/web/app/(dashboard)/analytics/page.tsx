@@ -71,7 +71,9 @@ export default function AnalyticsPage() {
     orgsApi.list().then(async (res) => {
       const orgs: (Org & { members?: { role: string }[] })[] = res.data;
       if (!orgs.length) return;
-      const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+      const preferred = activeOrgId
+        ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
+        : orgs[0];
       setOrg(preferred);
       botsApi.list(preferred.id).then((r) => setBots(r.data ?? [])).catch(() => {});
     }).catch(() => {});

@@ -682,7 +682,9 @@ export default function OperationsPage() {
   useEffect(() => {
     orgsApi.list().then(async (res) => {
       const orgs = (res.data ?? []) as Org[];
-      const preferred = (activeOrgId && orgs.find((org) => org.id === activeOrgId)) ?? orgs[0];
+      const preferred = activeOrgId
+        ? (orgs.find((org) => org.id === activeOrgId) ?? orgs[0])
+        : orgs[0];
       if (!preferred) {
         setLoading(false);
         return;

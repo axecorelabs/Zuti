@@ -32,7 +32,9 @@ export default function CannedResponsesPage() {
     orgsApi.list().then(async (res) => {
       const orgs: Org[] = res.data;
       if (!orgs.length) return;
-      const preferred = (activeOrgId && orgs.find((currentOrg) => currentOrg.id === activeOrgId)) ?? orgs[0];
+      const preferred = activeOrgId
+        ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
+        : orgs[0];
       setOrg(preferred);
       const r = await cannedResponsesApi.list(preferred.id);
       setItems(r.data ?? []);

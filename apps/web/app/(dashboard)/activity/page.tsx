@@ -184,7 +184,9 @@ export default function ActivityPage() {
     orgsApi.list().then((res) => {
       const list = res.data as { id: string; members?: { role: string }[] }[];
       if (!list.length) return;
-      const preferred = (activeOrgId && list.find((org) => org.id === activeOrgId)) ?? list[0];
+      const preferred = activeOrgId
+        ? (list.find((org) => org.id === activeOrgId) ?? list[0])
+        : list[0];
       const role = preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null;
       setMyRole(role);
       setOrgId(preferred.id);
