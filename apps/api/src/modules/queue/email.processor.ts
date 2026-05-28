@@ -7,6 +7,7 @@ import { firstValueFrom } from 'rxjs';
 import { render } from '@react-email/render';
 import * as React from 'react';
 import { BotReplyEmail } from '../mail/templates/BotReplyEmail';
+import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
@@ -514,9 +515,10 @@ export class EmailProcessor {
 
     const latestConversation = await this.prisma.conversation.findUnique({
       where: { id: conversation.id },
-    }) ?? conversation;
+      select: { metadata: true },
+    });
     const aiContext = buildCompactAiContext({
-      conversation: latestConversation,
+      conversation,
       priorMessages: priorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
@@ -527,7 +529,7 @@ export class EmailProcessor {
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
-        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext),
+        metadata: buildConversationMetadataPatch(latestConversation?.metadata, aiContext) as Prisma.InputJsonValue,
       },
     }).catch(() => null);
 

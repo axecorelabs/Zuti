@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -876,7 +877,7 @@ export class BotsService {
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
-        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext),
+        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Prisma.InputJsonValue,
       },
     }).catch(() => null);
 

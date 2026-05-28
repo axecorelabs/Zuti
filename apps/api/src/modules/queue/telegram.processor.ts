@@ -1,6 +1,7 @@
 import { Processor, Process } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
+import { Prisma } from '@prisma/client';
 import { TELEGRAM_QUEUE } from './queue.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { HttpService } from '@nestjs/axios';
@@ -545,7 +546,7 @@ export class TelegramProcessor {
     await this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
-        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext),
+        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Prisma.InputJsonValue,
       },
     }).catch(() => null);
 
