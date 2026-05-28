@@ -1051,6 +1051,7 @@ export class BillingService {
     organizationId: string,
     reference: string,
   ) {
+    const allowedCallbackPaths = new Set(['/billing-usage']);
     const fallback = this.defaultCallbackUrl(organizationId, reference);
     if (!requestedCallbackUrl) return fallback;
 
@@ -1066,6 +1067,11 @@ export class BillingService {
 
     if (requested.origin !== allowed.origin) {
       throw new BadRequestException('Callback URL origin is not allowed');
+    }
+
+    const normalizedPath = requested.pathname.replace(/\/+$/, '') || '/';
+    if (!allowedCallbackPaths.has(normalizedPath)) {
+      throw new BadRequestException('Callback URL path is not allowed');
     }
 
     return requested.toString();

@@ -9,9 +9,29 @@ async function bootstrap() {
   // Respect X-Forwarded-For when running behind a proxy/load balancer.
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
 
+  const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  const allowedOrigins = new Set<string>([
+    'https://zuti.bords.app',
+    'http://localhost:3000',
+    ...configuredOrigins,
+  ]);
+
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  app.enableCors();
+  app.enableCors({
+    origin: (origin, callback) => {
+      // Allow non-browser requests (curl, server-to-server) that do not send Origin.
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.has(origin)) return callback(null, true);
+      return callback(new Error('Not allowed by CORS'));
+    },
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    credentials: true,
+  });
 
   const config = new DocumentBuilder()
     .setTitle('Zuti API')
