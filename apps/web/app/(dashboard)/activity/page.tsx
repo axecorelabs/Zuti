@@ -29,6 +29,16 @@ interface ActivityLog {
   createdAt: string;
 }
 
+interface PaginatedActivityResponse {
+  items: ActivityLog[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+const PAGE_SIZE = 50;
+
 const ACTION_LABELS: Record<string, string> = {
   AGENT_TOOK_OVER: 'took over a conversation',
   CONVERSATION_ESCALATED: 'escalated a conversation',
@@ -163,6 +173,9 @@ export default function ActivityPage() {
   const [loading, setLoading] = useState(true);
   const [orgId, setOrgId] = useState<string | null>(null);
   const [myRole, setMyRole] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState<ActivityCategory>('ALL');
   const [range, setRange] = useState<TimeRange>('7D');
@@ -175,6 +188,7 @@ export default function ActivityPage() {
       const role = preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null;
       setMyRole(role);
       setOrgId(preferred.id);
+      setPage(1);
     }).catch(() => setLoading(false));
   }, [activeOrgId, getRoleForOrg]);
 
@@ -182,11 +196,16 @@ export default function ActivityPage() {
     if (!orgId) return;
     setLoading(true);
     activityApi
-      .list(orgId)
-      .then((res) => setLogs(res.data as ActivityLog[]))
+      .list(orgId, { page, limit: PAGE_SIZE })
+      .then((res) => {
+        const data = res.data as PaginatedActivityResponse;
+        setLogs(data.items ?? []);
+        setTotal(data.total ?? 0);
+        setTotalPages(data.totalPages ?? 1);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [orgId]);
+  }, [orgId, page]);
 
   const filteredLogs = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -431,6 +450,7 @@ export default function ActivityPage() {
                 setQuery('');
                 setCategory('ALL');
                 setRange('7D');
+                setPage(1);
               }}
               className="text-[11px] px-2 py-1 rounded-md border border-zinc-800 text-zinc-500 hover:text-zinc-200 hover:border-zinc-700"
             >
@@ -563,6 +583,28 @@ export default function ActivityPage() {
                 </div>
               </section>
             ))}
+
+            <div className="pt-2 flex items-center justify-between text-xs text-zinc-500">
+              <span>
+                Showing page {page} of {totalPages} · {total} total records
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1 || loading}
+                  className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 disabled:opacity-50"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages || loading}
+                  className="rounded border border-zinc-700 px-2 py-1 text-zinc-300 disabled:opacity-50"
+                >
+                  Next
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

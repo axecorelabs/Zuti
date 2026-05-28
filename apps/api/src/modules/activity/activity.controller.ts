@@ -1,5 +1,5 @@
-import { Controller, Get, Param, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { ActivityService } from './activity.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
@@ -15,11 +15,19 @@ export class ActivityController {
 
   @Get()
   @ApiOperation({ summary: 'Get activity log for the organization, scoped by role' })
-  list(@Param('id') orgId: string, @Req() req: any) {
+  @ApiQuery({ name: 'page', required: false, description: '1-based page number' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Items per page (max 200)' })
+  list(
+    @Param('id') orgId: string,
+    @Req() req: any,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const query = { page, limit };
     if (req.memberRole === 'AGENT') {
-      return this.service.listForMember(orgId, req.user.id);
+      return this.service.listForMember(orgId, req.user.id, query);
     }
 
-    return this.service.list(orgId);
+    return this.service.list(orgId, query);
   }
 }

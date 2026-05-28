@@ -35,6 +35,7 @@ const DEFAULT_SKILL_BEHAVIOR_BLOCKS: Record<SkillOverrideKey, string> = {
 function mapActionTypeToSkillKey(actionType: unknown): SkillOverrideKey | null {
   if (typeof actionType !== 'string') return null;
   switch (actionType) {
+    case 'CONSULTATION_REQUEST':
     case 'SALES_ORDER_REQUEST':
       return 'SALES';
     case 'MEETING_REQUEST':

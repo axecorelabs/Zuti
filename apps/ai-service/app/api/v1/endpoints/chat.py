@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import re
 from app.services.rag_service import rag_service
 
@@ -16,17 +16,26 @@ class ChatRequest(BaseModel):
     organization_id: str
     bot_id: str
     message: str
-    history: list[HistoryMessage] = []
+    history: list[HistoryMessage] = Field(default_factory=list)
     bot_name: str = "Assistant"
     org_name: str | None = None
     system_prompt: str | None = None
     customer_context: str | None = None  # summaries of previous conversations with this customer
+    forwarding_status: str | None = None
+    forwarding_reason: str | None = None
+    action_task_id: str | None = None
+    can_claim_completed: bool | None = None
+    missing_fields: list[str] = Field(default_factory=list)
+    blocked_capability: str | None = None
+    claim_level: str | None = None
+    delivery_status: str | None = None
+    operational_truth: dict | None = None
 
 
 class ChatResponse(BaseModel):
     reply: str
     conversation_id: str
-    sources: list[dict] = []
+    sources: list[dict] = Field(default_factory=list)
     should_resolve: bool = False
     answerability: str = "unknown"
     confidence: float = 0.5
@@ -47,6 +56,15 @@ async def chat(request: ChatRequest):
             org_name=request.org_name,
             system_prompt=request.system_prompt,
             customer_context=request.customer_context,
+            forwarding_status=request.forwarding_status,
+            forwarding_reason=request.forwarding_reason,
+            action_task_id=request.action_task_id,
+            can_claim_completed=request.can_claim_completed,
+            missing_fields=request.missing_fields,
+            blocked_capability=request.blocked_capability,
+            claim_level=request.claim_level,
+            delivery_status=request.delivery_status,
+            operational_truth=request.operational_truth,
         )
         # Strip [RESOLVED] token from the reply text; surface it as a flag
         should_resolve = re.search(r'\[\s*resolved\s*\]', reply, re.IGNORECASE) is not None

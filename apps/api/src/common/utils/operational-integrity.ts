@@ -18,6 +18,8 @@ interface OperationalClaimGuardOptions {
   forwardingReason?: ForwardingTruthReason;
   actionTaskId?: string;
   canClaimCompleted?: boolean;
+  claimLevel?: string;
+  deliveryStatus?: string;
   missingFields?: ForwardingMissingField[];
   blockedCapability?: string;
 }
@@ -27,6 +29,17 @@ interface DeterministicFollowUpOptions {
   missingFields?: string[];
   canClaimCompleted?: boolean;
   forwardingReason?: string;
+  blockedCapability?: string;
+}
+
+interface TruthAwareTemplateOptions {
+  forwardingStatus?: ForwardingTruthStatus;
+  forwardingReason?: ForwardingTruthReason;
+  canClaimCompleted?: boolean;
+  claimLevel?: string;
+  deliveryStatus?: string;
+  actionType?: string;
+  missingFields?: string[];
   blockedCapability?: string;
 }
 
@@ -55,9 +68,9 @@ const ISSUE_LOG_CLAIM_PATTERNS: RegExp[] = [
 ];
 
 const ORDER_LOG_CLAIM_PATTERNS: RegExp[] = [
-  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:now\s+|already\s+)?(?:logged|reported|filed|created|submitted)\s+(?:this\s+)?(?:order|order request|purchase request)\b/gi,
-  /\b(?:this|the)\s+(?:order|order request|purchase request)\s+(?:has been|was)\s+(?:logged|reported|filed|created|submitted)\b/gi,
-  /\b(?:your|the)\s+(?:order|order request|purchase request)\s+(?:is|has been)\s+(?:queued|sent|forwarded|logged|submitted)\b/gi,
+  /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:now\s+|already\s+)?(?:logged|reported|filed|created|submitted)\s+(?:this\s+)?(?:order|order request|purchase request|consultation request|lead request)\b/gi,
+  /\b(?:this|the)\s+(?:order|order request|purchase request|consultation request|lead request)\s+(?:has been|was)\s+(?:logged|reported|filed|created|submitted)\b/gi,
+  /\b(?:your|the)\s+(?:order|order request|purchase request|consultation request|lead request)\s+(?:is|has been)\s+(?:queued|sent|forwarded|logged|submitted)\b/gi,
 ];
 
 const LOOKUP_CLAIM_PATTERNS: RegExp[] = [
@@ -70,10 +83,21 @@ const UNVERIFIED_LOGGED_CLAIM_PATTERNS: RegExp[] = [
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:logged|noted|submitted|queued|filed)\s+(?:it|this|your\s+request|the\s+request|your\s+meeting\s+request|the\s+meeting\s+request)?\s*(?:for\s+review)?\b/gi,
   /\b(?:your|the)\s+(?:request|meeting\s+request)\s+(?:is|has been|was)\s+(?:logged|noted|submitted|queued|filed)\s*(?:for\s+review)?\b/gi,
   /\b(i(?:'ve| have)|we(?:'ve| have))\s+(?:already\s+)?(?:noted|captured)\s+your\s+request\s+for\s+(?:a\s+)?meeting\b/gi,
+  /\b(?:i\s+am\s+now|i\s+will\s+now|i\s+just)\s+(?:log(?:ging)?|submitting|queuing|noting)\b/gi,
+  /\b(?:request|ticket|order|booking)\s+(?:is|has been|was)\s+(?:created|raised|sent through|passed on)\b/gi,
+  /\b(?:it'?s|it is)\s+(?:already\s+)?(?:in\s+the\s+queue|queued\s+for\s+the\s+team)\b/gi,
+];
+
+const DOWNSTREAM_DELIVERY_CLAIM_PATTERNS: RegExp[] = [
+  /\b(?:our\s+)?(?:sales\s+team|team|owner|agent)\s+(?:will|should)\s+(?:reach\s+out|contact\s+you|follow\s+up)\s+(?:soon|shortly)?\b/gi,
+  /\bplease\s+expect\s+(?:our\s+)?(?:team|sales\s+team|owner|agent)\s+to\s+(?:reach\s+out|contact\s+you|follow\s+up)\b/gi,
+  /\b(?:the\s+)?team\s+(?:has\s+received|received|was\s+notified|has\s+been\s+notified)\b/gi,
+  /\b(?:owner|manager|sales\s+team)\s+(?:has\s+been\s+notified|is\s+aware)\b/gi,
 ];
 
 const AMBIGUOUS_CAPABILITY_CLAIM_PATTERNS: RegExp[] = [
   /\bi\s+can\s+help\s+(?:log|note|submit|queue|file|process|handle)\s+(?:this|that|your\s+request|the\s+request)(?:\s+for\s+review)?\b/gi,
+  /\bi\s+can\s+(?:log|note|submit|queue|file|process|handle)\s+(?:this|that|your\s+request|the\s+request)(?:\s+right\s+now)?\b/gi,
   /\bi\s+can\s+help\s+(?:pass|forward)\s+(?:this|that|your\s+request|the\s+request)\s+to\s+(?:our\s+)?(?:team|sales\s+team|owner)\b/gi,
   /\bi\s+have\s+processed\s+(?:this|that|your\s+request|the\s+request)\b/gi,
   /\bi\s+have\s+taken\s+the\s+action\b/gi,
@@ -129,6 +153,8 @@ export function buildOperationalIntegrityPromptBlock(
   missingFields: ForwardingMissingField[] = [],
   blockedCapability?: string,
   actionTaskId?: string,
+  claimLevel?: string,
+  deliveryStatus?: string,
 ): string {
   const missingFieldText = missingFields.length > 0
     ? `- Missing data for forwarding: ${missingFields.join(', ')}.`
@@ -137,6 +163,8 @@ export function buildOperationalIntegrityPromptBlock(
     'Operational integrity rules:',
     `- Forwarding truth for this turn: ${describeForwardingStatus(status)}`,
     `- Forwarding reason for this turn: ${describeForwardingReason(reason)}`,
+    claimLevel ? `- Claim level for this turn: ${claimLevel}.` : null,
+    deliveryStatus ? `- Delivery status for this turn: ${deliveryStatus}.` : null,
     actionTaskId ? `- Verified action task id for this turn: ${actionTaskId}.` : '- Verified action task id for this turn: none.',
     blockedCapability ? `- Blocked capability for this turn: ${blockedCapability}.` : null,
     missingFieldText,
@@ -165,17 +193,25 @@ export function sanitizeOperationalClaims(
   const blockedCapability = options.blockedCapability;
   const canConfirmForwardingRequest = options.canClaimCompleted
     ?? ((forwardingStatus === 'QUEUED' || forwardingStatus === 'DUPLICATE') && Boolean(actionTaskId));
+  const deliveryStatus = (options.deliveryStatus ?? '').toUpperCase();
+  const hasTeamDeliveryConfirmation = deliveryStatus === 'DELIVERED_TO_TEAM';
   const hasFollowUpMissingFields = missingFields.length > 0;
   const isMissingContactIssue = forwardingReason === 'MISSING_CONTACT_INFO' || forwardingReason === 'MISSING_REQUIRED_FIELDS';
   const isCapabilityBlocked =
+    forwardingReason === 'FORWARDING_DISABLED'
+    ||
     forwardingReason === 'SKILL_NOT_ENABLED'
     || forwardingReason === 'CHANNEL_NOT_ALLOWED'
     || forwardingReason === 'EXECUTOR_DISABLED';
 
+  const capabilityBlockedPrompt = forwardingReason === 'FORWARDING_DISABLED'
+    ? 'This bot cannot submit operational follow-up requests because forwarding is currently disabled. I can route you to a human teammate instead.'
+    : `This request is outside my currently enabled workflows${blockedCapability ? ` (${blockedCapability})` : ''}. I can route you to a human for help.`;
+
   const missingFieldPrompt = isMissingContactIssue && missingFields.length > 0
     ? `I can help log this for review once I have: ${missingFields.join(', ')}.`
     : isCapabilityBlocked
-      ? `This request is outside my currently enabled workflows${blockedCapability ? ` (${blockedCapability})` : ''}. I can route you to a human for help.`
+      ? capabilityBlockedPrompt
     : 'I can help log this for review for our team';
 
   for (const pattern of ESCALATION_CLAIM_PATTERNS) {
@@ -234,6 +270,17 @@ export function sanitizeOperationalClaims(
     }
   }
 
+  for (const pattern of DOWNSTREAM_DELIVERY_CLAIM_PATTERNS) {
+    sanitized = sanitized.replace(
+      pattern,
+      hasTeamDeliveryConfirmation
+        ? 'our team has been notified and will follow up'
+        : canConfirmForwardingRequest
+          ? 'I have logged an internal request for review in this conversation context, but I cannot confirm downstream delivery yet'
+          : 'I can help prepare this as a request for review once required details are confirmed',
+    );
+  }
+
   if (sanitized !== text && !/cannot confirm operational actions as completed/i.test(sanitized)) {
     sanitized = `${sanitized}\n\nI cannot confirm operational actions as completed until the system confirms them.`;
   }
@@ -247,6 +294,12 @@ function humanizeField(field: string): string {
       return 'full name';
     case 'customer_email':
       return 'valid email address';
+    case 'customer_phone':
+      return 'phone number';
+    case 'company_name':
+      return 'company name';
+    case 'consultation_purpose':
+      return 'consultation purpose';
     case 'preferred_datetime':
       return 'preferred date and time';
     case 'booking_reason':
@@ -262,6 +315,7 @@ function humanizeField(field: string): string {
 
 function describeActionLabel(actionType?: string): string {
   if (actionType === 'MEETING_REQUEST') return 'booking requests';
+  if (actionType === 'CONSULTATION_REQUEST') return 'consultation requests';
   if (actionType === 'SALES_ORDER_REQUEST') return 'sales order requests';
   if (actionType === 'TECHNICAL_ISSUE') return 'technical issue requests';
   if (actionType === 'OWNER_ATTENTION_NEEDED') return 'owner escalation requests';
@@ -282,11 +336,16 @@ export function buildDeterministicFollowUpMessage(
   options: DeterministicFollowUpOptions = {},
 ): string | null {
   const isBlockedCapability =
+    options.forwardingReason === 'FORWARDING_DISABLED'
+    ||
     options.forwardingReason === 'SKILL_NOT_ENABLED'
     || options.forwardingReason === 'CHANNEL_NOT_ALLOWED'
     || options.forwardingReason === 'EXECUTOR_DISABLED';
 
   if (isBlockedCapability) {
+    if (options.forwardingReason === 'FORWARDING_DISABLED') {
+      return 'This bot cannot submit operational follow-up requests because forwarding is currently disabled. I can route you to a human teammate instead.';
+    }
     const actionLabel = describeActionLabel(options.actionType);
     const capabilityLabel = describeCapabilityLabel(options.blockedCapability);
     return `I cannot complete ${actionLabel} from this bot because ${capabilityLabel} is not enabled here. I can route you to a human teammate for help.`;
@@ -298,6 +357,8 @@ export function buildDeterministicFollowUpMessage(
 
   const subject = options.actionType === 'MEETING_REQUEST'
     ? 'meeting request'
+    : options.actionType === 'CONSULTATION_REQUEST'
+      ? 'consultation request'
     : options.actionType === 'SALES_ORDER_REQUEST'
       ? 'order request'
     : options.actionType === 'TECHNICAL_ISSUE'
@@ -323,4 +384,45 @@ export function buildDeterministicFollowUpMessage(
   }
 
   return `To continue with your ${subject}, please provide: ${needed}. I cannot submit this as completed until these details are confirmed.`;
+}
+
+export function buildTruthAwareResponseTemplate(
+  options: TruthAwareTemplateOptions = {},
+): string | null {
+  const reason = options.forwardingReason;
+  const status = options.forwardingStatus;
+  const claimLevel = (options.claimLevel ?? '').toUpperCase();
+  const deliveryStatus = (options.deliveryStatus ?? '').toUpperCase();
+
+  const deterministic = buildDeterministicFollowUpMessage({
+    actionType: options.actionType,
+    missingFields: options.missingFields,
+    canClaimCompleted: options.canClaimCompleted,
+    forwardingReason: options.forwardingReason,
+    blockedCapability: options.blockedCapability,
+  });
+  if (deterministic) return deterministic;
+
+  if (reason === 'SYSTEM_ERROR' || status === 'FAILED' || status === 'UNKNOWN') {
+    return 'I could not verify or complete that action on this turn due to a system issue. I can help you retry now, or route this to a human teammate.';
+  }
+
+  if (status === 'QUEUED' || status === 'DUPLICATE' || claimLevel === 'QUEUED_INTERNAL') {
+    if (deliveryStatus === 'DELIVERED_TO_TEAM') {
+      return 'I can confirm this request has been delivered to our team for follow-up.';
+    }
+    if (deliveryStatus === 'SENT_TO_CHANNEL' || claimLevel === 'SENT_TO_CHANNEL') {
+      return 'I can confirm this request was sent to the configured team channel. I cannot confirm a human has received or acknowledged it yet.';
+    }
+    if (options.canClaimCompleted) {
+      return 'I have logged an internal request for review in this conversation. I cannot confirm downstream team delivery yet.';
+    }
+    return 'I can help prepare this as a request for review once the remaining required details are confirmed.';
+  }
+
+  if (status === 'DISABLED' || reason === 'FORWARDING_DISABLED') {
+    return 'This action workflow is currently disabled on this bot. I can route you to a human teammate instead.';
+  }
+
+  return null;
 }

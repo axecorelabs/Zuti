@@ -1,5 +1,6 @@
 export type ActionType =
   | 'MEETING_REQUEST'
+  | 'CONSULTATION_REQUEST'
   | 'SALES_ORDER_REQUEST'
   | 'OWNER_ATTENTION_NEEDED'
   | 'TECHNICAL_ISSUE';
@@ -44,6 +45,42 @@ export type ActionForwardingReason =
 
 export type ActionForwardingMissingField = string;
 
+export type ActionClaimLevel =
+  | 'REQUESTED'
+  | 'QUEUED_INTERNAL'
+  | 'SENT_TO_CHANNEL'
+  | 'DELIVERED_TO_TEAM'
+  | 'ACKNOWLEDGED_BY_AGENT'
+  | 'COMPLETED';
+
+export type ActionDeliveryStatus =
+  | 'NOT_APPLICABLE'
+  | 'NOT_SENT'
+  | 'QUEUED_INTERNAL'
+  | 'SENT_TO_CHANNEL'
+  | 'DELIVERY_UNKNOWN'
+  | 'DELIVERED_TO_TEAM';
+
+export interface ActionOperationalTruth {
+  intentDetected: boolean;
+  capabilityRequired?: CapabilityKey;
+  capabilityEnabled: boolean;
+  actionAttempted: boolean;
+  actionResult:
+    | 'DISABLED'
+    | 'NO_INTENT'
+    | 'BLOCKED'
+    | 'MISSING_FIELDS'
+    | 'QUEUED_INTERNAL'
+    | 'DUPLICATE'
+    | 'FAILED'
+    | 'UNKNOWN';
+  actionTaskId?: string;
+  deliveryStatus: ActionDeliveryStatus;
+  missingFields: ActionForwardingMissingField[];
+  evidenceIds: string[];
+}
+
 export interface ActionForwardingResult {
   status: ActionForwardingResultStatus;
   reason: ActionForwardingReason;
@@ -52,6 +89,9 @@ export interface ActionForwardingResult {
   actionTaskId?: string;
   lookupId?: string;
   canClaimCompleted: boolean;
+  claimLevel: ActionClaimLevel;
+  deliveryStatus: ActionDeliveryStatus;
+  operationalTruth: ActionOperationalTruth;
   missingFields?: ActionForwardingMissingField[];
   blockedCapability?: string;
 }

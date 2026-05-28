@@ -157,6 +157,12 @@ class ListOperationalRecordsQueryDto {
   declare page?: string;
 }
 
+class UpdateActionTaskStatusDto {
+  @IsString()
+  @IsIn(['ACKNOWLEDGED', 'COMPLETED'])
+  declare status: 'ACKNOWLEDGED' | 'COMPLETED';
+}
+
 @ApiTags('organizations')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -302,6 +308,17 @@ export class OrganizationsController {
     @Query() query: ListOperationalRecordsQueryDto,
   ) {
     return this.organizationsService.listActionTasks(orgId, user.id, query);
+  }
+
+  @Patch(':id/action-tasks/:taskId/status')
+  @ApiOperation({ summary: 'Update action task status (ACKNOWLEDGED/COMPLETED)' })
+  updateActionTaskStatus(
+    @Param('id') orgId: string,
+    @Param('taskId') taskId: string,
+    @CurrentUser() user: { id: string },
+    @Body() dto: UpdateActionTaskStatusDto,
+  ) {
+    return this.organizationsService.updateActionTaskStatus(orgId, user.id, taskId, dto.status);
   }
 
   @Get(':id/leads')

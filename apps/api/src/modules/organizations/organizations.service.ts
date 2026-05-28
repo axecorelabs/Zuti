@@ -572,6 +572,21 @@ export class OrganizationsService {
         conversation: { select: { id: true, customerName: true, customerEmail: true, channel: true } },
         assignedEndpoint: { select: { id: true, label: true, channel: true, destination: true, isActive: true } },
         routedPolicy: { select: { id: true, name: true, scope: true, isDefault: true } },
+        deliveries: {
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: {
+            id: true,
+            channel: true,
+            status: true,
+            providerMessageId: true,
+            sentAt: true,
+            deliveredAt: true,
+            acknowledgedAt: true,
+            errorMessage: true,
+            createdAt: true,
+          },
+        },
       },
     });
 
@@ -582,6 +597,74 @@ export class OrganizationsService {
       limit: take,
       totalPages: Math.max(1, Math.ceil(total / take)),
     };
+  }
+
+  async updateActionTaskStatus(
+    orgId: string,
+    requestingUserId: string,
+    taskId: string,
+    nextStatus: 'ACKNOWLEDGED' | 'COMPLETED',
+  ) {
+    await this.assertRole(orgId, requestingUserId, ['OWNER', 'ADMIN', 'AGENT']);
+
+    const prismaAny = this.prisma as any;
+    const task = await prismaAny.actionTask.findFirst({
+      where: { id: taskId, orgId },
+      select: {
+        id: true,
+        status: true,
+        acknowledgedAt: true,
+        completedAt: true,
+      },
+    });
+    if (!task) throw new NotFoundException('Action task not found');
+
+    const now = new Date();
+    const isCompleted = task.status === 'COMPLETED' || Boolean(task.completedAt);
+    const latestDelivery = await prismaAny.actionDelivery.findFirst({
+      where: { actionTaskId: task.id, orgId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, status: true, acknowledgedAt: true },
+    });
+
+    if (task.status === 'FAILED' || task.status === 'CONFIGURATION_NEEDED') {
+      throw new ConflictException('Cannot acknowledge or complete an action task in failed/configuration-needed state');
+    }
+
+    const hasDeliveryEvidence = Boolean(latestDelivery)
+      && ['SENT_TO_CHANNEL', 'SENT', 'DELIVERED', 'ACKNOWLEDGED'].includes(String(latestDelivery.status));
+    if (nextStatus === 'COMPLETED' && !isCompleted && !task.acknowledgedAt && !hasDeliveryEvidence) {
+      throw new ConflictException('Cannot complete action task without delivery/acknowledgement evidence');
+    }
+
+    const shouldComplete = nextStatus === 'COMPLETED' || isCompleted;
+
+    const updatedTask = await prismaAny.actionTask.update({
+      where: { id: task.id },
+      data: {
+        status: shouldComplete ? 'COMPLETED' : 'ACKNOWLEDGED',
+        acknowledgedAt: task.acknowledgedAt ?? now,
+        completedAt: shouldComplete ? (task.completedAt ?? now) : task.completedAt,
+      },
+      include: {
+        bot: { select: { id: true, name: true } },
+        conversation: { select: { id: true, customerName: true, customerEmail: true, channel: true } },
+        assignedEndpoint: { select: { id: true, label: true, channel: true, destination: true, isActive: true } },
+        routedPolicy: { select: { id: true, name: true, scope: true, isDefault: true } },
+      },
+    });
+
+    if (latestDelivery) {
+      await prismaAny.actionDelivery.update({
+        where: { id: latestDelivery.id },
+        data: {
+          status: 'ACKNOWLEDGED',
+          acknowledgedAt: latestDelivery.acknowledgedAt ?? now,
+        },
+      });
+    }
+
+    return updatedTask;
   }
 
   async listLeads(
@@ -616,7 +699,31 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: {
+          select: {
+            id: true,
+            conversationId: true,
+            actionType: true,
+            status: true,
+            summary: true,
+            createdAt: true,
+            deliveries: {
+              orderBy: { createdAt: 'desc' },
+              take: 5,
+              select: {
+                id: true,
+                channel: true,
+                status: true,
+                providerMessageId: true,
+                sentAt: true,
+                deliveredAt: true,
+                acknowledgedAt: true,
+                errorMessage: true,
+                createdAt: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -664,7 +771,31 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: {
+          select: {
+            id: true,
+            conversationId: true,
+            actionType: true,
+            status: true,
+            summary: true,
+            createdAt: true,
+            deliveries: {
+              orderBy: { createdAt: 'desc' },
+              take: 5,
+              select: {
+                id: true,
+                channel: true,
+                status: true,
+                providerMessageId: true,
+                sentAt: true,
+                deliveredAt: true,
+                acknowledgedAt: true,
+                errorMessage: true,
+                createdAt: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -710,7 +841,31 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: {
+          select: {
+            id: true,
+            conversationId: true,
+            actionType: true,
+            status: true,
+            summary: true,
+            createdAt: true,
+            deliveries: {
+              orderBy: { createdAt: 'desc' },
+              take: 5,
+              select: {
+                id: true,
+                channel: true,
+                status: true,
+                providerMessageId: true,
+                sentAt: true,
+                deliveredAt: true,
+                acknowledgedAt: true,
+                errorMessage: true,
+                createdAt: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -757,7 +912,31 @@ export class OrganizationsService {
       take,
       include: {
         bot: { select: { id: true, name: true } },
-        actionTask: { select: { id: true, conversationId: true, actionType: true, status: true, summary: true, createdAt: true } },
+        actionTask: {
+          select: {
+            id: true,
+            conversationId: true,
+            actionType: true,
+            status: true,
+            summary: true,
+            createdAt: true,
+            deliveries: {
+              orderBy: { createdAt: 'desc' },
+              take: 5,
+              select: {
+                id: true,
+                channel: true,
+                status: true,
+                providerMessageId: true,
+                sentAt: true,
+                deliveredAt: true,
+                acknowledgedAt: true,
+                errorMessage: true,
+                createdAt: true,
+              },
+            },
+          },
+        },
       },
     });
 

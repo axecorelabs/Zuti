@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Download, Search, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -8,9 +8,16 @@ import { botsApi, conversationsApi, orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 type OperationsTab = 'ACTION_TASKS' | 'LEADS' | 'BOOKINGS' | 'SALES_ORDERS' | 'TECH_ISSUES';
+type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 
 interface Org { id: string }
-interface BotItem { id: string; name: string }
+interface BotItem {
+  id: string;
+  name: string;
+  skills?: BotSkill[];
+  capabilities?: Record<string, unknown>;
+  actionForwardingEnabled?: boolean;
+}
 
 interface PaginatedRecordsResponse {
   items: any[];
@@ -26,6 +33,25 @@ interface RowPresentation {
   detailLines: string[];
 }
 
+type DetailViewMode = 'FULL' | 'STRUCTURED';
+
+interface StructuredFieldRow {
+  label: string;
+  value: string;
+}
+
+interface StructuredDetailSection {
+  title: string;
+  rows: StructuredFieldRow[];
+}
+
+interface StructuredTableColumn {
+  key: string;
+  label: string;
+  getValue: (row: any) => string;
+  className?: string;
+}
+
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const SINGLE_EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 
@@ -39,9 +65,308 @@ const TABS: Array<{ key: OperationsTab; label: string }> = [
   { key: 'TECH_ISSUES', label: 'Technical Issues' },
 ];
 
+const TAB_SKILL_REQUIREMENTS: Record<OperationsTab, BotSkill[] | null> = {
+  ACTION_TASKS: null,
+  LEADS: ['SALES'],
+  BOOKINGS: ['BOOKING'],
+  SALES_ORDERS: ['SALES'],
+  TECH_ISSUES: ['SUPPORT', 'TECHNICAL'],
+};
+
 function asObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function asDateText(value: unknown): string {
+  if (typeof value !== 'string' || value.trim().length === 0) return '—';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+}
+
+function asStructuredText(value: unknown): string {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'string') return value.trim().length > 0 ? value.trim() : '—';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '—';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => asStructuredText(item))
+      .filter((item) => item !== '—');
+    return items.length > 0 ? items.join(', ') : '—';
+  }
+  if (typeof value === 'object') {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return '—';
+    }
+  }
+  return String(value);
+}
+
+function getValueAtPath(row: any, path: string): unknown {
+  return path.split('.').reduce((current: any, part) => (current && typeof current === 'object' ? current[part] : undefined), row);
+}
+
+function buildFieldRow(label: string, value: unknown, formatter: (input: unknown) => string = asStructuredText): StructuredFieldRow {
+  return { label, value: formatter(value) };
+}
+
+function buildStructuredDetailSections(tab: OperationsTab, row: any): StructuredDetailSection[] {
+  const metadata = asObject(row.metadata);
+  const customFieldRows = Object.entries(asObject(metadata?.customFields) ?? {})
+    .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
+    .map(([key, value]) => buildFieldRow(key.replace(/_/g, ' '), value));
+
+  if (tab === 'ACTION_TASKS') {
+    return [
+      {
+        title: 'Core fields',
+        rows: [
+          buildFieldRow('Task ID', row.id),
+          buildFieldRow('Created', row.createdAt, asDateText),
+          buildFieldRow('Bot', row.bot?.name),
+          buildFieldRow('Status', row.status),
+          buildFieldRow('Action type', row.actionType),
+          buildFieldRow('Summary', row.summary),
+          buildFieldRow('Conversation ID', row.conversationId),
+          buildFieldRow('Customer name', row.conversation?.customerName),
+          buildFieldRow('Customer email', row.conversation?.customerEmail),
+          buildFieldRow('Assigned endpoint', row.assignedEndpoint?.destination),
+          buildFieldRow('Routed policy', row.routedPolicy?.name),
+          buildFieldRow('Dedupe key', row.dedupeKey),
+        ],
+      },
+      {
+        title: 'Delivery evidence',
+        rows: [
+          buildFieldRow('Acknowledged at', row.acknowledgedAt, asDateText),
+          buildFieldRow('Completed at', row.completedAt, asDateText),
+          buildFieldRow('Latest delivery status', row.deliveries?.[0]?.status),
+          buildFieldRow('Latest sent at', row.deliveries?.[0]?.sentAt, asDateText),
+          buildFieldRow('Latest delivered at', row.deliveries?.[0]?.deliveredAt, asDateText),
+          buildFieldRow('Latest acknowledged at', row.deliveries?.[0]?.acknowledgedAt, asDateText),
+          buildFieldRow('Latest error', row.deliveries?.[0]?.errorMessage),
+        ],
+      },
+      ...(customFieldRows.length > 0 ? [{ title: 'Custom fields', rows: customFieldRows }] : []),
+    ];
+  }
+
+  if (tab === 'LEADS') {
+    return [
+      {
+        title: 'Core fields',
+        rows: [
+          buildFieldRow('Lead ID', row.id),
+          buildFieldRow('Created', row.createdAt, asDateText),
+          buildFieldRow('Bot', row.bot?.name),
+          buildFieldRow('Status', row.status),
+          buildFieldRow('Full name', row.fullName),
+          buildFieldRow('Email', row.email),
+          buildFieldRow('Phone', row.phone),
+          buildFieldRow('Interest', row.interest),
+          buildFieldRow('Budget', row.budget),
+          buildFieldRow('Notes', row.notes),
+          buildFieldRow('Action task status', row.actionTask?.status),
+          buildFieldRow('Action task summary', row.actionTask?.summary),
+        ],
+      },
+      ...(customFieldRows.length > 0 ? [{ title: 'Custom fields', rows: customFieldRows }] : []),
+    ];
+  }
+
+  if (tab === 'BOOKINGS') {
+    return [
+      {
+        title: 'Core fields',
+        rows: [
+          buildFieldRow('Booking ID', row.id),
+          buildFieldRow('Created', row.createdAt, asDateText),
+          buildFieldRow('Bot', row.bot?.name),
+          buildFieldRow('Status', row.status),
+          buildFieldRow('Customer name', row.customerName),
+          buildFieldRow('Customer email', row.customerEmail),
+          buildFieldRow('Preferred time', row.preferredDatetime),
+          buildFieldRow('Reason', row.metadata?.bookingReason),
+          buildFieldRow('Notes', row.notes),
+          buildFieldRow('Action task status', row.actionTask?.status),
+          buildFieldRow('Action task summary', row.actionTask?.summary),
+        ],
+      },
+      ...(customFieldRows.length > 0 ? [{ title: 'Custom fields', rows: customFieldRows }] : []),
+    ];
+  }
+
+  if (tab === 'SALES_ORDERS') {
+    return [
+      {
+        title: 'Core fields',
+        rows: [
+          buildFieldRow('Order ID', row.id),
+          buildFieldRow('Created', row.createdAt, asDateText),
+          buildFieldRow('Bot', row.bot?.name),
+          buildFieldRow('Status', row.status),
+          buildFieldRow('Customer name', row.customerName),
+          buildFieldRow('Customer email', row.customerEmail),
+          buildFieldRow('Product', row.product),
+          buildFieldRow('Quantity', row.quantity),
+          buildFieldRow('Notes', row.notes),
+          buildFieldRow('Action task status', row.actionTask?.status),
+          buildFieldRow('Action task summary', row.actionTask?.summary),
+        ],
+      },
+      ...(customFieldRows.length > 0 ? [{ title: 'Custom fields', rows: customFieldRows }] : []),
+    ];
+  }
+
+  return [
+    {
+      title: 'Core fields',
+      rows: [
+        buildFieldRow('Issue ID', row.id),
+        buildFieldRow('Created', row.createdAt, asDateText),
+        buildFieldRow('Bot', row.bot?.name),
+        buildFieldRow('Status', row.status),
+        buildFieldRow('Reporter name', row.reporterName),
+        buildFieldRow('Reporter email', row.reporterEmail),
+        buildFieldRow('Issue category', row.issueCategory),
+        buildFieldRow('Severity', row.severity),
+        buildFieldRow('Summary', row.summary),
+        buildFieldRow('Details', row.details),
+        buildFieldRow('Action task status', row.actionTask?.status),
+        buildFieldRow('Action task summary', row.actionTask?.summary),
+      ],
+    },
+    ...(customFieldRows.length > 0 ? [{ title: 'Custom fields', rows: customFieldRows }] : []),
+  ];
+}
+
+function buildStructuredViewRows(tab: OperationsTab, row: any): StructuredFieldRow[] {
+  const sections = buildStructuredDetailSections(tab, row);
+  return sections.flatMap((section) => section.rows);
+}
+
+function collectCustomFieldKeys(rows: any[]): string[] {
+  const keys = new Set<string>();
+  rows.forEach((row) => {
+    const metadata = asObject(row?.metadata);
+    const customFields = asObject(metadata?.customFields);
+    Object.keys(customFields ?? {}).forEach((key) => {
+      if (key.trim().length > 0) keys.add(key);
+    });
+  });
+  return Array.from(keys).sort((a, b) => a.localeCompare(b));
+}
+
+function formatKnownValue(value: unknown): string {
+  return asStructuredText(value);
+}
+
+function getExtraMetadataText(row: any, knownCustomKeys: string[]): string {
+  const metadata = asObject(row?.metadata);
+  if (!metadata) return '—';
+
+  const extraEntries = Object.entries(metadata).filter(([key]) => key !== 'customFields');
+  const customFields = asObject(metadata.customFields);
+  const unknownCustomFields = Object.entries(customFields ?? {}).filter(([key]) => !knownCustomKeys.includes(key));
+
+  const parts = [
+    ...extraEntries.map(([key, value]) => `${key.replace(/_/g, ' ')}: ${asStructuredText(value)}`),
+    ...unknownCustomFields.map(([key, value]) => `${key.replace(/_/g, ' ')}: ${asStructuredText(value)}`),
+  ].filter((part) => part.length > 0);
+
+  return parts.length > 0 ? parts.join(' · ') : '—';
+}
+
+function buildStructuredTableColumns(tab: OperationsTab, rows: any[]): StructuredTableColumn[] {
+  const customKeys = collectCustomFieldKeys(rows);
+  const extraKeyList = customKeys;
+
+  const schemas: Record<OperationsTab, StructuredTableColumn[]> = {
+    ACTION_TASKS: [
+      { key: 'createdAt', label: 'Created', getValue: (row) => asDateText(row.createdAt) },
+      { key: 'bot', label: 'Bot', getValue: (row) => formatKnownValue(row.bot?.name) },
+      { key: 'actionType', label: 'Action type', getValue: (row) => formatKnownValue(row.actionType) },
+      { key: 'status', label: 'Status', getValue: (row) => formatKnownValue(row.status) },
+      { key: 'summary', label: 'Summary', getValue: (row) => formatKnownValue(row.summary), className: 'min-w-[260px]' },
+      { key: 'conversation', label: 'Conversation', getValue: (row) => formatKnownValue(row.conversation?.id) },
+      { key: 'customerName', label: 'Customer name', getValue: (row) => formatKnownValue(row.conversation?.customerName) },
+      { key: 'customerEmail', label: 'Customer email', getValue: (row) => formatKnownValue(row.conversation?.customerEmail) },
+      { key: 'assignedEndpoint', label: 'Assigned endpoint', getValue: (row) => formatKnownValue(row.assignedEndpoint?.destination) },
+      { key: 'routedPolicy', label: 'Routed policy', getValue: (row) => formatKnownValue(row.routedPolicy?.name) },
+      { key: 'acknowledgedAt', label: 'Acknowledged at', getValue: (row) => asDateText(row.acknowledgedAt) },
+      { key: 'completedAt', label: 'Completed at', getValue: (row) => asDateText(row.completedAt) },
+      { key: 'deliveryStatus', label: 'Delivery status', getValue: (row) => formatKnownValue(row.deliveries?.[0]?.status) },
+      { key: 'deliveredAt', label: 'Delivered at', getValue: (row) => asDateText(row.deliveries?.[0]?.deliveredAt) },
+      { key: 'sentAt', label: 'Sent at', getValue: (row) => asDateText(row.deliveries?.[0]?.sentAt) },
+      { key: 'deliveryError', label: 'Delivery error', getValue: (row) => formatKnownValue(row.deliveries?.[0]?.errorMessage), className: 'min-w-[220px]' },
+      { key: 'dedupeKey', label: 'Dedupe key', getValue: (row) => formatKnownValue(row.dedupeKey), className: 'min-w-[220px]' },
+      { key: 'extra', label: 'Extra metadata', getValue: (row) => getExtraMetadataText(row, customKeys), className: 'min-w-[280px]' },
+    ],
+    LEADS: [
+      { key: 'createdAt', label: 'Created', getValue: (row) => asDateText(row.createdAt) },
+      { key: 'bot', label: 'Bot', getValue: (row) => formatKnownValue(row.bot?.name) },
+      { key: 'status', label: 'Status', getValue: (row) => formatKnownValue(row.status) },
+      { key: 'fullName', label: 'Full name', getValue: (row) => formatKnownValue(row.fullName) },
+      { key: 'email', label: 'Email', getValue: (row) => formatKnownValue(row.email) },
+      { key: 'phone', label: 'Phone', getValue: (row) => formatKnownValue(row.phone) },
+      { key: 'interest', label: 'Interest', getValue: (row) => formatKnownValue(row.interest) },
+      { key: 'budget', label: 'Budget', getValue: (row) => formatKnownValue(row.budget) },
+      { key: 'notes', label: 'Notes', getValue: (row) => formatKnownValue(row.notes), className: 'min-w-[240px]' },
+      { key: 'actionStatus', label: 'Action status', getValue: (row) => formatKnownValue(row.actionTask?.status) },
+      { key: 'actionSummary', label: 'Action summary', getValue: (row) => formatKnownValue(row.actionTask?.summary), className: 'min-w-[240px]' },
+      { key: 'extra', label: 'Extra metadata', getValue: (row) => getExtraMetadataText(row, customKeys), className: 'min-w-[280px]' },
+    ],
+    BOOKINGS: [
+      { key: 'createdAt', label: 'Created', getValue: (row) => asDateText(row.createdAt) },
+      { key: 'bot', label: 'Bot', getValue: (row) => formatKnownValue(row.bot?.name) },
+      { key: 'status', label: 'Status', getValue: (row) => formatKnownValue(row.status) },
+      { key: 'customerName', label: 'Customer name', getValue: (row) => formatKnownValue(row.customerName) },
+      { key: 'customerEmail', label: 'Customer email', getValue: (row) => formatKnownValue(row.customerEmail) },
+      { key: 'preferredDatetime', label: 'Preferred time', getValue: (row) => formatKnownValue(row.preferredDatetime) },
+      { key: 'reason', label: 'Reason', getValue: (row) => formatKnownValue(row.metadata?.bookingReason), className: 'min-w-[220px]' },
+      { key: 'notes', label: 'Notes', getValue: (row) => formatKnownValue(row.notes), className: 'min-w-[240px]' },
+      { key: 'actionStatus', label: 'Action status', getValue: (row) => formatKnownValue(row.actionTask?.status) },
+      { key: 'actionSummary', label: 'Action summary', getValue: (row) => formatKnownValue(row.actionTask?.summary), className: 'min-w-[240px]' },
+      { key: 'extra', label: 'Extra metadata', getValue: (row) => getExtraMetadataText(row, customKeys), className: 'min-w-[280px]' },
+    ],
+    SALES_ORDERS: [
+      { key: 'createdAt', label: 'Created', getValue: (row) => asDateText(row.createdAt) },
+      { key: 'bot', label: 'Bot', getValue: (row) => formatKnownValue(row.bot?.name) },
+      { key: 'status', label: 'Status', getValue: (row) => formatKnownValue(row.status) },
+      { key: 'customerName', label: 'Customer name', getValue: (row) => formatKnownValue(row.customerName) },
+      { key: 'customerEmail', label: 'Customer email', getValue: (row) => formatKnownValue(row.customerEmail) },
+      { key: 'product', label: 'Product', getValue: (row) => formatKnownValue(row.product) },
+      { key: 'quantity', label: 'Quantity', getValue: (row) => formatKnownValue(row.quantity) },
+      { key: 'notes', label: 'Notes', getValue: (row) => formatKnownValue(row.notes), className: 'min-w-[240px]' },
+      { key: 'actionStatus', label: 'Action status', getValue: (row) => formatKnownValue(row.actionTask?.status) },
+      { key: 'actionSummary', label: 'Action summary', getValue: (row) => formatKnownValue(row.actionTask?.summary), className: 'min-w-[240px]' },
+      { key: 'extra', label: 'Extra metadata', getValue: (row) => getExtraMetadataText(row, customKeys), className: 'min-w-[280px]' },
+    ],
+    TECH_ISSUES: [
+      { key: 'createdAt', label: 'Created', getValue: (row) => asDateText(row.createdAt) },
+      { key: 'bot', label: 'Bot', getValue: (row) => formatKnownValue(row.bot?.name) },
+      { key: 'status', label: 'Status', getValue: (row) => formatKnownValue(row.status) },
+      { key: 'reporterName', label: 'Reporter name', getValue: (row) => formatKnownValue(row.reporterName) },
+      { key: 'reporterEmail', label: 'Reporter email', getValue: (row) => formatKnownValue(row.reporterEmail) },
+      { key: 'issueCategory', label: 'Issue category', getValue: (row) => formatKnownValue(row.issueCategory) },
+      { key: 'severity', label: 'Severity', getValue: (row) => formatKnownValue(row.severity) },
+      { key: 'summary', label: 'Summary', getValue: (row) => formatKnownValue(row.summary), className: 'min-w-[260px]' },
+      { key: 'details', label: 'Details', getValue: (row) => formatKnownValue(row.details), className: 'min-w-[280px]' },
+      { key: 'actionStatus', label: 'Action status', getValue: (row) => formatKnownValue(row.actionTask?.status) },
+      { key: 'actionSummary', label: 'Action summary', getValue: (row) => formatKnownValue(row.actionTask?.summary), className: 'min-w-[240px]' },
+      { key: 'extra', label: 'Extra metadata', getValue: (row) => getExtraMetadataText(row, customKeys), className: 'min-w-[280px]' },
+    ],
+  };
+
+  return [...schemas[tab], ...customKeys.map((key) => ({
+    key: `custom:${key}`,
+    label: key.replace(/_/g, ' '),
+    getValue: (row: any) => asStructuredText(asObject(asObject(row.metadata)?.customFields)?.[key]),
+    className: 'min-w-[180px]',
+  }))];
 }
 
 function getCustomFieldLines(metadata: unknown): string[] {
@@ -52,6 +377,59 @@ function getCustomFieldLines(metadata: unknown): string[] {
   return Object.entries(custom)
     .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
     .map(([key, value]) => `${key.replace(/_/g, ' ')}: ${String(value).trim()}`);
+}
+
+function inferBotSkills(bot: BotItem): BotSkill[] {
+  if (Array.isArray(bot.skills) && bot.skills.length > 0) {
+    return Array.from(new Set(bot.skills));
+  }
+
+  const capabilities = (bot.capabilities ?? {}) as Record<string, unknown>;
+  const skillsObject = (capabilities.skills ?? {}) as Record<string, unknown>;
+  const inferred: BotSkill[] = [];
+
+  if (skillsObject.FORWARDING === true || bot.actionForwardingEnabled === true) inferred.push('FORWARDING');
+  if (skillsObject.SALES === true || capabilities.canCreateLead === true || capabilities.canCreateOrder === true) inferred.push('SALES');
+  if (skillsObject.BOOKING === true || capabilities.canCreateMeetingRequest === true) inferred.push('BOOKING');
+  if (skillsObject.SUPPORT === true) inferred.push('SUPPORT');
+  if (skillsObject.TECHNICAL === true || capabilities.canCreateTechnicalIssue === true) inferred.push('TECHNICAL');
+
+  return Array.from(new Set(inferred));
+}
+
+function hasRequiredSkills(enabledSkills: Set<BotSkill>, required: BotSkill[] | null): boolean {
+  if (!required || required.length === 0) return true;
+  return required.some((skill) => enabledSkills.has(skill));
+}
+
+function getActionTaskForEvidence(tab: OperationsTab, row: any): any | null {
+  if (tab === 'ACTION_TASKS') return row;
+  return row.actionTask ?? null;
+}
+
+function getDeliveryEvidenceLines(tab: OperationsTab, row: any): string[] {
+  const task = getActionTaskForEvidence(tab, row);
+  if (!task) return [];
+  const deliveries = Array.isArray(task.deliveries) ? task.deliveries : [];
+  const lines = [
+    task.id ? `Action task: ${task.id}` : null,
+    task.actionType ? `Action type: ${task.actionType}` : row.actionType ? `Action type: ${row.actionType}` : null,
+    task.status ? `Task status: ${task.status}` : row.status ? `Task status: ${row.status}` : null,
+    task.assignedEndpoint?.destination ? `Assigned endpoint: ${task.assignedEndpoint.destination}` : row.assignedEndpoint?.destination ? `Assigned endpoint: ${row.assignedEndpoint.destination}` : null,
+    ...deliveries.map((delivery: any) => {
+      const parts = [
+        delivery.channel,
+        delivery.status,
+        delivery.sentAt ? `sent ${new Date(delivery.sentAt).toLocaleString()}` : null,
+        delivery.deliveredAt ? `delivered ${new Date(delivery.deliveredAt).toLocaleString()}` : null,
+        delivery.acknowledgedAt ? `acknowledged ${new Date(delivery.acknowledgedAt).toLocaleString()}` : null,
+        delivery.errorMessage ? `error: ${delivery.errorMessage}` : null,
+      ].filter(Boolean);
+      return parts.length > 0 ? parts.join(' | ') : null;
+    }),
+  ].filter(Boolean);
+
+  return lines as string[];
 }
 
 function buildRowPresentation(tab: OperationsTab, row: any): RowPresentation {
@@ -108,6 +486,9 @@ function buildRowPresentation(tab: OperationsTab, row: any): RowPresentation {
             ? [
                 row.email ? `email: ${row.email}` : null,
                 row.phone ? `phone: ${row.phone}` : null,
+                typeof row.metadata?.companyName === 'string' && row.metadata.companyName
+                  ? `company: ${row.metadata.companyName}`
+                  : null,
                 row.interest ? `interest: ${row.interest}` : null,
                 row.budget ? `budget: ${row.budget}` : null,
                 row.notes ? `notes: ${row.notes}` : null,
@@ -213,11 +594,28 @@ export default function OperationsPage() {
   const [rows, setRows] = useState<any[]>([]);
   const [selectedRow, setSelectedRow] = useState<any | null>(null);
   const [isDetailsPanelOpen, setIsDetailsPanelOpen] = useState(false);
+  const [detailViewMode, setDetailViewMode] = useState<DetailViewMode>('FULL');
+  const [tableViewMode, setTableViewMode] = useState<'COMPACT' | 'STRUCTURED'>('COMPACT');
   const [startingFollowUp, setStartingFollowUp] = useState(false);
   const [allowExternalDelivery, setAllowExternalDelivery] = useState(true);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
+
+  const enabledSkills = useMemo(() => {
+    const collected = new Set<BotSkill>();
+    bots.forEach((bot) => {
+      inferBotSkills(bot).forEach((skill) => collected.add(skill));
+    });
+    return collected;
+  }, [bots]);
+
+  const visibleTabs = useMemo(
+    () => TABS.filter((item) => hasRequiredSkills(enabledSkills, TAB_SKILL_REQUIREMENTS[item.key])),
+    [enabledSkills],
+  );
+
+  const structuredColumns = useMemo(() => buildStructuredTableColumns(tab, rows), [tab, rows]);
 
   const openDetailsPanel = (row: any) => {
     setSelectedRow(row);
@@ -228,6 +626,7 @@ export default function OperationsPage() {
     setIsDetailsPanelOpen(false);
     setTimeout(() => setSelectedRow(null), 220);
     setAllowExternalDelivery(true);
+    setDetailViewMode('FULL');
   };
 
   const openSourceConversation = (conversationId: string) => {
@@ -290,9 +689,24 @@ export default function OperationsPage() {
       }
       setOrgId(preferred.id);
       const botsRes = await botsApi.list(preferred.id).catch(() => ({ data: [] }));
-      setBots((botsRes.data ?? []).map((b: BotItem) => ({ id: b.id, name: b.name })));
+      setBots((botsRes.data ?? []).map((b: BotItem) => ({
+        id: b.id,
+        name: b.name,
+        skills: Array.isArray(b.skills) ? b.skills : undefined,
+        capabilities: b.capabilities,
+        actionForwardingEnabled: b.actionForwardingEnabled,
+      })));
     }).catch(() => setLoading(false));
   }, [activeOrgId]);
+
+  useEffect(() => {
+    if (visibleTabs.length === 0) return;
+    if (!visibleTabs.some((item) => item.key === tab)) {
+      setTab(visibleTabs[0].key);
+      setStatus('ALL');
+      setPage(1);
+    }
+  }, [visibleTabs, tab]);
 
   const getBaseParams = (overrides?: { page?: number; limit?: number }) => ({
       botId: botId !== 'ALL' ? botId : undefined,
@@ -347,6 +761,7 @@ export default function OperationsPage() {
     setSelectedRow(null);
     setIsDetailsPanelOpen(false);
     setAllowExternalDelivery(true);
+    setDetailViewMode('FULL');
   }, [tab, page, botId, status]);
 
   const statusOptions = useMemo(() => {
@@ -486,7 +901,7 @@ export default function OperationsPage() {
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
-          {TABS.map((item) => (
+          {visibleTabs.map((item) => (
             <button
               key={item.key}
               onClick={() => {
@@ -502,7 +917,36 @@ export default function OperationsPage() {
             </button>
           ))}
         </div>
+
+        <div className="ml-auto inline-flex items-center rounded-lg border border-zinc-800 bg-zinc-950/80 p-1 text-[11px] text-zinc-400 backdrop-blur">
+          <button
+            type="button"
+            onClick={() => setTableViewMode('COMPACT')}
+            className={`rounded-md px-2.5 py-1 transition-colors ${tableViewMode === 'COMPACT' ? 'bg-zinc-800 text-zinc-100' : 'hover:text-zinc-200'}`}
+          >
+            Compact table
+          </button>
+          <button
+            type="button"
+            onClick={() => setTableViewMode('STRUCTURED')}
+            className={`rounded-md px-2.5 py-1 transition-colors ${tableViewMode === 'STRUCTURED' ? 'bg-zinc-800 text-zinc-100' : 'hover:text-zinc-200'}`}
+          >
+            All details table
+          </button>
+        </div>
       </div>
+
+      {tableViewMode === 'STRUCTURED' && (
+        <div className="mb-4 rounded-lg border border-zinc-800 bg-zinc-950/80 px-4 py-3 text-xs text-zinc-400 backdrop-blur">
+          This view expands the main table into a structured field layout. Missing values render as em dashes, and any extra metadata/custom fields are surfaced in dedicated columns.
+        </div>
+      )}
+
+      {visibleTabs.length < TABS.length && (
+        <div className="mb-4 text-xs text-zinc-500">
+          Showing only tabs for enabled workflows. Inactive workflow tables are hidden to reduce clutter.
+        </div>
+      )}
 
       <div className="mb-4 grid gap-2 md:grid-cols-4">
         <div className="md:col-span-2 flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
@@ -572,31 +1016,96 @@ export default function OperationsPage() {
 
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[960px]">
-            <thead className="bg-zinc-900/80 border-b border-zinc-800">
-              <tr className="text-left text-xs text-zinc-500">
-                <th className="px-4 py-3">Created</th>
-                <th className="px-4 py-3">Bot</th>
-                <th className="px-4 py-3">Summary</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Details</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-zinc-500">Loading...</td>
+          {tableViewMode === 'COMPACT' ? (
+            <table className="w-full min-w-[960px]">
+              <thead className="bg-zinc-900/80 border-b border-zinc-800">
+                <tr className="text-left text-xs text-zinc-500">
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3">Bot</th>
+                  <th className="px-4 py-3">Summary</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Details</th>
                 </tr>
-              ) : rows.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-sm text-zinc-500">No records found.</td>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-zinc-500">Loading...</td>
+                  </tr>
+                ) : rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center text-sm text-zinc-500">No records found.</td>
+                  </tr>
+                ) : (
+                  rows.map((row) => {
+                    const createdAt = row.createdAt ? new Date(row.createdAt).toLocaleString() : '-';
+                    const botName = row.bot?.name || '-';
+                    const view = buildRowPresentation(tab, row);
+                    return (
+                      <tr
+                        key={row.id}
+                        className="border-b border-zinc-900/70 text-sm cursor-pointer hover:bg-zinc-900/40 focus-within:bg-zinc-900/40"
+                        onClick={() => openDetailsPanel(row)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            openDetailsPanel(row);
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                      >
+                        <td className="px-4 py-3 text-zinc-500">{createdAt}</td>
+                        <td className="px-4 py-3 text-zinc-300">{botName}</td>
+                        <td className="px-4 py-3 text-zinc-200">{view.summary}</td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
+                            {view.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-zinc-500 w-[320px] max-w-[320px] align-top">
+                          {view.detailLines.length === 0 ? (
+                            '-'
+                          ) : (
+                            <div className="space-y-1">
+                              {view.detailLines.slice(0, 3).map((line: string, index: number) => (
+                                <div key={`${row.id}-detail-${index}`} className="text-xs leading-relaxed text-zinc-400 truncate">
+                                  {line}
+                                </div>
+                              ))}
+                              {view.detailLines.length > 3 && (
+                                <div className="text-xs text-blue-400">+ {view.detailLines.length - 3} more</div>
+                              )}
+                              <div className="text-[11px] text-zinc-500 pt-1">View details</div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          ) : (
+            <table className="w-full min-w-[1600px]">
+              <thead className="bg-zinc-900/80 border-b border-zinc-800">
+                <tr className="text-left text-xs text-zinc-500">
+                  {structuredColumns.map((column) => (
+                    <th key={column.key} className={`px-4 py-3 whitespace-nowrap ${column.className ?? ''}`}>{column.label}</th>
+                  ))}
                 </tr>
-              ) : (
-                rows.map((row) => {
-                  const createdAt = row.createdAt ? new Date(row.createdAt).toLocaleString() : '-';
-                  const botName = row.bot?.name || '-';
-                  const view = buildRowPresentation(tab, row);
-                  return (
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr>
+                    <td colSpan={structuredColumns.length} className="px-4 py-8 text-center text-sm text-zinc-500">Loading...</td>
+                  </tr>
+                ) : rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={structuredColumns.length} className="px-4 py-8 text-center text-sm text-zinc-500">No records found.</td>
+                  </tr>
+                ) : (
+                  rows.map((row) => (
                     <tr
                       key={row.id}
                       className="border-b border-zinc-900/70 text-sm cursor-pointer hover:bg-zinc-900/40 focus-within:bg-zinc-900/40"
@@ -610,37 +1119,17 @@ export default function OperationsPage() {
                       role="button"
                       tabIndex={0}
                     >
-                      <td className="px-4 py-3 text-zinc-500">{createdAt}</td>
-                      <td className="px-4 py-3 text-zinc-300">{botName}</td>
-                      <td className="px-4 py-3 text-zinc-200">{view.summary}</td>
-                      <td className="px-4 py-3">
-                        <span className="inline-flex rounded-md border border-zinc-700 px-2 py-0.5 text-xs text-zinc-300">
-                          {view.status}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-zinc-500 w-[320px] max-w-[320px] align-top">
-                        {view.detailLines.length === 0 ? (
-                          '-'
-                        ) : (
-                          <div className="space-y-1">
-                            {view.detailLines.slice(0, 3).map((line: string, index: number) => (
-                              <div key={`${row.id}-detail-${index}`} className="text-xs leading-relaxed text-zinc-400 truncate">
-                                {line}
-                              </div>
-                            ))}
-                            {view.detailLines.length > 3 && (
-                              <div className="text-xs text-blue-400">+ {view.detailLines.length - 3} more</div>
-                            )}
-                            <div className="text-[11px] text-zinc-500 pt-1">View details</div>
-                          </div>
-                        )}
-                      </td>
+                      {structuredColumns.map((column) => (
+                        <td key={`${row.id}-${column.key}`} className={`px-4 py-3 text-zinc-200 align-top whitespace-pre-wrap break-words ${column.className ?? ''}`}>
+                          {column.getValue(row)}
+                        </td>
+                      ))}
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
 
@@ -695,6 +1184,8 @@ export default function OperationsPage() {
 
               {(() => {
                 const view = buildRowPresentation(tab, selectedRow);
+                const evidenceLines = getDeliveryEvidenceLines(tab, selectedRow);
+                const structuredSections = buildStructuredDetailSections(tab, selectedRow);
                 const selectedCreatedAt = selectedRow.createdAt ? new Date(selectedRow.createdAt).toLocaleString() : '-';
                 const selectedBotName = selectedRow.bot?.name || '-';
                 const sourceConversationId = getSourceConversationId(tab, selectedRow);
@@ -708,6 +1199,22 @@ export default function OperationsPage() {
                       <span className="inline-flex items-center rounded-full border border-zinc-700 bg-zinc-900/80 px-2.5 py-1 text-[11px] text-zinc-300">
                         {view.status}
                       </span>
+                      <div className="ml-auto inline-flex items-center rounded-lg border border-zinc-800 bg-zinc-950/70 p-1 text-[11px] text-zinc-400 backdrop-blur">
+                        <button
+                          type="button"
+                          onClick={() => setDetailViewMode('FULL')}
+                          className={`rounded-md px-2.5 py-1 transition-colors ${detailViewMode === 'FULL' ? 'bg-zinc-800 text-zinc-100' : 'hover:text-zinc-200'}`}
+                        >
+                          Full view
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDetailViewMode('STRUCTURED')}
+                          className={`rounded-md px-2.5 py-1 transition-colors ${detailViewMode === 'STRUCTURED' ? 'bg-zinc-800 text-zinc-100' : 'hover:text-zinc-200'}`}
+                        >
+                          Structured table
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2">
@@ -761,22 +1268,83 @@ export default function OperationsPage() {
                     </div>
 
                     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
-                      <p className="text-[11px] text-zinc-500 mb-2">Captured details</p>
-                      {view.detailLines.length === 0 ? (
-                        <p className="text-sm text-zinc-400">No additional details available.</p>
+                      <p className="text-[11px] text-zinc-500 mb-2">Action evidence</p>
+                      {evidenceLines.length === 0 ? (
+                        <p className="text-sm text-zinc-400">No action evidence recorded yet.</p>
                       ) : (
                         <div className="space-y-2 max-w-[52ch]">
-                          {view.detailLines.map((line, index) => (
+                          {evidenceLines.map((line, index) => (
                             <div
-                              key={`selected-${selectedRow.id}-${index}`}
+                              key={`evidence-${selectedRow.id}-${index}`}
                               className="rounded-lg border border-zinc-800/80 bg-zinc-950/70 px-2.5 py-2 text-sm text-zinc-300 break-words leading-6"
                             >
-                              {renderLineWithEmailLinks(line, `selected-${selectedRow.id}-${index}`)}
+                              {line}
                             </div>
                           ))}
                         </div>
                       )}
+                      <p className="mt-2 text-[11px] text-zinc-500">
+                        SENT_TO_CHANNEL means the configured channel accepted the message. It is not human acknowledgement.
+                      </p>
                     </div>
+
+                    {detailViewMode === 'FULL' ? (
+                      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+                        <p className="text-[11px] text-zinc-500 mb-2">Captured details</p>
+                        {view.detailLines.length === 0 ? (
+                          <p className="text-sm text-zinc-400">No additional details available.</p>
+                        ) : (
+                          <div className="space-y-2 max-w-[52ch]">
+                            {view.detailLines.map((line, index) => (
+                              <div
+                                key={`selected-${selectedRow.id}-${index}`}
+                                className="rounded-lg border border-zinc-800/80 bg-zinc-950/70 px-2.5 py-2 text-sm text-zinc-300 break-words leading-6"
+                              >
+                                {renderLineWithEmailLinks(line, `selected-${selectedRow.id}-${index}`)}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+                          <p className="text-[11px] text-zinc-500 mb-2">Structured details</p>
+                          <div className="overflow-hidden rounded-lg border border-zinc-800/80 bg-zinc-950/70">
+                            <table className="w-full border-collapse text-sm">
+                              <tbody>
+                                {structuredSections.map((section) => (
+                                  <Fragment key={`${selectedRow.id}-${section.title}`}>
+                                    <tr key={`${selectedRow.id}-${section.title}-heading`}>
+                                      <td colSpan={2} className="bg-zinc-900/80 px-3 py-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-zinc-400">
+                                        {section.title}
+                                      </td>
+                                    </tr>
+                                    {section.rows.map((field, index) => (
+                                      <tr key={`${selectedRow.id}-${section.title}-${field.label}-${index}`} className="border-t border-zinc-800/80">
+                                        <td className="w-[38%] px-3 py-2 text-xs text-zinc-500 align-top">
+                                          {field.label}
+                                        </td>
+                                        <td className="px-3 py-2 text-xs text-zinc-200 whitespace-pre-wrap break-words leading-5">
+                                          {field.value}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </Fragment>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+                          <p className="text-[11px] text-zinc-500 mb-2">What this mode does</p>
+                          <p className="text-xs leading-6 text-zinc-400">
+                            Structured view uses a fixed schema for the current tab and fills missing fields with em dashes. Any extra metadata or custom fields appear in a separate section, so records can vary without breaking the layout.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })()}

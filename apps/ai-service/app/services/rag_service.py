@@ -42,6 +42,15 @@ class RagService:
         org_name: str | None = None,
         system_prompt: str | None = None,
         customer_context: str | None = None,
+        forwarding_status: str | None = None,
+        forwarding_reason: str | None = None,
+        action_task_id: str | None = None,
+        can_claim_completed: bool | None = None,
+        missing_fields: list[str] | None = None,
+        blocked_capability: str | None = None,
+        claim_level: str | None = None,
+        delivery_status: str | None = None,
+        operational_truth: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict], dict[str, Any]]:
         # 1. Try RAG (embed + Qdrant search) — degrade gracefully if unavailable
         sources: list[dict] = []
@@ -90,6 +99,22 @@ class RagService:
             org_name=org_name,
             system_prompt_override=system_prompt,
             customer_context=customer_context,
+        )
+
+        # 3. Semantic integrity pass: validate/rewrite operational claims against runtime truth.
+        reply = await llm_service.enforce_operational_integrity(
+            draft_reply=reply,
+            operational_truth={
+                **(operational_truth or {}),
+                "forwarding_status": forwarding_status,
+                "forwarding_reason": forwarding_reason,
+                "action_task_id": action_task_id,
+                "can_claim_completed": can_claim_completed,
+                "missing_fields": missing_fields or [],
+                "blocked_capability": blocked_capability,
+                "claim_level": claim_level,
+                "delivery_status": delivery_status,
+            },
         )
 
         assessment = self._assess_answerability(message, reply, sources)

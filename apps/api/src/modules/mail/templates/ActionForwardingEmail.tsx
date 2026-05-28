@@ -15,6 +15,9 @@ interface ActionForwardingEmailProps {
   summary: string;
   customerName?: string | null;
   customerEmail?: string | null;
+  customerPhone?: string | null;
+  companyName?: string | null;
+  consultationPurpose?: string | null;
   bookingReason?: string | null;
   issueSummary?: string | null;
   issueDetails?: string | null;
@@ -39,6 +42,9 @@ export function ActionForwardingEmail({
   summary,
   customerName,
   customerEmail,
+  customerPhone,
+  companyName,
+  consultationPurpose,
   bookingReason,
   issueSummary,
   issueDetails,
@@ -62,6 +68,9 @@ export function ActionForwardingEmail({
             <Row label="Request summary" value={summary} />
             <Row label="Customer name" value={customerName} />
             <Row label="Customer email" value={customerEmail} />
+            <Row label="Customer phone" value={customerPhone} />
+            <Row label="Company" value={companyName} />
+            <Row label="Consultation purpose" value={consultationPurpose} />
             <Row label="Reason for booking" value={bookingReason} />
             <Row label="Issue summary" value={issueSummary} />
             <Row label="Issue details" value={issueDetails} />

@@ -24,6 +24,21 @@ export const ActivityAction = {
 
 export type ActivityAction = typeof ActivityAction[keyof typeof ActivityAction];
 
+type ActivityListQuery = {
+  page?: string;
+  limit?: string;
+};
+
+function parsePositiveInt(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(String(raw ?? ''), 10);
+  if (Number.isNaN(parsed) || parsed < 1) return fallback;
+  return parsed;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 @Injectable()
 export class ActivityService {
   constructor(private readonly prisma: PrismaService) {}
@@ -50,25 +65,55 @@ export class ActivityService {
     });
   }
 
-  async list(orgId: string, limit = 200) {
-    return this.prisma.activityLog.findMany({
+  async list(orgId: string, query?: ActivityListQuery) {
+    const page = parsePositiveInt(query?.page, 1);
+    const limit = clamp(parsePositiveInt(query?.limit, 50), 1, 200);
+    const skip = (page - 1) * limit;
+    const where = { orgId };
+
+    const total = await this.prisma.activityLog.count({ where });
+    const items = await this.prisma.activityLog.findMany({
       where: { orgId },
       orderBy: { createdAt: 'desc' },
+      skip,
       take: limit,
     });
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
   }
 
-  async listForMember(orgId: string, userId: string, limit = 200) {
-    return this.prisma.activityLog.findMany({
-      where: {
-        orgId,
-        OR: [
-          { actorId: userId },
-          { targetType: 'member', targetId: userId },
-        ],
-      },
+  async listForMember(orgId: string, userId: string, query?: ActivityListQuery) {
+    const page = parsePositiveInt(query?.page, 1);
+    const limit = clamp(parsePositiveInt(query?.limit, 50), 1, 200);
+    const skip = (page - 1) * limit;
+    const where = {
+      orgId,
+      OR: [
+        { actorId: userId },
+        { targetType: 'member', targetId: userId },
+      ],
+    };
+
+    const total = await this.prisma.activityLog.count({ where });
+    const items = await this.prisma.activityLog.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
+      skip,
       take: limit,
     });
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    };
   }
 }

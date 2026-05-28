@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { createHash } from 'crypto';
@@ -10,7 +10,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
+  ActionClaimLevel,
   ActionCapabilityRegistry,
+  ActionDeliveryStatus,
   ActionForwardingReason,
   ActionForwardingResult,
   ActionForwardingResultStatus,
@@ -64,8 +66,11 @@ interface BotAiConfig {
 type ContractFieldKey =
   | 'customer_name'
   | 'customer_email'
+  | 'customer_phone'
+  | 'company_name'
   | 'preferred_datetime'
   | 'booking_reason'
+  | 'consultation_purpose'
   | 'product'
   | 'issue_summary';
 
@@ -80,6 +85,20 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
       actionType: 'MEETING_REQUEST',
       capabilityKey: 'BOOKING',
       requiredFields: ['customer_name', 'customer_email', 'preferred_datetime', 'booking_reason'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      executor: {
+        kind: 'ACTION_TASK',
+        enabled: true,
+      },
+      claimRules: {
+        requiresActionTaskIdToConfirm: true,
+        forbidSystemLookupClaimWithoutLookupId: true,
+      },
+    },
+    CONSULTATION_REQUEST: {
+      actionType: 'CONSULTATION_REQUEST',
+      capabilityKey: 'SALES',
+      requiredFields: ['customer_name', 'customer_email', 'customer_phone', 'company_name', 'consultation_purpose'],
       allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
       executor: {
         kind: 'ACTION_TASK',
@@ -139,6 +158,9 @@ const ACTION_CONTRACTS: Partial<Record<ActionType, ActionContractDefinition>> = 
   MEETING_REQUEST: {
     requiredFields: ACTION_CAPABILITY_REGISTRY.actions.MEETING_REQUEST.requiredFields as ContractFieldKey[],
   },
+  CONSULTATION_REQUEST: {
+    requiredFields: ACTION_CAPABILITY_REGISTRY.actions.CONSULTATION_REQUEST.requiredFields as ContractFieldKey[],
+  },
   SALES_ORDER_REQUEST: {
     requiredFields: ACTION_CAPABILITY_REGISTRY.actions.SALES_ORDER_REQUEST.requiredFields as ContractFieldKey[],
   },
@@ -159,6 +181,11 @@ function isStrictEmail(value: string): boolean {
   return /^(?=.{6,254}$)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(value.trim());
 }
 
+function isStrictPhone(value: string): boolean {
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15;
+}
+
 function rankActionPriority(sourceText: string): 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT' {
   const source = sourceText.toLowerCase();
   if (/(urgent|asap|critical|emergency|outage|immediately|today)/i.test(source)) return 'URGENT';
@@ -177,6 +204,10 @@ function buildPendingWorkflowSummary(actionType: ActionType, messageText: string
       return snippet
         ? `Customer provided additional details for a meeting request: ${snippet}`
         : 'Customer provided additional details for a meeting request.';
+    case 'CONSULTATION_REQUEST':
+      return snippet
+        ? `Customer provided additional details for a consultation request: ${snippet}`
+        : 'Customer provided additional details for a consultation request.';
     case 'SALES_ORDER_REQUEST':
       return snippet
         ? `Customer provided additional details for an order request: ${snippet}`
@@ -210,6 +241,12 @@ function buildQueuedActionNotification(
         title: 'New booking request captured',
         body: `${customerName} requested a meeting${fields.preferred_datetime ? ` for ${fields.preferred_datetime}` : ''}. Review the booking request in Operations.`,
       };
+    case 'CONSULTATION_REQUEST':
+      return {
+        type: 'consultation_requested',
+        title: 'New consultation request captured',
+        body: `${customerName} requested a consultation${fields.company_name ? ` for ${fields.company_name}` : ''}. Review the lead in Operations.`,
+      };
     case 'SALES_ORDER_REQUEST':
       return {
         type: 'sales_order_requested',
@@ -239,6 +276,8 @@ function buildQueuedActionNotification(
 
 @Injectable()
 export class ActionForwardingService {
+  private readonly logger = new Logger(ActionForwardingService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly http: HttpService,
@@ -293,6 +332,12 @@ export class ActionForwardingService {
     const orderPhrases = [
       'place an order', 'buy', 'purchase', 'i want to order', 'order now',
     ];
+    const consultationPhrases = [
+      'consultation', 'consulting package', 'consultation package', 'book a consultation',
+      'request a consultation', 'schedule a consultation', 'sales consultation',
+      'demo', 'implementation discussion', 'integration discussion', 'discuss integration',
+      'talk to sales', 'speak to sales', 'contact sales',
+    ];
     const technicalPhrases = [
       'bug', 'error', 'broken', 'not working', 'issue with', 'incident', 'outage',
     ];
@@ -306,6 +351,14 @@ export class ActionForwardingService {
         actionType: 'MEETING_REQUEST',
         confidence: 0.72,
         summary: 'Customer requested a meeting with owner or team member.',
+      };
+    }
+
+    if (consultationPhrases.some((p) => normalized.includes(p))) {
+      return {
+        actionType: 'CONSULTATION_REQUEST',
+        confidence: 0.74,
+        summary: 'Customer requested a consultation or sales follow-up.',
       };
     }
 
@@ -372,8 +425,12 @@ export class ActionForwardingService {
 
     const emailMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
     if (emailMatch?.[0]) extracted.customer_email = emailMatch[0].toLowerCase();
+    const phoneMatch = text.match(/(?:\+?\d[\d\s().-]{6,}\d)/);
+    if (phoneMatch?.[0]) extracted.customer_phone = phoneMatch[0].trim();
     const nameMatch = text.match(/\b(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z\s'-]{1,60})\b/i);
     if (nameMatch?.[1]) extracted.customer_name = nameMatch[1].trim();
+    const companyMatch = text.match(/\b(?:company name|company|organisation|organization|business|startup)\s*(?:is|:)?\s*([A-Za-z0-9][A-Za-z0-9&.,'\-\s]{1,80})/i);
+    if (companyMatch?.[1]) extracted.company_name = companyMatch[1].trim();
 
     if (actionType === 'MEETING_REQUEST') {
       const datetimeMatch = text.match(/\b(?:today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}[\/\-]\d{1,2}(?:[\/\-]\d{2,4})?|\d{4}-\d{2}-\d{2})(?:\s+at\s+[0-2]?\d(?::[0-5]\d)?\s?(?:am|pm)?)?/i);
@@ -388,6 +445,16 @@ export class ActionForwardingService {
     if (actionType === 'SALES_ORDER_REQUEST') {
       const productMatch = text.match(/\b(?:order|buy|purchase)\s+(?:a|an|the)?\s*([A-Za-z0-9][A-Za-z0-9\s\-]{1,80})\b/i);
       if (productMatch?.[1]) extracted.product = productMatch[1].trim();
+    }
+
+    if (actionType === 'CONSULTATION_REQUEST') {
+      const purposeMatch = text.match(/\b(?:consultation|consulting|demo|discussion|discuss|regarding|about|for)\b\s*(?:package|request)?\s*(?:to|for|about|regarding|on|:)?\s*([^\n.!?]{6,200})/i);
+      if (purposeMatch?.[1]) extracted.consultation_purpose = purposeMatch[1].trim();
+
+      const integrationPurposeMatch = text.match(/\b(?:integrat(?:e|ion)|implementation|onboarding|migration)\b[^\n.!?]{0,180}/i);
+      if (!extracted.consultation_purpose && integrationPurposeMatch?.[0]) {
+        extracted.consultation_purpose = integrationPurposeMatch[0].trim();
+      }
     }
 
     if (actionType === 'TECHNICAL_ISSUE') {
@@ -464,11 +531,30 @@ export class ActionForwardingService {
       invalidFields.add('customer_name');
     }
 
+    const phone = normalized.customer_phone;
+    if (phone && !isStrictPhone(phone)) {
+      delete normalized.customer_phone;
+      invalidFields.add('customer_phone');
+    }
+
     if (actionType === 'MEETING_REQUEST') {
       const reason = normalized.booking_reason;
       if (reason && reason.trim().length < 4) {
         delete normalized.booking_reason;
         invalidFields.add('booking_reason');
+      }
+    }
+
+    if (actionType === 'CONSULTATION_REQUEST') {
+      const companyName = normalized.company_name;
+      if (companyName && companyName.trim().length < 2) {
+        delete normalized.company_name;
+        invalidFields.add('company_name');
+      }
+      const purpose = normalized.consultation_purpose;
+      if (purpose && purpose.trim().length < 6) {
+        delete normalized.consultation_purpose;
+        invalidFields.add('consultation_purpose');
       }
     }
 
@@ -490,6 +576,7 @@ export class ActionForwardingService {
     switch (actionType) {
       case 'MEETING_REQUEST':
         return 'BOOKING';
+      case 'CONSULTATION_REQUEST':
       case 'SALES_ORDER_REQUEST':
         return 'SALES';
       case 'TECHNICAL_ISSUE':
@@ -587,6 +674,8 @@ export class ActionForwardingService {
     switch (actionType) {
       case 'MEETING_REQUEST':
         return capabilities.canCreateMeetingRequest === true || skills.BOOKING === true;
+      case 'CONSULTATION_REQUEST':
+        return capabilities.canCreateLead === true || capabilities.canCreateConsultationRequest === true || skills.SALES === true;
       case 'SALES_ORDER_REQUEST':
         return capabilities.canCreateOrder === true || capabilities.canCreateLead === true || skills.SALES === true;
       case 'TECHNICAL_ISSUE':
@@ -605,6 +694,7 @@ export class ActionForwardingService {
     switch (actionType) {
       case 'MEETING_REQUEST':
         return 'BOOKING';
+      case 'CONSULTATION_REQUEST':
       case 'SALES_ORDER_REQUEST':
         return 'SALES';
       case 'TECHNICAL_ISSUE':
@@ -621,7 +711,7 @@ export class ActionForwardingService {
     if (!contracts) return null;
 
     let best: { actionType: ActionType; updatedAt: number } | null = null;
-    const candidateActionTypes: ActionType[] = ['MEETING_REQUEST', 'SALES_ORDER_REQUEST', 'TECHNICAL_ISSUE'];
+    const candidateActionTypes: ActionType[] = ['MEETING_REQUEST', 'CONSULTATION_REQUEST', 'SALES_ORDER_REQUEST', 'TECHNICAL_ISSUE'];
 
     for (const actionType of candidateActionTypes) {
       const contract = contracts[actionType] as Record<string, unknown> | undefined;
@@ -652,12 +742,65 @@ export class ActionForwardingService {
     missingFields?: string[];
     blockedCapability?: string;
     capabilityKey?: CapabilityKey;
+    claimLevel?: ActionClaimLevel;
+    deliveryStatus?: ActionDeliveryStatus;
   }): ActionForwardingResult {
     const hasMissingOrInvalid = Array.isArray(result.missingFields) && result.missingFields.length > 0;
     const canClaimCompleted =
       (result.status === 'QUEUED' || result.status === 'DUPLICATE')
       && Boolean(result.actionTaskId)
       && !hasMissingOrInvalid;
+
+    const inferredClaimLevel: ActionClaimLevel = (() => {
+      if (result.claimLevel) return result.claimLevel;
+      if (result.status === 'QUEUED' || result.status === 'DUPLICATE') {
+        return canClaimCompleted ? 'QUEUED_INTERNAL' : 'REQUESTED';
+      }
+      return 'REQUESTED';
+    })();
+
+    const inferredDeliveryStatus: ActionDeliveryStatus = (() => {
+      if (result.deliveryStatus) return result.deliveryStatus;
+      if (result.status === 'QUEUED' || result.status === 'DUPLICATE') {
+        return canClaimCompleted ? 'QUEUED_INTERNAL' : 'NOT_SENT';
+      }
+      if (result.status === 'DISABLED' || result.status === 'NO_INTENT') return 'NOT_APPLICABLE';
+      return 'DELIVERY_UNKNOWN';
+    })();
+
+    const normalizedMissingFields = result.missingFields ?? [];
+    const actionResult: ActionForwardingResult['operationalTruth']['actionResult'] = (() => {
+      if (result.status === 'DISABLED' || result.reason === 'FORWARDING_DISABLED') return 'DISABLED';
+      if (result.reason === 'NO_ACTIONABLE_INTENT' || result.status === 'NO_INTENT') return 'NO_INTENT';
+      if (result.reason === 'SKILL_NOT_ENABLED' || result.reason === 'CHANNEL_NOT_ALLOWED' || result.reason === 'EXECUTOR_DISABLED') return 'BLOCKED';
+      if (result.reason === 'MISSING_CONTACT_INFO' || result.reason === 'MISSING_REQUIRED_FIELDS') return 'MISSING_FIELDS';
+      if (result.status === 'QUEUED') return 'QUEUED_INTERNAL';
+      if (result.status === 'DUPLICATE') return 'DUPLICATE';
+      if (result.reason === 'SYSTEM_ERROR') return 'FAILED';
+      return 'UNKNOWN';
+    })();
+
+    const operationalTruth: ActionForwardingResult['operationalTruth'] = {
+      intentDetected: Boolean(result.actionType),
+      capabilityRequired: result.capabilityKey,
+      capabilityEnabled: !(
+        result.reason === 'FORWARDING_DISABLED'
+        || result.reason === 'SYSTEM_ERROR'
+        || result.reason === 'SKILL_NOT_ENABLED'
+        || result.reason === 'CHANNEL_NOT_ALLOWED'
+        || result.reason === 'EXECUTOR_DISABLED'
+      ),
+      actionAttempted: (
+        result.status === 'QUEUED'
+        || result.status === 'DUPLICATE'
+        || result.reason === 'SYSTEM_ERROR'
+      ),
+      actionResult,
+      actionTaskId: result.actionTaskId,
+      deliveryStatus: inferredDeliveryStatus,
+      missingFields: normalizedMissingFields,
+      evidenceIds: [result.actionTaskId, result.lookupId].filter((id): id is string => Boolean(id)),
+    };
 
     return {
       status: result.status,
@@ -667,9 +810,108 @@ export class ActionForwardingService {
       actionTaskId: result.actionTaskId,
       lookupId: result.lookupId,
       canClaimCompleted,
-      missingFields: result.missingFields,
+      claimLevel: inferredClaimLevel,
+      deliveryStatus: inferredDeliveryStatus,
+      operationalTruth,
+      missingFields: normalizedMissingFields.length > 0 ? normalizedMissingFields : undefined,
       blockedCapability: result.blockedCapability,
     };
+  }
+
+  private async enrichWithDeliveryEvidence(
+    organizationId: string,
+    result: ActionForwardingResult,
+  ): Promise<ActionForwardingResult> {
+    if (!result.actionTaskId) return result;
+
+    try {
+      const prismaAny = this.prisma as any;
+      const task = await prismaAny.actionTask.findFirst({
+        where: {
+          id: result.actionTaskId,
+          orgId: organizationId,
+        },
+        select: {
+          status: true,
+          acknowledgedAt: true,
+          completedAt: true,
+          deliveries: {
+            orderBy: { createdAt: 'desc' },
+            take: 5,
+            select: {
+              id: true,
+              status: true,
+              deliveredAt: true,
+              acknowledgedAt: true,
+            },
+          },
+        },
+      });
+
+      if (!task) return result;
+
+    const deliveryStatuses = new Set<string>(
+      (Array.isArray(task.deliveries) ? task.deliveries : [])
+        .map((delivery: { status?: unknown }) => (typeof delivery.status === 'string' ? delivery.status : ''))
+        .filter((status: string) => status.length > 0),
+    );
+
+    const hasSentToChannelEvidence =
+      task.status === 'SENT'
+      || deliveryStatuses.has('SENT_TO_CHANNEL')
+      || deliveryStatuses.has('SENT');
+    const hasDeliveredEvidence =
+      task.status === 'DELIVERED'
+      || task.status === 'ACKNOWLEDGED'
+      || task.status === 'COMPLETED'
+      || deliveryStatuses.has('DELIVERED')
+      || deliveryStatuses.has('ACKNOWLEDGED');
+    const hasAcknowledgedEvidence =
+      task.status === 'ACKNOWLEDGED'
+      || task.status === 'COMPLETED'
+      || Boolean(task.acknowledgedAt)
+      || deliveryStatuses.has('ACKNOWLEDGED')
+      || (Array.isArray(task.deliveries)
+        && task.deliveries.some((delivery: { acknowledgedAt?: Date | null }) => Boolean(delivery.acknowledgedAt)));
+    const hasCompletedEvidence =
+      task.status === 'COMPLETED'
+      || Boolean(task.completedAt);
+
+    const evidenceIds = Array.from(new Set<string>([
+      ...result.operationalTruth.evidenceIds,
+      ...(Array.isArray(task.deliveries)
+        ? task.deliveries
+          .map((delivery: { id?: unknown }) => (typeof delivery.id === 'string' ? delivery.id : ''))
+          .filter((id: string) => id.length > 0)
+        : []),
+    ]));
+
+    let claimLevel = result.claimLevel;
+    if (hasCompletedEvidence) claimLevel = 'COMPLETED';
+    else if (hasAcknowledgedEvidence) claimLevel = 'ACKNOWLEDGED_BY_AGENT';
+    else if (hasDeliveredEvidence) claimLevel = 'DELIVERED_TO_TEAM';
+    else if (hasSentToChannelEvidence) claimLevel = 'SENT_TO_CHANNEL';
+
+    let deliveryStatus = result.deliveryStatus;
+    if (hasDeliveredEvidence) {
+      deliveryStatus = 'DELIVERED_TO_TEAM';
+    } else if (hasSentToChannelEvidence) {
+      deliveryStatus = 'SENT_TO_CHANNEL';
+    }
+
+      return {
+        ...result,
+        claimLevel,
+        deliveryStatus,
+        operationalTruth: {
+          ...result.operationalTruth,
+          deliveryStatus,
+          evidenceIds,
+        },
+      };
+    } catch {
+      return result;
+    }
   }
 
   async detectAndQueue(input: InboundActionSignalInput): Promise<ActionForwardingResult> {
@@ -918,8 +1160,65 @@ export class ActionForwardingService {
                 messageText: input.messageText,
                 customerName: collectedFields.customer_name ?? input.customerName ?? null,
                 customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                customerPhone: collectedFields.customer_phone ?? null,
                 preferredDatetime: collectedFields.preferred_datetime ?? null,
                 bookingReason: collectedFields.booking_reason ?? null,
+                followUpMissingFields: currentFollowUpMissingFields,
+              },
+            },
+          });
+        } else if (detected.actionType === 'CONSULTATION_REQUEST') {
+          const customContract = this.getCustomIntakeFields(actionAiConfig, detected.actionType);
+          const customFields = Object.fromEntries(
+            Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
+          );
+
+          const existingLead = await prismaAny.lead.findFirst({
+            where: {
+              orgId: input.organizationId,
+              botId: input.botId,
+              actionTaskId: existingTask.id,
+            },
+            select: {
+              id: true,
+              metadata: true,
+            },
+          });
+
+          if (existingLead) {
+            const existingLeadMetadata = ((existingLead.metadata as Record<string, unknown> | null) ?? {});
+            await prismaAny.lead.update({
+              where: { id: existingLead.id },
+              data: {
+                fullName: collectedFields.customer_name ?? input.customerName ?? null,
+                email: collectedFields.customer_email ?? input.customerEmail ?? null,
+                phone: collectedFields.customer_phone ?? null,
+                interest: collectedFields.consultation_purpose ?? null,
+                notes: input.messageText,
+                metadata: {
+                  ...existingLeadMetadata,
+                  companyName: collectedFields.company_name ?? existingLeadMetadata.companyName ?? null,
+                  customFields,
+                  customFieldVersion: customContract.version,
+                  followUpMissingFields: currentFollowUpMissingFields,
+                },
+              },
+            });
+          }
+
+          await prismaAny.actionTask.update({
+            where: { id: existingTask.id },
+            data: {
+              summary: buildPendingWorkflowSummary(detected.actionType, input.messageText),
+              payload: {
+                ...existingPayload,
+                channel: input.channel,
+                messageText: input.messageText,
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                customerPhone: collectedFields.customer_phone ?? null,
+                companyName: collectedFields.company_name ?? null,
+                consultationPurpose: collectedFields.consultation_purpose ?? null,
                 followUpMissingFields: currentFollowUpMissingFields,
               },
             },
@@ -971,6 +1270,7 @@ export class ActionForwardingService {
                 messageText: input.messageText,
                 customerName: collectedFields.customer_name ?? input.customerName ?? null,
                 customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                customerPhone: collectedFields.customer_phone ?? null,
                 product: collectedFields.product ?? null,
                 followUpMissingFields: currentFollowUpMissingFields,
               },
@@ -1079,14 +1379,14 @@ export class ActionForwardingService {
           });
         }
 
-        return this.buildForwardingResult({
+        return this.enrichWithDeliveryEvidence(input.organizationId, this.buildForwardingResult({
           status: currentFollowUpMissingFields.length > 0 ? 'DUPLICATE' : 'QUEUED',
           reason: currentFollowUpMissingFields.length > 0 ? 'DUPLICATE_ACTION' : 'QUEUED_ACTION',
           actionType: detected.actionType,
           capabilityKey,
           actionTaskId: existingTask.id,
           missingFields: currentFollowUpMissingFields.length > 0 ? currentFollowUpMissingFields : undefined,
-        });
+        }));
       }
     }
 
@@ -1100,13 +1400,13 @@ export class ActionForwardingService {
       select: { id: true },
     });
     if (existing) {
-      return this.buildForwardingResult({
+      return this.enrichWithDeliveryEvidence(input.organizationId, this.buildForwardingResult({
         status: 'DUPLICATE',
         reason: 'DUPLICATE_ACTION',
         actionType: detected.actionType,
         capabilityKey,
         actionTaskId: existing.id,
-      });
+      }));
     }
 
     const task = await prismaAny.actionTask.create({
@@ -1170,6 +1470,46 @@ export class ActionForwardingService {
             customerName: collectedFields.customer_name ?? input.customerName ?? null,
             customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
             product: collectedFields.product ?? null,
+            followUpMissingFields,
+          },
+        },
+      });
+    } else if (task.actionType === 'CONSULTATION_REQUEST') {
+      const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
+      const customContract = this.getCustomIntakeFields(aiConfig, task.actionType);
+      const customFields = Object.fromEntries(
+        Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
+      );
+      await prismaAny.lead.create({
+        data: {
+          orgId: input.organizationId,
+          botId: input.botId,
+          actionTaskId: task.id,
+          fullName: collectedFields.customer_name ?? input.customerName ?? null,
+          email: collectedFields.customer_email ?? input.customerEmail ?? null,
+          phone: collectedFields.customer_phone ?? null,
+          interest: collectedFields.consultation_purpose ?? null,
+          notes: input.messageText,
+          metadata: {
+            companyName: collectedFields.company_name ?? null,
+            customFields,
+            customFieldVersion: customContract.version,
+            followUpMissingFields,
+          },
+        },
+      });
+
+      await prismaAny.actionTask.update({
+        where: { id: task.id },
+        data: {
+          payload: {
+            channel: input.channel,
+            messageText: input.messageText,
+            customerName: collectedFields.customer_name ?? input.customerName ?? null,
+            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+            customerPhone: collectedFields.customer_phone ?? null,
+            companyName: collectedFields.company_name ?? null,
+            consultationPurpose: collectedFields.consultation_purpose ?? null,
             followUpMissingFields,
           },
         },
@@ -1308,13 +1648,135 @@ export class ActionForwardingService {
       });
     }
 
-    return this.buildForwardingResult({
+    return this.enrichWithDeliveryEvidence(input.organizationId, this.buildForwardingResult({
       status: 'QUEUED',
       reason: 'QUEUED_ACTION',
       actionType: detected.actionType,
       capabilityKey,
       actionTaskId: task.id,
       missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
+    }));
+  }
+
+  async handleInboundDeliveryEvent(input: {
+    organizationId: string;
+    event: 'DELIVERED' | 'ACKNOWLEDGED' | 'COMPLETED' | 'FAILED';
+    actionTaskId?: string;
+    deliveryId?: string;
+    providerMessageId?: string;
+    occurredAt?: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<{ ok: true; updated: boolean; reason?: string }> {
+    const prismaAny = this.prisma as any;
+    const eventAt = input.occurredAt ? new Date(input.occurredAt) : new Date();
+    const safeEventAt = Number.isNaN(eventAt.getTime()) ? new Date() : eventAt;
+
+    const delivery = input.deliveryId
+      ? await prismaAny.actionDelivery.findFirst({
+          where: { id: input.deliveryId, orgId: input.organizationId },
+        })
+      : input.providerMessageId
+        ? await prismaAny.actionDelivery.findFirst({
+            where: { orgId: input.organizationId, providerMessageId: input.providerMessageId },
+            orderBy: { createdAt: 'desc' },
+          })
+        : input.actionTaskId
+          ? await prismaAny.actionDelivery.findFirst({
+              where: { orgId: input.organizationId, actionTaskId: input.actionTaskId },
+              orderBy: { createdAt: 'desc' },
+            })
+          : null;
+
+    if (!delivery) {
+      this.logger.warn(`Inbound delivery event ignored: no delivery found for org=${input.organizationId}`);
+      return { ok: true, updated: false, reason: 'NOT_FOUND' };
+    }
+
+    const task = await prismaAny.actionTask.findFirst({
+      where: {
+        id: delivery.actionTaskId,
+        orgId: input.organizationId,
+      },
+      select: {
+        id: true,
+        status: true,
+        acknowledgedAt: true,
+        completedAt: true,
+      },
     });
+    if (!task) {
+      this.logger.warn(`Inbound delivery event ignored: action task not found for delivery=${delivery.id}`);
+      return { ok: true, updated: false, reason: 'TASK_NOT_FOUND' };
+    }
+
+    const responsePayload = ((delivery.responsePayload as Record<string, unknown> | null) ?? {});
+    const eventPayload = {
+      type: input.event,
+      occurredAt: safeEventAt.toISOString(),
+      metadata: input.metadata ?? {},
+    };
+
+    const deliveryUpdate: Record<string, unknown> = {
+      responsePayload: {
+        ...responsePayload,
+        lastInboundEvent: eventPayload,
+      },
+    };
+
+    if (input.providerMessageId && !delivery.providerMessageId) {
+      deliveryUpdate.providerMessageId = input.providerMessageId;
+    }
+
+    if (input.event === 'DELIVERED') {
+      deliveryUpdate.status = delivery.status === 'ACKNOWLEDGED' ? 'ACKNOWLEDGED' : 'DELIVERED';
+      deliveryUpdate.sentAt = delivery.sentAt ?? safeEventAt;
+      deliveryUpdate.deliveredAt = delivery.deliveredAt ?? safeEventAt;
+    } else if (input.event === 'ACKNOWLEDGED' || input.event === 'COMPLETED') {
+      deliveryUpdate.status = 'ACKNOWLEDGED';
+      deliveryUpdate.sentAt = delivery.sentAt ?? safeEventAt;
+      deliveryUpdate.deliveredAt = delivery.deliveredAt ?? safeEventAt;
+      deliveryUpdate.acknowledgedAt = delivery.acknowledgedAt ?? safeEventAt;
+    } else if (input.event === 'FAILED') {
+      if (delivery.status !== 'ACKNOWLEDGED') {
+        deliveryUpdate.status = 'FAILED';
+      }
+      deliveryUpdate.errorMessage = typeof input.metadata?.error === 'string'
+        ? input.metadata.error
+        : delivery.errorMessage;
+    }
+
+    await prismaAny.actionDelivery.update({
+      where: { id: delivery.id },
+      data: deliveryUpdate,
+    });
+
+    const taskUpdate: Record<string, unknown> = {};
+    if (input.event === 'DELIVERED') {
+      if (!['ACKNOWLEDGED', 'COMPLETED'].includes(task.status)) {
+        taskUpdate.status = 'DELIVERED';
+      }
+    } else if (input.event === 'ACKNOWLEDGED') {
+      if (task.status !== 'COMPLETED') {
+        taskUpdate.status = 'ACKNOWLEDGED';
+      }
+      taskUpdate.acknowledgedAt = task.acknowledgedAt ?? safeEventAt;
+    } else if (input.event === 'COMPLETED') {
+      taskUpdate.status = 'COMPLETED';
+      taskUpdate.acknowledgedAt = task.acknowledgedAt ?? safeEventAt;
+      taskUpdate.completedAt = task.completedAt ?? safeEventAt;
+    } else if (input.event === 'FAILED') {
+      if (!['DELIVERED', 'ACKNOWLEDGED', 'COMPLETED'].includes(task.status)) {
+        taskUpdate.status = 'FAILED';
+      }
+    }
+
+    if (Object.keys(taskUpdate).length > 0) {
+      await prismaAny.actionTask.update({
+        where: { id: task.id },
+        data: taskUpdate,
+      });
+    }
+
+    return { ok: true, updated: true };
   }
 }

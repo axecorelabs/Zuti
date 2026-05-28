@@ -19,9 +19,11 @@ import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
+import { buildCompactAiContext, buildConversationMetadataPatch } from '../../common/utils/ai-context';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
+  buildTruthAwareResponseTemplate,
   sanitizeOperationalClaims,
 } from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
@@ -81,6 +83,7 @@ function isSkillEnabledForAction(
 
   const skills = (capabilities.skills ?? {}) as Record<string, unknown>;
   switch (actionType) {
+    case 'CONSULTATION_REQUEST':
     case 'SALES_ORDER_REQUEST':
       return capabilities.canCreateOrder === true || capabilities.canCreateLead === true || skills.SALES === true;
     case 'MEETING_REQUEST':
@@ -118,7 +121,46 @@ function applyForwardingPreference(skills: BotSkill[], actionForwardingEnabled?:
 function isBlockedCapabilityReason(reason: string | undefined): boolean {
   return reason === 'SKILL_NOT_ENABLED'
     || reason === 'CHANNEL_NOT_ALLOWED'
-    || reason === 'EXECUTOR_DISABLED';
+    || reason === 'EXECUTOR_DISABLED'
+    || reason === 'FORWARDING_DISABLED';
+}
+
+function normalizeReplyForComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[.,!?;:()[\]{}"']/g, '')
+    .trim();
+}
+
+function shouldCollapseRepeatedReply(currentReply: string, previousAssistantReply?: string): boolean {
+  if (!previousAssistantReply) return false;
+  const current = normalizeReplyForComparison(currentReply);
+  const previous = normalizeReplyForComparison(previousAssistantReply);
+  if (!current || !previous) return false;
+  if (current === previous) return true;
+  if (current.length < 30 || previous.length < 30) return false;
+  return current.includes(previous) || previous.includes(current);
+}
+
+function enforceReplyTrustConsistency(reply: string, forwardingResult: ActionForwardingResult): string {
+  const lower = reply.toLowerCase();
+  const noDeliveryProof = forwardingResult.deliveryStatus !== 'DELIVERED_TO_TEAM';
+
+  if (noDeliveryProof && /team\s+will\s+reach\s+out|please\s+expect\s+our\s+team|owner\s+has\s+been\s+notified|team\s+has\s+received/.test(lower)) {
+    if (forwardingResult.canClaimCompleted) {
+      return 'I have logged an internal request for review in this conversation context. I cannot confirm downstream team delivery yet.';
+    }
+    return 'I can help prepare this as a request for review once all required details are confirmed.';
+  }
+
+  if (!forwardingResult.canClaimCompleted && /i\s+(have|\'ve)\s+(logged|submitted|queued|noted)|request\s+(is|has\s+been|was)\s+(logged|submitted|queued|noted)/.test(lower)) {
+    return forwardingResult.missingFields && forwardingResult.missingFields.length > 0
+      ? `I can help log this for review once I have: ${forwardingResult.missingFields.join(', ')}.`
+      : 'I can help prepare this as a request for review for our team.';
+  }
+
+  return reply;
 }
 
 function getTemplatePreset(template: BotTemplate) {
@@ -660,6 +702,17 @@ export class BotsService {
       status: 'NO_INTENT',
       reason: 'SYSTEM_ERROR',
       canClaimCompleted: false,
+      claimLevel: 'REQUESTED',
+      deliveryStatus: 'DELIVERY_UNKNOWN',
+      operationalTruth: {
+        intentDetected: false,
+        capabilityEnabled: false,
+        actionAttempted: false,
+        actionResult: 'FAILED',
+        deliveryStatus: 'DELIVERY_UNKNOWN',
+        missingFields: [],
+        evidenceIds: [],
+      },
     };
     await this.actionForwarding.detectAndQueue({
       organizationId: bot.organizationId,
@@ -680,6 +733,17 @@ export class BotsService {
         status: 'NO_INTENT',
         reason: 'SYSTEM_ERROR',
         canClaimCompleted: false,
+        claimLevel: 'REQUESTED',
+        deliveryStatus: 'DELIVERY_UNKNOWN',
+        operationalTruth: {
+          intentDetected: false,
+          capabilityEnabled: false,
+          actionAttempted: false,
+          actionResult: 'FAILED',
+          deliveryStatus: 'DELIVERY_UNKNOWN',
+          missingFields: [],
+          evidenceIds: [],
+        },
       };
     });
 
@@ -754,21 +818,6 @@ export class BotsService {
       orderBy: { createdAt: 'desc' },
       take: 40,
     });
-    // Build token-budgeted window (~4 chars ≈ 1 token, budget = 3000 tokens)
-    const TOKEN_BUDGET = 3000;
-    let tokenCount = 0;
-    const trimmed: typeof priorMessages = [];
-    for (const m of priorMessages) { // already newest-first
-      const est = Math.ceil(m.content.length / 4);
-      if (tokenCount + est > TOKEN_BUDGET) break;
-      tokenCount += est;
-      trimmed.unshift(m); // restore chronological order
-    }
-    const history = trimmed.map((m) => ({
-      role: m.role === 'USER' ? 'user' : 'assistant',
-      content: m.content,
-    }));
-
     // Build customer context from previous conversations — only on the first message,
     // so we don't waste tokens repeating it on every turn of an ongoing conversation.
     const prevWhere = conversation.widgetVisitorEmail
@@ -776,8 +825,8 @@ export class BotsService {
       : conversation.widgetVisitorId
         ? { widgetVisitorId: conversation.widgetVisitorId }
         : null;
-    let customerContext: string | null = null;
-    if (history.length === 0 && prevWhere) {
+    let previousCustomerContext: string | null = null;
+    if (priorMessages.length === 0 && prevWhere) {
       const prevConvs = await this.prisma.conversation.findMany({
         where: {
           organizationId: bot.organizationId,
@@ -808,9 +857,28 @@ export class BotsService {
             ? `${i + 1}. Customer previously asked: ${firstSubstantive.content.trim().slice(0, 200)}`
             : null;
         }).filter(Boolean);
-        if (lines.length > 0) customerContext = lines.join('\n');
+        if (lines.length > 0) previousCustomerContext = lines.join('\n');
       }
     }
+
+    const latestConversation = await this.prisma.conversation.findUnique({
+      where: { id: conversation.id },
+    }) ?? conversation;
+    const aiContext = buildCompactAiContext({
+      conversation: latestConversation,
+      priorMessages,
+      forwarding: forwardingResult,
+      previousCustomerContext,
+    });
+    const history = aiContext.history;
+    const customerContext = aiContext.customerContext;
+
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext),
+      },
+    }).catch(() => null);
 
     // Call AI service and get response
     let aiReply = '';
@@ -838,6 +906,11 @@ export class BotsService {
         message: { id: aiMessage.id, role: aiMessage.role, content: aiMessage.content, createdAt: aiMessage.createdAt },
       });
 
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { lastMessageAt: new Date() },
+      });
+
       return {
         conversationId: conversation.id,
         message: aiReply,
@@ -855,6 +928,8 @@ export class BotsService {
       const effectiveSystemPrompt = [
         buildAgentSystemPrompt(aiConfig, bot.name),
         buildCapabilityAvailabilityPrompt(botCapabilities),
+        aiContext.statePrompt,
+        aiContext.responseStylePrompt,
         canApplySkillBehavior ? buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType) : null,
         buildOperationalIntegrityPromptBlock(
           forwardingResult.status,
@@ -862,6 +937,8 @@ export class BotsService {
           forwardingResult.missingFields,
           forwardingResult.blockedCapability,
           forwardingResult.actionTaskId,
+          forwardingResult.claimLevel,
+          forwardingResult.deliveryStatus,
         ),
       ].filter(Boolean).join('\n\n');
 
@@ -876,6 +953,15 @@ export class BotsService {
           org_name: bot.organization?.name,
           system_prompt: effectiveSystemPrompt,
           customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(bot.organizationId)].filter(Boolean).join('\n\n') || null,
+          forwarding_status: forwardingResult.status,
+          forwarding_reason: forwardingResult.reason,
+          action_task_id: forwardingResult.actionTaskId ?? null,
+          can_claim_completed: forwardingResult.canClaimCompleted,
+          missing_fields: forwardingResult.missingFields ?? [],
+          blocked_capability: forwardingResult.blockedCapability ?? null,
+          claim_level: forwardingResult.claimLevel,
+          delivery_status: forwardingResult.deliveryStatus,
+          operational_truth: forwardingResult.operationalTruth,
         }),
       );
 
@@ -971,12 +1057,51 @@ export class BotsService {
         forwardingReason: forwardingResult.reason,
         actionTaskId: forwardingResult.actionTaskId,
         canClaimCompleted: forwardingResult.canClaimCompleted,
+        claimLevel: forwardingResult.claimLevel,
+        deliveryStatus: forwardingResult.deliveryStatus,
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
       });
 
-      if (deterministicFollowUp) {
+      if (
+        deterministicFollowUp
+        && (forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS')
+        && /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified/i.test(aiReply)
+      ) {
         aiReply = deterministicFollowUp;
+      }
+
+      aiReply = enforceReplyTrustConsistency(aiReply, forwardingResult);
+
+      const truthTemplate = buildTruthAwareResponseTemplate({
+        forwardingStatus: forwardingResult.status,
+        forwardingReason: forwardingResult.reason,
+        canClaimCompleted: forwardingResult.canClaimCompleted,
+        claimLevel: forwardingResult.claimLevel,
+        deliveryStatus: forwardingResult.deliveryStatus,
+        actionType: forwardingResult.actionType,
+        missingFields: forwardingResult.missingFields,
+        blockedCapability: forwardingResult.blockedCapability,
+      });
+      if (
+        truthTemplate
+        && (
+          Boolean(forwardingResult.actionType)
+          ||
+          forwardingResult.reason === 'SYSTEM_ERROR'
+          || forwardingResult.operationalTruth.actionResult === 'UNKNOWN'
+          || forwardingResult.operationalTruth.actionResult === 'FAILED'
+          || /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified|i\s+can\s+confirm|i\s+checked/i.test(aiReply)
+        )
+      ) {
+        aiReply = truthTemplate;
+      }
+
+      const latestAssistantReply = priorMessages.find((m) => m.role === 'ASSISTANT')?.content;
+      if (shouldCollapseRepeatedReply(aiReply, latestAssistantReply)) {
+        aiReply = forwardingResult.canClaimCompleted
+          ? 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.'
+          : 'I understand. I can continue helping once you share the remaining required details.';
       }
 
       // Store AI message

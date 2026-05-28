@@ -20,13 +20,60 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
+import { buildCompactAiContext, buildConversationMetadataPatch } from '../../common/utils/ai-context';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
+  buildTruthAwareResponseTemplate,
   sanitizeOperationalClaims,
 } from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+
+function normalizeReplyForComparison(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[.,!?;:()[\]{}"']/g, '')
+    .trim();
+}
+
+function shouldCollapseRepeatedReply(currentReply: string, previousAssistantReply?: string): boolean {
+  if (!previousAssistantReply) return false;
+  const current = normalizeReplyForComparison(currentReply);
+  const previous = normalizeReplyForComparison(previousAssistantReply);
+  if (!current || !previous) return false;
+  if (current === previous) return true;
+  if (current.length < 30 || previous.length < 30) return false;
+  return current.includes(previous) || previous.includes(current);
+}
+
+function enforceReplyTrustConsistency(reply: string, forwardingResult: ActionForwardingResult): string {
+  const lower = reply.toLowerCase();
+  const noDeliveryProof = forwardingResult.deliveryStatus !== 'DELIVERED_TO_TEAM';
+
+  if (noDeliveryProof && /team\s+will\s+reach\s+out|please\s+expect\s+our\s+team|owner\s+has\s+been\s+notified|team\s+has\s+received/.test(lower)) {
+    if (forwardingResult.canClaimCompleted) {
+      return 'I have logged an internal request for review in this conversation context. I cannot confirm downstream team delivery yet.';
+    }
+    return 'I can help prepare this as a request for review once all required details are confirmed.';
+  }
+
+  if (!forwardingResult.canClaimCompleted && /i\s+(have|\'ve)\s+(logged|submitted|queued|noted)|request\s+(is|has\s+been|was)\s+(logged|submitted|queued|noted)/.test(lower)) {
+    return forwardingResult.missingFields && forwardingResult.missingFields.length > 0
+      ? `I can help log this for review once I have: ${forwardingResult.missingFields.join(', ')}.`
+      : 'I can help prepare this as a request for review for our team.';
+  }
+
+  return reply;
+}
+
+function isBlockedCapabilityReason(reason?: string): boolean {
+  return reason === 'SKILL_NOT_ENABLED'
+    || reason === 'CHANNEL_NOT_ALLOWED'
+    || reason === 'EXECUTOR_DISABLED'
+    || reason === 'FORWARDING_DISABLED';
+}
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -190,6 +237,17 @@ export class EmailProcessor {
       status: 'NO_INTENT',
       reason: 'SYSTEM_ERROR',
       canClaimCompleted: false,
+      claimLevel: 'REQUESTED',
+      deliveryStatus: 'DELIVERY_UNKNOWN',
+      operationalTruth: {
+        intentDetected: false,
+        capabilityEnabled: false,
+        actionAttempted: false,
+        actionResult: 'FAILED',
+        deliveryStatus: 'DELIVERY_UNKNOWN',
+        missingFields: [],
+        evidenceIds: [],
+      },
     };
     await this.actionForwarding.detectAndQueue({
       organizationId,
@@ -210,6 +268,17 @@ export class EmailProcessor {
         status: 'NO_INTENT',
         reason: 'SYSTEM_ERROR',
         canClaimCompleted: false,
+        claimLevel: 'REQUESTED',
+        deliveryStatus: 'DELIVERY_UNKNOWN',
+        operationalTruth: {
+          intentDetected: false,
+          capabilityEnabled: false,
+          actionAttempted: false,
+          actionResult: 'FAILED',
+          deliveryStatus: 'DELIVERY_UNKNOWN',
+          missingFields: [],
+          evidenceIds: [],
+        },
       };
     });
 
@@ -362,34 +431,52 @@ export class EmailProcessor {
       return;
     }
 
-    // Fetch token-budgeted history
+    // Hard capability gate before any LLM call.
+    if (isBlockedCapabilityReason(forwardingResult.reason)) {
+      const deterministic = buildDeterministicFollowUpMessage({
+        actionType: forwardingResult.actionType,
+        forwardingReason: forwardingResult.reason,
+        blockedCapability: forwardingResult.blockedCapability,
+      }) ?? 'This workflow is not enabled on this bot. I can route you to a human teammate for help.';
+
+      const aiMessage = await this.prisma.message.create({
+        data: { conversationId: conversation.id, role: 'ASSISTANT', content: deterministic },
+      });
+      this.events.emitNewMessage(organizationId, {
+        conversationId: conversation.id,
+        message: aiMessage,
+      });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { lastMessageAt: new Date() },
+      });
+
+      await this.sendEmail(
+        fromAddress, toAddress, customerEmail,
+        `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+        deterministic,
+        conversation.emailThreadId,
+        botName, orgName ?? '',
+      );
+      return;
+    }
+
+    // Fetch compact history inputs
     const recentMessages = await this.prisma.message.findMany({
       where: { conversationId: conversation.id },
       orderBy: { createdAt: 'desc' },
       take: 40,
     });
-    const TOKEN_BUDGET = 3000;
-    let tokenCount = 0;
-    const trimmed: typeof recentMessages = [];
-    for (const m of recentMessages) {
-      const est = Math.ceil(m.content.length / 4);
-      if (tokenCount + est > TOKEN_BUDGET) break;
-      tokenCount += est;
-      trimmed.unshift(m);
-    }
-    const history = trimmed.map((m) => ({
-      role: m.role === 'USER' ? 'user' : 'assistant',
-      content: m.content,
-    }));
+    const priorForAi = recentMessages.filter((m) => !(m.role === 'USER' && m.content.trim() === userText.trim()));
 
     // Build customer context from previous email conversations — only on first message.
-    const emailConv = history.length === 0
+    const emailConv = priorForAi.length === 0
       ? await this.prisma.conversation.findUnique({
           where: { id: conversation.id },
           select: { customerEmail: true },
         })
       : null;
-    let customerContext: string | null = null;
+    let previousCustomerContext: string | null = null;
     if (emailConv?.customerEmail) {
       const prevConvs = await this.prisma.conversation.findMany({
         where: {
@@ -421,9 +508,28 @@ export class EmailProcessor {
             ? `${i + 1}. Customer previously asked: ${firstSubstantive.content.trim().slice(0, 200)}`
             : null;
         }).filter(Boolean);
-        if (lines.length > 0) customerContext = lines.join('\n');
+        if (lines.length > 0) previousCustomerContext = lines.join('\n');
       }
     }
+
+    const latestConversation = await this.prisma.conversation.findUnique({
+      where: { id: conversation.id },
+    }) ?? conversation;
+    const aiContext = buildCompactAiContext({
+      conversation: latestConversation,
+      priorMessages: priorForAi,
+      forwarding: forwardingResult,
+      previousCustomerContext,
+    });
+    const history = aiContext.history;
+    const customerContext = aiContext.customerContext;
+
+    await this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext),
+      },
+    }).catch(() => null);
 
     const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
@@ -431,6 +537,8 @@ export class EmailProcessor {
 
     const effectiveSystemPrompt = [
       systemPrompt,
+      aiContext.statePrompt,
+      aiContext.responseStylePrompt,
       skillBehaviorPrompt,
       buildOperationalIntegrityPromptBlock(
         forwardingResult.status,
@@ -438,6 +546,8 @@ export class EmailProcessor {
         forwardingResult.missingFields,
         forwardingResult.blockedCapability,
         forwardingResult.actionTaskId,
+        forwardingResult.claimLevel,
+        forwardingResult.deliveryStatus,
       ),
     ].filter(Boolean).join('\n\n');
 
@@ -453,6 +563,15 @@ export class EmailProcessor {
           org_name: orgName,
           system_prompt: effectiveSystemPrompt,
           customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
+          forwarding_status: forwardingResult.status,
+          forwarding_reason: forwardingResult.reason,
+          action_task_id: forwardingResult.actionTaskId ?? null,
+          can_claim_completed: forwardingResult.canClaimCompleted,
+          missing_fields: forwardingResult.missingFields ?? [],
+          blocked_capability: forwardingResult.blockedCapability ?? null,
+          claim_level: forwardingResult.claimLevel,
+          delivery_status: forwardingResult.deliveryStatus,
+          operational_truth: forwardingResult.operationalTruth,
         }),
       );
 
@@ -562,6 +681,8 @@ export class EmailProcessor {
         forwardingReason: forwardingResult.reason,
         actionTaskId: forwardingResult.actionTaskId,
         canClaimCompleted: forwardingResult.canClaimCompleted,
+        claimLevel: forwardingResult.claimLevel,
+        deliveryStatus: forwardingResult.deliveryStatus,
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
       });
@@ -569,8 +690,51 @@ export class EmailProcessor {
         actionType: forwardingResult.actionType,
         missingFields: forwardingResult.missingFields,
         canClaimCompleted: forwardingResult.canClaimCompleted,
+        forwardingReason: forwardingResult.reason,
+        blockedCapability: forwardingResult.blockedCapability,
       });
-      const finalAiText = deterministicFollowUp ?? safeAiText;
+      let finalAiText = safeAiText;
+      if (
+        deterministicFollowUp
+        && (forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS')
+        && /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified/i.test(safeAiText)
+      ) {
+        finalAiText = deterministicFollowUp;
+      }
+      finalAiText = enforceReplyTrustConsistency(finalAiText, forwardingResult);
+      const truthTemplate = buildTruthAwareResponseTemplate({
+        forwardingStatus: forwardingResult.status,
+        forwardingReason: forwardingResult.reason,
+        canClaimCompleted: forwardingResult.canClaimCompleted,
+        claimLevel: forwardingResult.claimLevel,
+        deliveryStatus: forwardingResult.deliveryStatus,
+        actionType: forwardingResult.actionType,
+        missingFields: forwardingResult.missingFields,
+        blockedCapability: forwardingResult.blockedCapability,
+      });
+      if (
+        truthTemplate
+        && (
+          Boolean(forwardingResult.actionType)
+          ||
+          forwardingResult.reason === 'SYSTEM_ERROR'
+          || forwardingResult.operationalTruth.actionResult === 'UNKNOWN'
+          || forwardingResult.operationalTruth.actionResult === 'FAILED'
+          || /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified|i\s+can\s+confirm|i\s+checked/i.test(finalAiText)
+        )
+      ) {
+        finalAiText = truthTemplate;
+      }
+      const latestAssistantReply = recentMessages.find((m) => m.role === 'ASSISTANT')?.content;
+      if (shouldCollapseRepeatedReply(finalAiText, latestAssistantReply)) {
+        finalAiText = forwardingResult.canClaimCompleted
+          ? 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.'
+          : 'I understand. I can continue helping once you share the remaining required details.';
+      }
+
+      this.logger.debug(
+        `Operational truth (email): status=${forwardingResult.status} reason=${forwardingResult.reason} claimLevel=${forwardingResult.claimLevel} delivery=${forwardingResult.deliveryStatus} canClaimCompleted=${forwardingResult.canClaimCompleted}`,
+      );
 
       // Store AI reply
       const aiMessage = await this.prisma.message.create({

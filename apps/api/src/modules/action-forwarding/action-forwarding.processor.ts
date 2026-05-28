@@ -39,12 +39,15 @@ export class ActionForwardingProcessor {
     const payload = (action.payload as Record<string, unknown>) ?? {};
     const customerName = typeof payload.customerName === 'string' ? payload.customerName : null;
     const customerEmail = typeof payload.customerEmail === 'string' ? payload.customerEmail : null;
+    const customerPhone = typeof payload.customerPhone === 'string' ? payload.customerPhone : null;
     const messageText = typeof payload.messageText === 'string' ? payload.messageText : null;
     const issueSummary = typeof payload.issueSummary === 'string' ? payload.issueSummary : null;
     const issueDetails = typeof payload.issueDetails === 'string' ? payload.issueDetails : null;
     const bookingId = typeof payload.bookingId === 'string' ? payload.bookingId : null;
     const preferredDatetime = typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null;
     const bookingReason = typeof payload.bookingReason === 'string' ? payload.bookingReason : null;
+    const companyName = typeof payload.companyName === 'string' ? payload.companyName : null;
+    const consultationPurpose = typeof payload.consultationPurpose === 'string' ? payload.consultationPurpose : null;
 
     const parts = [
       `Topic: ${action.actionType}`,
@@ -52,6 +55,9 @@ export class ActionForwardingProcessor {
       `Request summary: ${action.summary}`,
       customerName ? `Customer name: ${customerName}` : null,
       customerEmail ? `Customer email: ${customerEmail}` : null,
+      customerPhone ? `Customer phone: ${customerPhone}` : null,
+      companyName ? `Company: ${companyName}` : null,
+      consultationPurpose ? `Consultation purpose: ${consultationPurpose}` : null,
       bookingReason ? `Reason for booking: ${bookingReason}` : null,
       issueSummary ? `Issue summary: ${issueSummary}` : null,
       issueDetails ? `Issue details: ${issueDetails}` : null,
@@ -184,7 +190,7 @@ export class ActionForwardingProcessor {
     });
 
     if (existingDelivery) {
-      if (existingDelivery.status === 'SENT' || existingDelivery.status === 'DELIVERED' || existingDelivery.status === 'ACKNOWLEDGED') {
+      if (existingDelivery.status === 'SENT_TO_CHANNEL' || existingDelivery.status === 'SENT' || existingDelivery.status === 'DELIVERED' || existingDelivery.status === 'ACKNOWLEDGED') {
         return { ok: true, reason: 'ALREADY_SENT' };
       }
       await prismaAny.actionDelivery.update({
@@ -207,6 +213,9 @@ export class ActionForwardingProcessor {
         summary: action.summary,
         customerName: typeof payload.customerName === 'string' ? payload.customerName : null,
         customerEmail: typeof payload.customerEmail === 'string' ? payload.customerEmail : null,
+        customerPhone: typeof payload.customerPhone === 'string' ? payload.customerPhone : null,
+        companyName: typeof payload.companyName === 'string' ? payload.companyName : null,
+        consultationPurpose: typeof payload.consultationPurpose === 'string' ? payload.consultationPurpose : null,
         bookingReason: typeof payload.bookingReason === 'string' ? payload.bookingReason : null,
         issueSummary: typeof payload.issueSummary === 'string' ? payload.issueSummary : null,
         issueDetails: typeof payload.issueDetails === 'string' ? payload.issueDetails : null,
@@ -230,25 +239,25 @@ export class ActionForwardingProcessor {
       await prismaAny.actionDelivery.update({
         where: { id: deliveryRecord.id },
         data: {
-          status: 'SENT',
+          status: 'SENT_TO_CHANNEL',
           sentAt: new Date(),
           responsePayload: {
-            deliveredBy: route.endpoint.channel,
-            result: 'accepted',
+            acceptedByChannel: route.endpoint.channel,
+            result: 'sent_to_channel',
           },
         },
       });
 
       await prismaAny.actionTask.update({
         where: { id: actionTaskId },
-        data: { status: 'DELIVERED' },
+        data: { status: 'SENT' },
       });
 
       await this.notifications.createOrgNotification(
         organizationId,
         'action_forwarded',
-        `Action sent: ${action.actionType}`,
-        `${action.summary} Delivered to ${route.endpoint.channel} destination ${route.endpoint.destination}.`,
+        `Action sent to channel: ${action.actionType}`,
+        `${action.summary} Sent to the configured ${route.endpoint.channel} channel. Human delivery or acknowledgement is not confirmed yet.`,
         {
           actionTaskId,
           channel: route.endpoint.channel,

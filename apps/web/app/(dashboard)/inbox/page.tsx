@@ -1198,7 +1198,7 @@ export default function InboxPage() {
               </div>
 
               {showHandoffQuickButton && handoffSummaryText && (
-                <div className="absolute right-6 bottom-36 z-20 flex flex-col items-end gap-2">
+                <div className="absolute right-6 bottom-24 z-20 flex flex-col items-end gap-2">
                   {handoffPopupOpen && (
                     <div className="w-[min(86vw,360px)] rounded-xl border border-zinc-800 bg-zinc-900/95 shadow-xl p-3">
                       <div className="flex items-center justify-between gap-2 mb-2">
@@ -1216,7 +1216,7 @@ export default function InboxPage() {
                   )}
                   <button
                     onClick={() => setHandoffPopupOpen((v) => !v)}
-                    className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border border-blue-600/30 bg-blue-600/10 text-blue-200 hover:bg-blue-600/20 transition-colors"
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border border-blue-600/30 bg-blue-600/20 backdrop-blur-md text-blue-200 hover:bg-blue-600/30 transition-colors"
                   >
                     <FileText className="w-3.5 h-3.5" />
                     Handoff summary

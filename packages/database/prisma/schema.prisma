@@ -444,6 +444,7 @@ model ActionTask {
 
 enum ActionType {
   MEETING_REQUEST
+  CONSULTATION_REQUEST
   SALES_ORDER_REQUEST
   OWNER_ATTENTION_NEEDED
   TECHNICAL_ISSUE
@@ -492,6 +493,7 @@ model ActionDelivery {
 
 enum ActionDeliveryStatus {
   QUEUED
+  SENT_TO_CHANNEL
   SENT
   DELIVERED
   FAILED

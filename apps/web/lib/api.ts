@@ -359,5 +359,6 @@ export const notificationsApi = {
 
 // ── Activity ──────────────────────────────────────────────────────────────────
 export const activityApi = {
-  list: (orgId: string) => api.get(`/organizations/${orgId}/activity`),
+  list: (orgId: string, params?: { page?: number; limit?: number }) =>
+    api.get(`/organizations/${orgId}/activity`, { params }),
 };
