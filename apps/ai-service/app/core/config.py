@@ -1,4 +1,8 @@
+from pathlib import Path
 from pydantic_settings import BaseSettings
+
+# Resolve .env from the monorepo root regardless of CWD
+_ENV_FILE = Path(__file__).parent.parent.parent.parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -50,7 +54,7 @@ class Settings(BaseSettings):
     FILE_SCAN_TIMEOUT_MS: int = 10000
 
     class Config:
-        env_file = "../../.env"
+        env_file = str(_ENV_FILE)
         extra = "ignore"
 
 
