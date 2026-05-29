@@ -38,6 +38,11 @@ interface Conversation {
 
 interface ConversationDetails extends Conversation {
   metadata?: Record<string, unknown>;
+  messagePage?: {
+    limit: number;
+    hasMore: boolean;
+    nextBefore: string | null;
+  };
   previousConversations?: Conversation[];
   escalationHistory?: Array<{
     id: string;
@@ -59,6 +64,12 @@ interface BotOption {
   name: string;
 }
 
+interface PaginatedConversationsResponse {
+  items: Conversation[];
+  hasMore: boolean;
+  nextCursor: string | null;
+}
+
 const STATUS_CONFIG: Record<string, { label: string; cls: string; icon: React.ElementType }> = {
   OPEN: { label: 'Open', cls: 'bg-blue-500/15 text-blue-300 border border-blue-500/30', icon: Clock },
   PENDING: { label: 'Pending', cls: 'bg-blue-500/12 text-blue-300 border border-blue-500/25', icon: Clock },
@@ -67,6 +78,8 @@ const STATUS_CONFIG: Record<string, { label: string; cls: string; icon: React.El
 };
 
 const ESCALATED_SEEN_STORAGE_KEY = 'zuti:inbox:escalated-seen-v1';
+const CONVERSATION_PAGE_SIZE = 30;
+const MESSAGE_PAGE_SIZE = 30;
 
 function timeSince(date: string) {
   const diff = Date.now() - new Date(date).getTime();
@@ -127,13 +140,16 @@ function formatLanguageBadgeLabel(languageCode: string): string {
 }
 
 export default function InboxPage() {
-  const { activeOrgId } = useAuthStore();
+  const { activeOrgId, orgRoles } = useAuthStore();
   const searchParams = useSearchParams();
   const requestedConversationId = searchParams.get('conversationId');
   const [orgId, setOrgId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selected, setSelected] = useState<ConversationDetails | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMoreConversations, setLoadingMoreConversations] = useState(false);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [conversationCursor, setConversationCursor] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OPEN' | 'PENDING' | 'ESCALATED' | 'RESOLVED'>('ALL');
   const [botFilter, setBotFilter] = useState<string>('ALL');
   const [agentFilter, setAgentFilter] = useState<string>('ALL');
@@ -146,10 +162,17 @@ export default function InboxPage() {
   const [isNoteMode, setIsNoteMode] = useState(false);
   // Canned responses
   const [cannedItems, setCannedItems] = useState<{ id: string; shortcut: string; title: string; content: string }[]>([]);
+  const [cannedLoaded, setCannedLoaded] = useState(false);
+  const [cannedLoading, setCannedLoading] = useState(false);
   const [cannedQuery, setCannedQuery] = useState<string | null>(null); // null = picker closed
   const [cannedIndex, setCannedIndex] = useState(0);
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const [loadingSelected, setLoadingSelected] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [messageBeforeCursor, setMessageBeforeCursor] = useState<string | null>(null);
+  const [loadingPanelContext, setLoadingPanelContext] = useState(false);
+  const [panelContextLoadedIds, setPanelContextLoadedIds] = useState<Record<string, boolean>>({});
   const [mobileShowConv, setMobileShowConv] = useState(false);
   const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
   const [mobileCustomerPanelOpen, setMobileCustomerPanelOpen] = useState(false);
@@ -217,7 +240,16 @@ export default function InboxPage() {
   }, [search]);
 
   useEffect(() => {
-    orgsApi.list().then((res) => {
+    if (activeOrgId) {
+      setOrgId(activeOrgId);
+      return;
+    }
+    const knownOrgIds = Object.keys(orgRoles ?? {});
+    if (knownOrgIds.length > 0) {
+      setOrgId(knownOrgIds[0]);
+      return;
+    }
+    orgsApi.listSummary().then((res) => {
       const orgs = res.data as { id: string }[];
       if (orgs.length > 0) {
         const preferred = activeOrgId
@@ -226,16 +258,18 @@ export default function InboxPage() {
         setOrgId(preferred.id);
       }
     }).catch(() => {});
-  }, [activeOrgId]);
+  }, [activeOrgId, orgRoles]);
 
   useEffect(() => {
     if (!orgId) return;
+    setCannedItems([]);
+    setCannedLoaded(false);
+    setCannedLoading(false);
     Promise.all([
       botsApi.list(orgId),
       orgsApi.listMembers(orgId),
-      cannedResponsesApi.list(orgId),
     ])
-      .then(([botsRes, membersRes, cannedRes]) => {
+      .then(([botsRes, membersRes]) => {
         setBots((botsRes.data ?? []).map((b: { id: string; name: string }) => ({ id: b.id, name: b.name })));
         setAgents(
           (membersRes.data ?? []).map((m: {
@@ -247,14 +281,29 @@ export default function InboxPage() {
             role: m.role,
           })),
         );
-        setCannedItems(cannedRes.data ?? []);
       })
       .catch(() => {});
   }, [orgId]);
 
+  const ensureCannedLoaded = async () => {
+    if (!orgId || cannedLoaded || cannedLoading) return;
+    setCannedLoading(true);
+    try {
+      const res = await cannedResponsesApi.list(orgId);
+      setCannedItems(res.data ?? []);
+      setCannedLoaded(true);
+    } catch {
+      toast.error('Failed to load canned responses');
+    } finally {
+      setCannedLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!orgId) return;
     setLoading(true);
+    setConversationCursor(null);
+    setHasMoreConversations(false);
     const params: Record<string, string | undefined> = {};
     if (statusFilter !== 'ALL') params.status = statusFilter;
     if (botFilter !== 'ALL') params.botId = botFilter;
@@ -262,11 +311,18 @@ export default function InboxPage() {
       params.assignedAgentId = agentFilter === 'UNASSIGNED' ? 'unassigned' : agentFilter;
     }
     if (debouncedSearch) params.q = debouncedSearch;
+    params.searchScope = 'conversation';
+    params.limit = String(CONVERSATION_PAGE_SIZE);
 
-    conversationsApi.list(orgId, params)
+    const controller = new AbortController();
+
+    conversationsApi.list(orgId, params, { signal: controller.signal })
       .then((res) => {
-        const list = res.data as Conversation[];
+        const page = parseConversationsListResponse(res.data);
+        const list = page.items;
         setConversations(list);
+        setHasMoreConversations(page.hasMore);
+        setConversationCursor(page.nextCursor);
         refreshEscalatedUnreadMap(list);
         if (list.length === 0) {
           setSelected(null);
@@ -288,15 +344,21 @@ export default function InboxPage() {
         const stillExists = list.some((c) => c.id === selected.id);
         if (!stillExists) setSelected(list[0]);
       })
-      .catch(() => {})
+      .catch((error: any) => {
+        if (error?.code === 'ERR_CANCELED') return;
+      })
       .finally(() => setLoading(false));
+
+    return () => {
+      controller.abort();
+    };
   }, [orgId, statusFilter, botFilter, agentFilter, debouncedSearch, requestedConversationId]);
 
   useEffect(() => {
     if (!orgId || !requestedConversationId || loading) return;
     if (conversations.some((conv) => conv.id === requestedConversationId)) return;
 
-    conversationsApi.get(orgId, requestedConversationId)
+    conversationsApi.get(orgId, requestedConversationId, { messageLimit: MESSAGE_PAGE_SIZE, includeContext: false })
       .then((res) => {
         const conversation = res.data as ConversationDetails;
         setConversations((prev) => {
@@ -304,19 +366,63 @@ export default function InboxPage() {
           return [conversation, ...prev];
         });
         setSelected(conversation);
+        setHasMoreMessages(conversation.messagePage?.hasMore === true);
+        setMessageBeforeCursor(conversation.messagePage?.nextBefore ?? null);
       })
       .catch(() => {});
   }, [orgId, requestedConversationId, loading, conversations]);
 
   useEffect(() => {
-    if (!orgId || !selected) return;
+    if (!orgId || !selected?.id) return;
     setLoadingSelected(true);
+    setLoadingOlderMessages(false);
+    setHasMoreMessages(false);
+    setMessageBeforeCursor(null);
+    setLoadingPanelContext(false);
     setIsNoteMode(false);
-    conversationsApi.get(orgId, selected.id)
-      .then((res) => setSelected(res.data as ConversationDetails))
+    conversationsApi.get(orgId, selected.id, { messageLimit: MESSAGE_PAGE_SIZE, includeContext: false })
+      .then((res) => {
+        const details = res.data as ConversationDetails;
+        setSelected(details);
+        setHasMoreMessages(details.messagePage?.hasMore === true);
+        setMessageBeforeCursor(details.messagePage?.nextBefore ?? null);
+      })
       .catch(() => {})
       .finally(() => setLoadingSelected(false));
   }, [selected?.id, orgId]);
+
+  useEffect(() => {
+    if (!orgId || !selected?.id) return;
+    if (!customerPanelOpen && !mobileCustomerPanelOpen) return;
+    if (loadingSelected || panelContextLoadedIds[selected.id] || loadingPanelContext) return;
+
+    setLoadingPanelContext(true);
+    conversationsApi.get(orgId, selected.id, {
+      messageLimit: MESSAGE_PAGE_SIZE,
+      includeContext: true,
+    })
+      .then((res) => {
+        const details = res.data as ConversationDetails;
+        setSelected((prev) => (prev && prev.id === details.id
+          ? {
+              ...prev,
+              previousConversations: details.previousConversations,
+              escalationHistory: details.escalationHistory,
+            }
+          : prev));
+        setPanelContextLoadedIds((prev) => ({ ...prev, [details.id]: true }));
+      })
+      .catch(() => {})
+      .finally(() => setLoadingPanelContext(false));
+  }, [
+    orgId,
+    selected?.id,
+    customerPanelOpen,
+    mobileCustomerPanelOpen,
+    loadingSelected,
+    panelContextLoadedIds,
+    loadingPanelContext,
+  ]);
 
   useEffect(() => {
     if (!selected || selected.status !== 'ESCALATED') return;
@@ -455,6 +561,71 @@ export default function InboxPage() {
     return () => { socket.disconnect(); socketRef.current = null; };
   }, [orgId]);
 
+  const handleLoadMoreConversations = async () => {
+    if (!orgId || !conversationCursor || loadingMoreConversations) return;
+    setLoadingMoreConversations(true);
+    try {
+      const params: Record<string, string | undefined> = {
+        limit: String(CONVERSATION_PAGE_SIZE),
+        cursor: conversationCursor,
+      };
+      if (statusFilter !== 'ALL') params.status = statusFilter;
+      if (botFilter !== 'ALL') params.botId = botFilter;
+      if (agentFilter !== 'ALL') {
+        params.assignedAgentId = agentFilter === 'UNASSIGNED' ? 'unassigned' : agentFilter;
+      }
+      if (debouncedSearch) params.q = debouncedSearch;
+      params.searchScope = 'conversation';
+
+      const res = await conversationsApi.list(orgId, params);
+      const page = parseConversationsListResponse(res.data);
+
+      setConversations((prev) => {
+        const existingIds = new Set(prev.map((item) => item.id));
+        const merged = [...prev];
+        for (const item of page.items) {
+          if (!existingIds.has(item.id)) merged.push(item);
+        }
+        return merged;
+      });
+      setHasMoreConversations(page.hasMore);
+      setConversationCursor(page.nextCursor);
+    } catch {
+      toast.error('Failed to load more conversations');
+    } finally {
+      setLoadingMoreConversations(false);
+    }
+  };
+
+  const handleLoadOlderMessages = async () => {
+    if (!orgId || !selected?.id || !messageBeforeCursor || loadingOlderMessages) return;
+    setLoadingOlderMessages(true);
+    try {
+      const res = await conversationsApi.get(orgId, selected.id, {
+        messageLimit: MESSAGE_PAGE_SIZE,
+        before: messageBeforeCursor,
+      });
+      const details = res.data as ConversationDetails;
+      const olderMessages = details.messages ?? [];
+      setSelected((prev) => {
+        if (!prev || prev.id !== details.id) return prev;
+        const existingIds = new Set((prev.messages ?? []).map((m) => m.id));
+        const mergedOlder = olderMessages.filter((m) => !existingIds.has(m.id));
+        return {
+          ...prev,
+          ...details,
+          messages: [...mergedOlder, ...(prev.messages ?? [])],
+        };
+      });
+      setHasMoreMessages(details.messagePage?.hasMore === true);
+      setMessageBeforeCursor(details.messagePage?.nextBefore ?? null);
+    } catch {
+      toast.error('Failed to load older messages');
+    } finally {
+      setLoadingOlderMessages(false);
+    }
+  };
+
   const handleTakeOver = async () => {
     if (!orgId || !selected) return;
     const conversationId = selected.id;
@@ -512,8 +683,6 @@ export default function InboxPage() {
         const res = await conversationsApi.sendMessage(orgId, selected.id, reply.trim());
         setReply('');
         setSelected((prev) => prev ? { ...prev, messages: [...(prev.messages ?? []), res.data] } : prev);
-        const latest = await conversationsApi.get(orgId, selected.id);
-        setSelected(latest.data as ConversationDetails);
       }
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     } catch (error: any) {
@@ -528,8 +697,16 @@ export default function InboxPage() {
     setActionLoading('retry-email');
     try {
       await conversationsApi.retryEmailDelivery(orgId, selected.id);
-      const latest = await conversationsApi.get(orgId, selected.id);
-      setSelected(latest.data as ConversationDetails);
+      setSelected((prev) => prev ? {
+        ...prev,
+        metadata: {
+          ...(prev.metadata ?? {}),
+          emailDelivery: {
+            ...((prev.metadata?.emailDelivery as Record<string, unknown> | undefined) ?? {}),
+            status: 'ATTEMPTED',
+          },
+        },
+      } : prev);
       toast.success('Email delivery retried');
     } catch (error: any) {
       const message = error?.response?.data?.message;
@@ -568,6 +745,9 @@ export default function InboxPage() {
       // Only show picker if / is at start or after whitespace, and no space in query
       const charBefore = slashIdx > 0 ? val[slashIdx - 1] : ' ';
       if ((charBefore === ' ' || charBefore === '\n' || slashIdx === 0) && !afterSlash.includes(' ')) {
+        if (!cannedLoaded) {
+          void ensureCannedLoaded();
+        }
         setCannedQuery(afterSlash);
         setCannedIndex(0);
         return;
@@ -606,6 +786,22 @@ export default function InboxPage() {
       CONVERSATION_RESOLVED: 'Conversation resolved',
     };
     return map[action] ?? action;
+  };
+
+  const parseConversationsListResponse = (data: unknown): PaginatedConversationsResponse => {
+    if (Array.isArray(data)) {
+      return {
+        items: data as Conversation[],
+        hasMore: false,
+        nextCursor: null,
+      };
+    }
+    const payload = data as Partial<PaginatedConversationsResponse> | undefined;
+    return {
+      items: Array.isArray(payload?.items) ? payload.items : [],
+      hasMore: payload?.hasMore === true,
+      nextCursor: typeof payload?.nextCursor === 'string' ? payload.nextCursor : null,
+    };
   };
 
   const selectedMetadata = selected?.metadata as Record<string, unknown> | undefined;
@@ -697,7 +893,9 @@ export default function InboxPage() {
 
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
         <h3 className="text-xs font-semibold text-zinc-300 mb-2">Previous conversations</h3>
-        {selected?.previousConversations && selected.previousConversations.length > 0 ? (
+        {loadingPanelContext && !selected?.previousConversations ? (
+          <p className="text-xs text-zinc-600">Loading previous conversations...</p>
+        ) : selected?.previousConversations && selected.previousConversations.length > 0 ? (
           <div className="space-y-2">
             {selected.previousConversations.map((prev) => (
               <button
@@ -742,7 +940,9 @@ export default function InboxPage() {
             </a>
           ) : null}
         </div>
-        {selected?.escalationHistory && selected.escalationHistory.length > 0 ? (
+        {loadingPanelContext && !selected?.escalationHistory ? (
+          <p className="text-xs text-zinc-600">Loading escalation history...</p>
+        ) : selected?.escalationHistory && selected.escalationHistory.length > 0 ? (
           <div className="space-y-2">
             {selected.escalationHistory.map((event) => (
               <div key={event.id} className="rounded-lg border border-zinc-800 bg-zinc-950/40 px-2.5 py-2">
@@ -948,6 +1148,17 @@ export default function InboxPage() {
                   </button>
                 );
               })}
+              {(hasMoreConversations || loadingMoreConversations) && (
+                <div className="pt-1.5">
+                  <button
+                    onClick={handleLoadMoreConversations}
+                    disabled={loadingMoreConversations}
+                    className="w-full text-center text-[11px] px-2.5 py-2 rounded-xl border border-zinc-800 bg-zinc-900/40 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {loadingMoreConversations ? 'Loading more...' : 'Load more conversations'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1136,6 +1347,17 @@ export default function InboxPage() {
                       <span className="font-semibold text-amber-300">AI handoff summary: </span>
                       {selected.metadata.handoffSummary}
                     </div>
+                  </div>
+                )}
+                {(hasMoreMessages || loadingOlderMessages) && !loadingSelected && (
+                  <div className="flex justify-center pb-1">
+                    <button
+                      onClick={handleLoadOlderMessages}
+                      disabled={loadingOlderMessages}
+                      className="text-[11px] px-2.5 py-1.5 rounded-lg border border-zinc-800 bg-zinc-900/40 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {loadingOlderMessages ? 'Loading older messages...' : 'Load older messages'}
+                    </button>
                   </div>
                 )}
                 {loadingSelected ? (

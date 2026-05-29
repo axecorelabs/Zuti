@@ -154,6 +154,38 @@ export class OrganizationsService {
     }));
   }
 
+  async findSummaryForUser(userId: string) {
+    const memberships = await this.prisma.organizationMember.findMany({
+      where: { userId },
+      select: {
+        role: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            _count: {
+              select: {
+                members: true,
+                bots: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return memberships.map((membership) => ({
+      id: membership.organization.id,
+      name: membership.organization.name,
+      slug: membership.organization.slug,
+      role: membership.role,
+      memberCount: membership.organization._count.members,
+      botCount: membership.organization._count.bots,
+    }));
+  }
+
   async findOne(slug: string, userId: string) {
     const org = await this.prisma.organization.findUnique({
       where: { slug },

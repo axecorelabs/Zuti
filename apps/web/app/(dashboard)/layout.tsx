@@ -61,8 +61,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     const runRoleCheck = async () => {
       try {
-        const res = await orgsApi.list();
-        const list = res.data as { id: string; members?: { role: string }[] }[];
+        const res = await orgsApi.listSummary();
+        const list = res.data as { id: string; role: string }[];
 
         if (active && list.length === 0) {
           router.replace('/onboarding');
@@ -71,9 +71,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
         const roles: Record<string, string> = {};
         list.forEach((org) => {
-          if (org.members?.[0]?.role) {
-            roles[org.id] = org.members[0].role;
-          }
+          roles[org.id] = org.role;
         });
 
         setOrgRoles(roles);
@@ -84,7 +82,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         if (preferredOrg?.id && preferredOrg.id !== activeOrgId) {
           setActiveOrgId(preferredOrg.id);
         }
-        const activeRole = preferredOrg?.members?.[0]?.role;
+        const activeRole = preferredOrg?.role;
         const restrictedForAgent = ['/bots', '/knowledge', '/knowledge-gaps', '/billing-usage'];
         const blockedForAgent =
           activeRole === 'AGENT' &&

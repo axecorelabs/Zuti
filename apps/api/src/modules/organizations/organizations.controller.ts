@@ -182,6 +182,12 @@ export class OrganizationsController {
     return this.organizationsService.findAllForUser(user.id);
   }
 
+  @Get('summary')
+  @ApiOperation({ summary: 'List lightweight organization summaries for current user' })
+  findSummary(@CurrentUser() user: { id: string }) {
+    return this.organizationsService.findSummaryForUser(user.id);
+  }
+
   @Get(':slug')
   @ApiOperation({ summary: 'Get organization by slug' })
   findOne(@Param('slug') slug: string, @CurrentUser() user: { id: string }) {

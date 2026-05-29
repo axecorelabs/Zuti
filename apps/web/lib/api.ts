@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosRequestConfig } from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -6,6 +6,63 @@ export const api = axios.create({
   baseURL: `${API_URL}/api`,
   headers: { 'Content-Type': 'application/json' },
 });
+
+const ORGS_CACHE_TTL_MS = 45_000;
+type OrgsCachedResult = Promise<{ data: any[] }>;
+let orgsListCacheData: any[] | null = null;
+let orgsListCacheExpiresAt = 0;
+let orgsListInFlight: OrgsCachedResult | null = null;
+let orgsSummaryCacheData: any[] | null = null;
+let orgsSummaryCacheExpiresAt = 0;
+let orgsSummaryInFlight: OrgsCachedResult | null = null;
+
+function clearOrgsCache() {
+  orgsListCacheData = null;
+  orgsListCacheExpiresAt = 0;
+  orgsListInFlight = null;
+  orgsSummaryCacheData = null;
+  orgsSummaryCacheExpiresAt = 0;
+  orgsSummaryInFlight = null;
+}
+
+function withCachedOrgs(
+  kind: 'list' | 'summary',
+  forceRefresh = false,
+): OrgsCachedResult {
+  const now = Date.now();
+  const hasValidCache = kind === 'list'
+    ? (orgsListCacheData && orgsListCacheExpiresAt > now)
+    : (orgsSummaryCacheData && orgsSummaryCacheExpiresAt > now);
+
+  if (!forceRefresh && hasValidCache) {
+    return Promise.resolve({ data: (kind === 'list' ? orgsListCacheData : orgsSummaryCacheData) ?? [] });
+  }
+
+  const inFlight = kind === 'list' ? orgsListInFlight : orgsSummaryInFlight;
+  if (!forceRefresh && inFlight) return inFlight;
+
+  const endpoint = kind === 'list' ? '/organizations' : '/organizations/summary';
+  const request = api.get(endpoint)
+    .then((res) => {
+      const rows = Array.isArray(res.data) ? res.data : [];
+      if (kind === 'list') {
+        orgsListCacheData = rows;
+        orgsListCacheExpiresAt = Date.now() + ORGS_CACHE_TTL_MS;
+      } else {
+        orgsSummaryCacheData = rows;
+        orgsSummaryCacheExpiresAt = Date.now() + ORGS_CACHE_TTL_MS;
+      }
+      return { data: rows };
+    })
+    .finally(() => {
+      if (kind === 'list') orgsListInFlight = null;
+      else orgsSummaryInFlight = null;
+    });
+
+  if (kind === 'list') orgsListInFlight = request;
+  else orgsSummaryInFlight = request;
+  return request;
+}
 
 type RetryableConfig = {
   _retry?: boolean;
@@ -97,14 +154,27 @@ export const authApi = {
 
 // ── Organizations ─────────────────────────────────────────────────────────────
 export const orgsApi = {
-  list: () => api.get('/organizations'),
+  list: (options?: { forceRefresh?: boolean }) =>
+    withCachedOrgs('list', options?.forceRefresh === true),
+  listSummary: (options?: { forceRefresh?: boolean }) =>
+    withCachedOrgs('summary', options?.forceRefresh === true),
   get: (slug: string) => api.get(`/organizations/${slug}`),
-  create: (name: string, slug: string) => api.post('/organizations', { name, slug }),
+  create: (name: string, slug: string) =>
+    api.post('/organizations', { name, slug }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
   removeMember: (orgId: string, userId: string) =>
-    api.delete(`/organizations/${orgId}/members/${userId}`),
+    api.delete(`/organizations/${orgId}/members/${userId}`).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
   listMembers: (orgId: string) => api.get(`/organizations/${orgId}/members`),
   updateMemberRole: (orgId: string, userId: string, role: string) =>
-    api.patch(`/organizations/${orgId}/members/${userId}/role`, { role }),
+    api.patch(`/organizations/${orgId}/members/${userId}/role`, { role }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
   updateAgentProfile: (
     orgId: string,
     userId: string,
@@ -276,10 +346,17 @@ export const botsApi = {
 
 // ── Conversations ─────────────────────────────────────────────────────────────
 export const conversationsApi = {
-  list: (orgId: string, params?: Record<string, string | undefined>) =>
-    api.get(`/organizations/${orgId}/conversations`, { params }),
-  get: (orgId: string, convId: string) =>
-    api.get(`/organizations/${orgId}/conversations/${convId}`),
+  list: (
+    orgId: string,
+    params?: Record<string, string | undefined> & { limit?: string; cursor?: string },
+    config?: AxiosRequestConfig,
+  ) => api.get(`/organizations/${orgId}/conversations`, { params, ...config }),
+  get: (
+    orgId: string,
+    convId: string,
+    params?: { messageLimit?: number; before?: string; includeContext?: boolean },
+    config?: AxiosRequestConfig,
+  ) => api.get(`/organizations/${orgId}/conversations/${convId}`, { params, ...config }),
   startInternal: (
     orgId: string,
     data: {
@@ -302,8 +379,17 @@ export const conversationsApi = {
     api.post(`/organizations/${orgId}/conversations/${convId}/retry-email-delivery`),
   addNote: (orgId: string, convId: string, content: string) =>
     api.post(`/organizations/${orgId}/conversations/${convId}/notes`, { content }),
-  analytics: (orgId: string, days = 30, botId?: string) =>
-    api.get(`/organizations/${orgId}/conversations/analytics/summary`, { params: { days: String(days), ...(botId ? { botId } : {}) } }),
+  overview: (orgId: string) =>
+    api.get(`/organizations/${orgId}/conversations/analytics/overview`),
+  analytics: (
+    orgId: string,
+    days = 30,
+    botId?: string,
+    config?: AxiosRequestConfig,
+  ) => api.get(`/organizations/${orgId}/conversations/analytics/summary`, {
+    params: { days: String(days), ...(botId ? { botId } : {}) },
+    ...config,
+  }),
 };
 
 // ── Canned Responses ──────────────────────────────────────────────────────────
@@ -353,24 +439,24 @@ export const knowledgeApi = {
 
 // ── AI Usage ────────────────────────────────────────────────────────────────
 export const aiUsageApi = {
-  summary: (orgId: string, days = 30) =>
-    api.get(`/organizations/${orgId}/ai-usage/summary`, { params: { days: String(days) } }),
+  summary: (orgId: string, days = 30, config?: AxiosRequestConfig) =>
+    api.get(`/organizations/${orgId}/ai-usage/summary`, { params: { days: String(days) }, ...config }),
 };
 
 // ── Pricing ─────────────────────────────────────────────────────────────────
 export const pricingApi = {
-  catalog: (orgId: string, market: 'NG' | 'US') =>
-    api.get(`/organizations/${orgId}/pricing/catalog`, { params: { market } }),
-  estimates: (orgId: string, market: 'NG' | 'US') =>
-    api.get(`/organizations/${orgId}/pricing/estimates`, { params: { market } }),
+  catalog: (orgId: string, market: 'NG' | 'US', config?: AxiosRequestConfig) =>
+    api.get(`/organizations/${orgId}/pricing/catalog`, { params: { market }, ...config }),
+  estimates: (orgId: string, market: 'NG' | 'US', config?: AxiosRequestConfig) =>
+    api.get(`/organizations/${orgId}/pricing/estimates`, { params: { market }, ...config }),
   quote: (orgId: string, market: 'NG' | 'US', packId: string) =>
     api.post(`/organizations/${orgId}/pricing/quote`, { market, packId }),
 };
 
 // ── Billing ─────────────────────────────────────────────────────────────────
 export const billingApi = {
-  wallet: (orgId: string) =>
-    api.get(`/organizations/${orgId}/billing/wallet`),
+  wallet: (orgId: string, config?: AxiosRequestConfig) =>
+    api.get(`/organizations/${orgId}/billing/wallet`, config),
   checkoutPack: (
     orgId: string,
     market: 'NG' | 'US',

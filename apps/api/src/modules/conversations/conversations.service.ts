@@ -22,8 +22,18 @@ interface FindAllFilters {
   botId?: string;
   assignedAgentId?: string;
   q?: string;
+  searchScope?: 'conversation' | 'all';
+  messageSearchDays?: number;
+  limit?: number;
+  cursor?: string;
   /** When set, only return conversations assigned to this agent or unassigned */
   agentId?: string;
+}
+
+interface FindOneOptions {
+  messageLimit?: number;
+  before?: string;
+  includeContext?: boolean;
 }
 
 interface StartInternalConversationInput {
@@ -94,6 +104,24 @@ export class ConversationsService {
   async findAll(organizationId: string, filters: FindAllFilters) {
     const andClauses: any[] = [];
 
+    const parsedLimit = Number.isFinite(filters.limit)
+      ? Math.min(Math.max(Number(filters.limit), 1), 100)
+      : undefined;
+    const isPaginated = parsedLimit !== undefined || Boolean(filters.cursor);
+
+    if (filters.cursor) {
+      const [rawTimestamp, rawId] = filters.cursor.split('|');
+      const cursorDate = new Date(rawTimestamp);
+      if (!Number.isNaN(cursorDate.getTime()) && rawId) {
+        andClauses.push({
+          OR: [
+            { lastMessageAt: { lt: cursorDate } },
+            { AND: [{ lastMessageAt: cursorDate }, { id: { lt: rawId } }] },
+          ],
+        });
+      }
+    }
+
     if (filters.agentId) {
       andClauses.push({
         OR: [
@@ -113,16 +141,30 @@ export class ConversationsService {
 
     if (filters.q?.trim()) {
       const q = filters.q.trim();
+      const searchTerms: any[] = [
+        { customerName: { contains: q, mode: 'insensitive' } },
+        { customerUsername: { contains: q, mode: 'insensitive' } },
+      ];
+      if ((filters.searchScope ?? 'conversation') === 'all' && q.length >= 3) {
+        const messageSearchDays = Number.isFinite(filters.messageSearchDays)
+          ? Math.min(Math.max(Number(filters.messageSearchDays), 1), 90)
+          : 30;
+        const cutoff = new Date(Date.now() - messageSearchDays * 24 * 60 * 60 * 1000);
+        searchTerms.push({
+          messages: {
+            some: {
+              content: { contains: q, mode: 'insensitive' },
+              createdAt: { gte: cutoff },
+            },
+          },
+        });
+      }
       andClauses.push({
-        OR: [
-          { customerName: { contains: q, mode: 'insensitive' } },
-          { customerUsername: { contains: q, mode: 'insensitive' } },
-          { messages: { some: { content: { contains: q, mode: 'insensitive' } } } },
-        ],
+        OR: searchTerms,
       });
     }
 
-    return this.prisma.conversation.findMany({
+    const rows = await this.prisma.conversation.findMany({
       where: {
         organizationId,
         ...(filters.status && { status: filters.status as any }),
@@ -140,11 +182,28 @@ export class ConversationsService {
           select: { id: true, role: true, content: true, createdAt: true },
         },
       },
-      orderBy: { lastMessageAt: 'desc' },
+      orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+      ...(parsedLimit ? { take: parsedLimit + 1 } : {}),
     });
+
+    if (!isPaginated) return rows;
+
+    const limit = parsedLimit ?? 30;
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items[items.length - 1];
+    const nextCursor = hasMore && last?.lastMessageAt
+      ? `${last.lastMessageAt.toISOString()}|${last.id}`
+      : null;
+
+    return {
+      items,
+      hasMore,
+      nextCursor,
+    };
   }
 
-  async findOne(organizationId: string, conversationId: string, agentId?: string) {
+  async findOne(organizationId: string, conversationId: string, agentId?: string, options?: FindOneOptions) {
     const where: Record<string, unknown> = { id: conversationId, organizationId };
     if (agentId) {
       // AGENT: must be assigned to this conversation or it must be unassigned
@@ -158,57 +217,88 @@ export class ConversationsService {
       include: {
         bot: { select: { id: true, name: true, telegramUsername: true } },
         assignedAgent: { select: { id: true, name: true, email: true } },
-        messages: { orderBy: { createdAt: 'asc' } },
-        escalations: { orderBy: { createdAt: 'desc' } },
+        escalations: { orderBy: { createdAt: 'desc' }, take: 20 },
       },
     });
 
     if (!conversation) throw new NotFoundException('Conversation not found');
 
+    const messageLimit = Number.isFinite(options?.messageLimit)
+      ? Math.min(Math.max(Number(options?.messageLimit), 1), 100)
+      : 50;
+    const beforeDate = options?.before ? new Date(options.before) : null;
+    const messageRows = await this.prisma.message.findMany({
+      where: {
+        conversationId: conversation.id,
+        ...(beforeDate && !Number.isNaN(beforeDate.getTime())
+          ? { createdAt: { lt: beforeDate } }
+          : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: messageLimit + 1,
+    });
+    const hasMoreMessages = messageRows.length > messageLimit;
+    const pagedRows = hasMoreMessages ? messageRows.slice(0, messageLimit) : messageRows;
+    const messages = [...pagedRows].reverse();
+    const oldestLoaded = messages[0]?.createdAt;
+
+    const includeContext = options?.includeContext === true;
     const prevCustomerWhere = conversation.telegramChatId
       ? { telegramChatId: conversation.telegramChatId }
       : conversation.customerEmail
         ? { customerEmail: conversation.customerEmail }
         : null;
 
-    const [previousConversations, escalationHistory] = await Promise.all([
-      prevCustomerWhere ? this.prisma.conversation.findMany({
-        where: {
-          organizationId,
-          ...prevCustomerWhere,
-          NOT: { id: conversation.id },
-        },
-        include: {
-          bot: { select: { id: true, name: true, telegramUsername: true } },
-          assignedAgent: { select: { id: true, name: true, email: true } },
-          _count: { select: { messages: true } },
-        },
-        orderBy: { lastMessageAt: 'desc' },
-        take: 10,
-      }) : Promise.resolve([]),
-      this.prisma.activityLog.findMany({
-        where: {
-          orgId: organizationId,
-          targetType: 'conversation',
-          targetId: conversation.id,
-          action: {
-            in: [
-              ActivityAction.CONVERSATION_ESCALATED,
-              ActivityAction.CONVERSATION_ASSIGNED,
-              ActivityAction.AGENT_TOOK_OVER,
-              ActivityAction.CONVERSATION_RESOLVED,
-            ],
+    const [previousConversations, escalationHistory] = includeContext
+      ? await Promise.all([
+        prevCustomerWhere ? this.prisma.conversation.findMany({
+          where: {
+            organizationId,
+            ...prevCustomerWhere,
+            NOT: { id: conversation.id },
           },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 30,
-      }),
-    ]);
+          include: {
+            bot: { select: { id: true, name: true, telegramUsername: true } },
+            assignedAgent: { select: { id: true, name: true, email: true } },
+            _count: { select: { messages: true } },
+          },
+          orderBy: { lastMessageAt: 'desc' },
+          take: 10,
+        }) : Promise.resolve([]),
+        this.prisma.activityLog.findMany({
+          where: {
+            orgId: organizationId,
+            targetType: 'conversation',
+            targetId: conversation.id,
+            action: {
+              in: [
+                ActivityAction.CONVERSATION_ESCALATED,
+                ActivityAction.CONVERSATION_ASSIGNED,
+                ActivityAction.AGENT_TOOK_OVER,
+                ActivityAction.CONVERSATION_RESOLVED,
+              ],
+            },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 30,
+        }),
+      ])
+      : [undefined, undefined];
 
     return {
       ...conversation,
-      previousConversations,
-      escalationHistory,
+      messages,
+      messagePage: {
+        limit: messageLimit,
+        hasMore: hasMoreMessages,
+        nextBefore: hasMoreMessages && oldestLoaded ? oldestLoaded.toISOString() : null,
+      },
+      ...(includeContext
+        ? {
+            previousConversations,
+            escalationHistory,
+          }
+        : {}),
     };
   }
 
@@ -1045,6 +1135,83 @@ export class ConversationsService {
         const m = c.metadata as Record<string, unknown> | null;
         return m?.csatRating === 'positive' || m?.csatRating === 'negative';
       }).length,
+    };
+  }
+
+  async getOverview(organizationId: string, agentId?: string) {
+    const baseWhere: Prisma.ConversationWhereInput = {
+      organizationId,
+      ...(agentId
+        ? {
+            OR: [
+              { assignedAgentId: agentId },
+              { assignedAgentId: null },
+            ],
+          }
+        : {}),
+    };
+
+    const [total, groupedByStatus, recentConversations, recentForVolume] = await Promise.all([
+      this.prisma.conversation.count({ where: baseWhere }),
+      this.prisma.conversation.groupBy({
+        by: ['status'],
+        where: baseWhere,
+        _count: { status: true },
+      }),
+      this.prisma.conversation.findMany({
+        where: baseWhere,
+        orderBy: [{ lastMessageAt: 'desc' }, { id: 'desc' }],
+        take: 5,
+        select: {
+          id: true,
+          status: true,
+          customerName: true,
+          lastMessageAt: true,
+          createdAt: true,
+        },
+      }),
+      this.prisma.conversation.findMany({
+        where: {
+          ...baseWhere,
+          createdAt: {
+            gte: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+          },
+        },
+        select: { createdAt: true },
+      }),
+    ]);
+
+    const countsByStatus = groupedByStatus.reduce<Record<string, number>>((acc, item) => {
+      acc[item.status] = item._count.status;
+      return acc;
+    }, {});
+
+    const open = countsByStatus.OPEN ?? 0;
+    const resolved = countsByStatus.RESOLVED ?? 0;
+    const escalated = countsByStatus.ESCALATED ?? 0;
+    const pending = countsByStatus.PENDING ?? 0;
+
+    const volumeMap: Record<string, number> = {};
+    for (let i = 6; i >= 0; i -= 1) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      volumeMap[d.toISOString().slice(0, 10)] = 0;
+    }
+    for (const c of recentForVolume) {
+      const key = new Date(c.createdAt).toISOString().slice(0, 10);
+      if (key in volumeMap) volumeMap[key] += 1;
+    }
+
+    return {
+      totals: { total, open, resolved, escalated, pending },
+      volumeByDay: Object.entries(volumeMap).map(([date, count]) => ({ date, count })),
+      recentConversations: recentConversations.map((c) => ({
+        id: c.id,
+        status: c.status,
+        customerName: c.customerName,
+        lastMessageAt: c.lastMessageAt,
+        createdAt: c.createdAt,
+      })),
     };
   }
 

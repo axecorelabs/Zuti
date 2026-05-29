@@ -17,6 +17,10 @@ interface Org {
   name: string;
 }
 
+interface OrgSummary extends Org {
+  role: 'OWNER' | 'ADMIN' | 'AGENT';
+}
+
 interface AiUsageSummary {
   period: { start: string; end: string; days: number };
   totals: { calls: number; promptTokens: number; completionTokens: number; totalTokens: number };
@@ -162,21 +166,23 @@ export default function BillingUsagePage() {
     message: '',
   });
 
-  const loadWallet = async (orgId: string) => {
+  const loadWallet = async (orgId: string, signal?: AbortSignal) => {
     try {
-      const res = await billingApi.wallet(orgId);
+      const res = await billingApi.wallet(orgId, { signal });
       setWallet(res.data as WalletSnapshot);
-    } catch {
+    } catch (error: any) {
+      if (error?.code === 'ERR_CANCELED') return;
       setWallet(null);
     }
   };
 
-  const loadUsage = async (targetOrg: Org, targetDays: Days) => {
+  const loadUsage = async (targetOrg: Org, targetDays: Days, signal?: AbortSignal) => {
     setLoading(true);
     try {
-      const res = await aiUsageApi.summary(targetOrg.id, targetDays);
+      const res = await aiUsageApi.summary(targetOrg.id, targetDays, { signal });
       setUsage(res.data);
-    } catch {
+    } catch (error: any) {
+      if (error?.code === 'ERR_CANCELED') return;
       setUsage(null);
     } finally {
       setLoading(false);
@@ -184,9 +190,9 @@ export default function BillingUsagePage() {
   };
 
   useEffect(() => {
-    orgsApi.list()
+    orgsApi.listSummary()
       .then((res) => {
-        const orgs = (res.data ?? []) as Array<{ id: string; name: string }>;
+        const orgs = (res.data ?? []) as OrgSummary[];
         const callbackOrgId = typeof window !== 'undefined'
           ? new URLSearchParams(window.location.search).get('org')
           : null;
@@ -203,37 +209,50 @@ export default function BillingUsagePage() {
         if (nextOrg.id !== activeOrgId) {
           setActiveOrgId(nextOrg.id);
         }
-        loadUsage(nextOrg, 30);
       })
       .catch(() => setLoading(false));
   }, [activeOrgId, setActiveOrgId]);
 
   useEffect(() => {
     if (!org) return;
-    loadUsage(org, days);
-  }, [days]);
+    const controller = new AbortController();
+    void loadUsage(org, days, controller.signal);
+    return () => {
+      controller.abort();
+    };
+  }, [org?.id, days]);
 
   useEffect(() => {
     if (!org) return;
     setPricingLoading(true);
+    const controller = new AbortController();
     Promise.all([
-      pricingApi.catalog(org.id, market),
-      pricingApi.estimates(org.id, market),
+      pricingApi.catalog(org.id, market, { signal: controller.signal }),
+      pricingApi.estimates(org.id, market, { signal: controller.signal }),
     ])
       .then(([catalogRes, estimatesRes]) => {
         setPricing(catalogRes.data as PricingCatalog);
         setEstimates(estimatesRes.data as PricingEstimates);
       })
-      .catch(() => {
+      .catch((error: any) => {
+        if (error?.code === 'ERR_CANCELED') return;
         setPricing(null);
         setEstimates(null);
       })
       .finally(() => setPricingLoading(false));
+
+    return () => {
+      controller.abort();
+    };
   }, [org?.id, market]);
 
   useEffect(() => {
     if (!org) return;
-    loadWallet(org.id);
+    const controller = new AbortController();
+    void loadWallet(org.id, controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [org?.id]);
 
   useEffect(() => {

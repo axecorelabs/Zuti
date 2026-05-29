@@ -107,6 +107,10 @@ export class ConversationsController {
   @ApiQuery({ name: 'botId', required: false })
   @ApiQuery({ name: 'assignedAgentId', required: false, description: 'Agent user id or "unassigned"' })
   @ApiQuery({ name: 'q', required: false, description: 'Search by customer name/username or message content' })
+  @ApiQuery({ name: 'searchScope', required: false, description: 'conversation (default) or all (includes message content)' })
+  @ApiQuery({ name: 'messageSearchDays', required: false, description: 'When searchScope=all, limit message search to last N days (default 30)' })
+  @ApiQuery({ name: 'limit', required: false, description: 'Page size for cursor pagination (max 100)' })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Cursor from previous response for next page' })
   findAll(
     @Param('id') orgId: string,
     @Req() req: any,
@@ -115,9 +119,26 @@ export class ConversationsController {
     @Query('botId') botId?: string,
     @Query('assignedAgentId') assignedAgentId?: string,
     @Query('q') q?: string,
+    @Query('searchScope') searchScope?: string,
+    @Query('messageSearchDays') messageSearchDays?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
   ) {
     const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
-    return this.service.findAll(orgId, { status, mode, botId, assignedAgentId, q, agentId });
+    const parsedLimit = limit ? Number.parseInt(limit, 10) : undefined;
+    const parsedMessageSearchDays = messageSearchDays ? Number.parseInt(messageSearchDays, 10) : undefined;
+    return this.service.findAll(orgId, {
+      status,
+      mode,
+      botId,
+      assignedAgentId,
+      q,
+      searchScope: searchScope === 'all' ? 'all' : 'conversation',
+      messageSearchDays: Number.isFinite(parsedMessageSearchDays) ? parsedMessageSearchDays : undefined,
+      agentId,
+      limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      cursor,
+    });
   }
 
   @Get('analytics/summary')
@@ -133,15 +154,36 @@ export class ConversationsController {
     return this.service.getAnalytics(orgId, d, botId || undefined);
   }
 
+  @Get('analytics/overview')
+  @ApiOperation({ summary: 'Get lightweight dashboard overview for the organisation' })
+  getOverview(
+    @Param('id') orgId: string,
+    @Req() req: any,
+  ) {
+    const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
+    return this.service.getOverview(orgId, agentId);
+  }
+
   @Get(':conversationId')
   @ApiOperation({ summary: 'Get conversation with messages' })
+  @ApiQuery({ name: 'messageLimit', required: false, description: 'Maximum messages to return (max 100, default 50)' })
+  @ApiQuery({ name: 'before', required: false, description: 'Load messages older than this ISO timestamp' })
+  @ApiQuery({ name: 'includeContext', required: false, description: 'Include previous conversations and escalation history' })
   findOne(
     @Param('id') orgId: string,
     @Param('conversationId') conversationId: string,
     @Req() req: any,
+    @Query('messageLimit') messageLimit?: string,
+    @Query('before') before?: string,
+    @Query('includeContext') includeContext?: string,
   ) {
     const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
-    return this.service.findOne(orgId, conversationId, agentId);
+    const parsedMessageLimit = messageLimit ? Number.parseInt(messageLimit, 10) : undefined;
+    return this.service.findOne(orgId, conversationId, agentId, {
+      messageLimit: Number.isFinite(parsedMessageLimit) ? parsedMessageLimit : undefined,
+      before,
+      includeContext: includeContext === 'true' || includeContext === '1',
+    });
   }
 
   @Patch(':conversationId')

@@ -12,6 +12,9 @@ import { orgsApi, conversationsApi, botsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 interface Org { id: string; name: string; }
+interface OrgSummary extends Org {
+  role: 'OWNER' | 'ADMIN' | 'AGENT';
+}
 interface Bot { id: string; name: string; }
 
 interface Analytics {
@@ -59,7 +62,7 @@ const VolumeTooltip = ({ active, payload, label }: any) => {
 };
 
 export default function AnalyticsPage() {
-  const { getRoleForOrg, activeOrgId } = useAuthStore();
+  const { activeOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
   const [bots, setBots] = useState<Bot[]>([]);
   const [selectedBotId, setSelectedBotId] = useState<string | 'all'>('all');
@@ -68,13 +71,17 @@ export default function AnalyticsPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    orgsApi.list().then(async (res) => {
-      const orgs: (Org & { members?: { role: string }[] })[] = res.data;
+    orgsApi.listSummary().then(async (res) => {
+      const orgs = res.data as OrgSummary[];
       if (!orgs.length) return;
       const preferred = activeOrgId
         ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
         : orgs[0];
       setOrg(preferred);
+      if (preferred.role === 'AGENT') {
+        setBots([]);
+        return;
+      }
       botsApi.list(preferred.id).then((r) => setBots(r.data ?? [])).catch(() => {});
     }).catch(() => {});
   }, [activeOrgId]);
@@ -82,15 +89,21 @@ export default function AnalyticsPage() {
   useEffect(() => {
     if (!org) return;
     setLoading(true);
+    const controller = new AbortController();
     const botId = selectedBotId === 'all' ? undefined : selectedBotId;
-    conversationsApi.analytics(org.id, days, botId)
+    conversationsApi.analytics(org.id, days, botId, { signal: controller.signal })
       .then((analyticsRes) => {
         setData(analyticsRes.data);
       })
-      .catch(() => {
+      .catch((error: any) => {
+        if (error?.code === 'ERR_CANCELED') return;
         setData(null);
       })
       .finally(() => setLoading(false));
+
+    return () => {
+      controller.abort();
+    };
   }, [org, days, selectedBotId]);
 
   const skeleton = (w = 'w-16', h = 'h-7') => (

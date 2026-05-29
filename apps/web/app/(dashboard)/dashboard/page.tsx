@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { MessageSquare, Bot, Users, AlertCircle, BookOpen, ArrowRight } from 'lucide-react';
-import { orgsApi, conversationsApi, botsApi } from '@/lib/api';
+import { orgsApi, conversationsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -11,43 +11,36 @@ import {
 
 interface Org { id: string; name: string; slug: string; }
 
-type MemberRole = 'OWNER' | 'ADMIN' | 'AGENT';
-
-interface Member {
-  userId: string;
+interface OrgSummary extends Org {
   role: MemberRole;
-  user: { id: string; name: string; email: string };
+  memberCount?: number;
+  botCount?: number;
 }
+
+type MemberRole = 'OWNER' | 'ADMIN' | 'AGENT';
 
 interface Conv {
   id: string;
   status: string;
-  customerName: string;
-  lastMessageAt: string;
+  customerName: string | null;
+  lastMessageAt: string | null;
   createdAt: string;
 }
 
-function getDayLabel(daysAgo: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - daysAgo);
-  return d.toLocaleDateString('en-US', { weekday: 'short' });
+interface OverviewData {
+  totals: {
+    total: number;
+    open: number;
+    escalated: number;
+    resolved: number;
+    pending: number;
+  };
+  volumeByDay: Array<{ date: string; count: number }>;
+  recentConversations: Conv[];
 }
 
-function buildVolumeData(convs: Conv[]) {
-  const buckets: Record<string, number> = {};
-  for (let i = 6; i >= 0; i--) {
-    buckets[getDayLabel(i)] = 0;
-  }
-  convs.forEach((c) => {
-    const created = new Date(c.createdAt);
-    const now = new Date();
-    const diffDays = Math.floor((now.getTime() - created.getTime()) / 86400000);
-    if (diffDays <= 6) {
-      const label = getDayLabel(diffDays);
-      buckets[label] = (buckets[label] ?? 0) + 1;
-    }
-  });
-  return Object.entries(buckets).map(([day, count]) => ({ day, count }));
+function toWeekdayLabel(isoDate: string) {
+  return new Date(isoDate).toLocaleDateString('en-US', { weekday: 'short' });
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -71,47 +64,41 @@ const CustomTooltip = ({ active, payload }: any) => {
 export default function DashboardPage() {
   const { getRoleForOrg, activeOrgId } = useAuthStore();
   const [org, setOrg] = useState<Org | null>(null);
-  const [convs, setConvs] = useState<Conv[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
+  const [overview, setOverview] = useState<OverviewData | null>(null);
   const [myRole, setMyRole] = useState<MemberRole | null>(null);
   const [stats, setStats] = useState({ total: 0, open: 0, escalated: 0, resolved: 0, bots: 0, members: 0 });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    orgsApi.list().then(async (res) => {
-      const orgs: (Org & { members?: { role: MemberRole }[] })[] = res.data;
+    orgsApi.listSummary().then(async (res) => {
+      const orgs = res.data as OrgSummary[];
       if (!orgs.length) return;
       const preferred = activeOrgId
         ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
         : orgs[0];
       setOrg(preferred);
-      const role = (preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null) as MemberRole | null;
+      const role = (preferred.role ?? getRoleForOrg(preferred.id) ?? null) as MemberRole | null;
       setMyRole(role);
 
-      const [convRes, membersRes, botRes] = await Promise.allSettled([
-        conversationsApi.list(preferred.id),
-        orgsApi.listMembers(preferred.id),
-        role === 'AGENT' ? Promise.resolve({ data: [] }) : botsApi.list(preferred.id),
-      ]);
+      const overviewRes = await conversationsApi.overview(preferred.id).catch(() => null);
+      const overviewData = (overviewRes?.data as OverviewData | undefined) ?? null;
+      setOverview(overviewData);
 
-      const conversations: Conv[] = convRes.status === 'fulfilled' ? convRes.value.data : [];
-      const teamMembers: Member[] = membersRes.status === 'fulfilled' ? membersRes.value.data : [];
-      const bots = botRes.status === 'fulfilled' ? botRes.value.data : [];
-
-      setConvs(conversations);
-      setMembers(teamMembers);
       setStats({
-        total: conversations.length,
-        open: conversations.filter((c) => c.status === 'OPEN').length,
-        escalated: conversations.filter((c) => c.status === 'ESCALATED').length,
-        resolved: conversations.filter((c) => c.status === 'RESOLVED').length,
-        bots: role === 'AGENT' ? 0 : bots.length,
-        members: teamMembers.length,
+        total: overviewData?.totals.total ?? 0,
+        open: overviewData?.totals.open ?? 0,
+        escalated: overviewData?.totals.escalated ?? 0,
+        resolved: overviewData?.totals.resolved ?? 0,
+        bots: role === 'AGENT' ? 0 : (preferred.botCount ?? 0),
+        members: preferred.memberCount ?? 0,
       });
     }).catch(() => {}).finally(() => setLoading(false));
   }, [activeOrgId, getRoleForOrg]);
 
-  const volumeData = buildVolumeData(convs);
+  const volumeData = (overview?.volumeByDay ?? []).map((point) => ({
+    day: toWeekdayLabel(point.date),
+    count: point.count,
+  }));
 
   const statusData = [
     { name: 'Open', value: stats.open, color: STATUS_COLORS.OPEN },
@@ -120,9 +107,7 @@ export default function DashboardPage() {
     { name: 'Pending', value: stats.total - stats.open - stats.resolved - stats.escalated, color: STATUS_COLORS.PENDING },
   ].filter((d) => d.value > 0);
 
-  const recent = [...convs]
-    .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime())
-    .slice(0, 5);
+  const recent = overview?.recentConversations ?? [];
 
   const statCards = myRole === 'AGENT'
     ? [
@@ -302,9 +287,9 @@ export default function DashboardPage() {
                       <span className="text-xs text-zinc-400">{c.customerName?.[0]?.toUpperCase() ?? '?'}</span>
                     </div>
                     <div>
-                      <p className="text-sm text-zinc-300 font-light group-hover:text-white transition-colors">{c.customerName}</p>
+                      <p className="text-sm text-zinc-300 font-light group-hover:text-white transition-colors">{c.customerName || 'Anonymous'}</p>
                       <p className="text-xs text-zinc-600">
-                        {new Date(c.lastMessageAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        {new Date(c.lastMessageAt ?? c.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                       </p>
                     </div>
                   </div>
