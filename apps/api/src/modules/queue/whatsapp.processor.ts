@@ -94,7 +94,7 @@ export class WhatsAppProcessor {
   }
 
   private get fileScanRequired(): boolean {
-    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'true').trim().toLowerCase();
+    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'false').trim().toLowerCase();
     return raw !== 'false' && raw !== '0' && raw !== 'no';
   }
 

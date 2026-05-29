@@ -68,6 +68,22 @@ class MediaService:
             logger.warning("OPENROUTER_API_KEY is not configured — image description skipped")
             return None
 
+        # Convert HEIC/HEIF → JPEG: most vision APIs only accept JPEG/PNG/GIF/WebP
+        _heif_mimes = {"image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"}
+        if mime_type.lower() in _heif_mimes:
+            try:
+                import pillow_heif
+                pillow_heif.register_heif_opener()
+                from PIL import Image as PILImage
+                img = PILImage.open(io.BytesIO(content_bytes))
+                buf = io.BytesIO()
+                img.convert("RGB").save(buf, format="JPEG", quality=90)
+                content_bytes = buf.getvalue()
+                mime_type = "image/jpeg"
+                logger.info("Converted HEIC/HEIF image to JPEG for vision processing")
+            except Exception as _e:
+                logger.warning("HEIC/HEIF → JPEG conversion failed: %s — sending raw to vision model", _e)
+
         b64 = base64.b64encode(content_bytes).decode("ascii")
         data_uri = f"data:{mime_type};base64,{b64}"
 
