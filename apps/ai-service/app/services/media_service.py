@@ -26,6 +26,13 @@ _WHISPER_EXTENSION_MAP = {
     "audio/aac": "aac", "video/ogg": "ogg",
 }
 
+_WHISPER_UPLOAD_MIME_MAP = {
+    # Groq/OpenAI-compatible transcription endpoints reject audio/oga.
+    # Normalize to audio/ogg for upload while keeping file extension aligned.
+    "audio/oga": "audio/ogg",
+    "application/ogg": "audio/ogg",
+}
+
 
 def _clean_vision_output(text: str) -> str:
     """Remove meta lead-ins so output is directly customer-facing."""
@@ -60,7 +67,9 @@ class MediaService:
 
         base_url = (settings.WHISPER_API_BASE_URL or "https://api.openai.com/v1").rstrip("/")
         model = settings.WHISPER_MODEL or "whisper-1"
-        ext = _WHISPER_EXTENSION_MAP.get(mime_type.lower().split(";")[0].strip(), "ogg")
+        normalized_mime = mime_type.lower().split(";")[0].strip()
+        upload_mime = _WHISPER_UPLOAD_MIME_MAP.get(normalized_mime, normalized_mime)
+        ext = _WHISPER_EXTENSION_MAP.get(normalized_mime, "ogg")
         safe_name = filename or f"audio.{ext}"
 
         import httpx
@@ -69,7 +78,7 @@ class MediaService:
                 f"{base_url}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {api_key}"},
                 files={
-                    "file": (safe_name, io.BytesIO(content_bytes), mime_type),
+                    "file": (safe_name, io.BytesIO(content_bytes), upload_mime),
                 },
                 data={"model": model},
             )
