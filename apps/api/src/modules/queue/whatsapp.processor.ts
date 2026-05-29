@@ -416,7 +416,9 @@ export class WhatsAppProcessor {
                   }).catch(() => null);
                 }
               } else {
-                const reason = understanding?.error ?? 'media processing service unreachable';
+                const reason = understanding === null
+                  ? 'media processing helper returned null (stale API build or unexpected path)'
+                  : understanding.error ?? 'media processing returned empty text with no error detail';
                 this.logger.warn(
                   `WhatsApp media understanding unavailable for ${normalizedType} (${media.fileName ?? media.mediaId}): ${reason}`,
                 );

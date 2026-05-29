@@ -21,7 +21,13 @@ export async function callMediaProcess(
   fileName?: string,
 ): Promise<MediaProcessResult | null> {
   const aiServiceUrl = (config.get<string>('AI_SERVICE_URL') ?? '').trim();
-  if (!aiServiceUrl) return null;
+  if (!aiServiceUrl) {
+    return {
+      kind: 'disabled',
+      text: null,
+      error: 'AI_SERVICE_URL is not configured',
+    };
+  }
 
   try {
     const internalKey = (config.get<string>('INTERNAL_API_SECRET') ?? '').trim();

@@ -459,7 +459,9 @@ export class TelegramProcessor {
                   }).catch(() => null);
                 }
               } else {
-                const reason = understanding?.error ?? 'media processing service unreachable';
+                const reason = understanding === null
+                  ? 'media processing helper returned null (stale API build or unexpected path)'
+                  : understanding.error ?? 'media processing returned empty text with no error detail';
                 this.logger.warn(
                   `Telegram media understanding unavailable for ${message.media.kind} (${message.media.fileName ?? message.media.fileId}): ${reason}`,
                 );
