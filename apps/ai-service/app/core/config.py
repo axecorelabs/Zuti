@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     WHISPER_API_KEY: str = ""  # e.g. Groq key: gsk_...
     WHISPER_API_BASE_URL: str = "https://api.openai.com/v1"  # Groq: https://api.groq.com/openai/v1
     WHISPER_MODEL: str = "whisper-1"  # Groq: whisper-large-v3-turbo
+    WHISPER_LANGUAGE: str = ""  # Optional ISO code, e.g. "yo" for Yoruba
+    WHISPER_PROMPT: str = ""  # Optional style/domain hint for transcription
 
     # Media processing (transcription, image description, document extraction)
     MEDIA_PROCESSING_ENABLED: bool = True

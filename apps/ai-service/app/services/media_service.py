@@ -89,6 +89,14 @@ class MediaService:
         safe_name = f"{stem}.{normalized_suffix}"
 
         import httpx
+        request_data = {"model": model}
+        language = settings.WHISPER_LANGUAGE.strip()
+        if language:
+            request_data["language"] = language
+        prompt = settings.WHISPER_PROMPT.strip()
+        if prompt:
+            request_data["prompt"] = prompt
+
         async with httpx.AsyncClient(timeout=60) as http:
             response = await http.post(
                 f"{base_url}/audio/transcriptions",
@@ -96,7 +104,7 @@ class MediaService:
                 files={
                     "file": (safe_name, io.BytesIO(content_bytes), upload_mime),
                 },
-                data={"model": model},
+                data=request_data,
             )
 
         if not response.is_success:
