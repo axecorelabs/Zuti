@@ -14,6 +14,7 @@ import { CannedResponsesService } from '../canned-responses/canned-responses.ser
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
+import { LanguagePreferenceService } from '../ai-usage/language-preference.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
@@ -26,6 +27,7 @@ import {
 } from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -70,6 +72,11 @@ function isBlockedCapabilityReason(reason?: string): boolean {
     || reason === 'CHANNEL_NOT_ALLOWED'
     || reason === 'EXECUTOR_DISABLED'
     || reason === 'FORWARDING_DISABLED';
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }
 
 /** Convert markdown to Telegram HTML (parse_mode: 'HTML').
@@ -158,6 +165,7 @@ export class TelegramProcessor {
     private readonly teamChat: TeamChatService,
     private readonly aiUsage: AiUsageService,
     private readonly csatClassifier: CsatClassifierService,
+    private readonly languagePreference: LanguagePreferenceService,
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
     private readonly actionForwarding: ActionForwardingService,
@@ -321,6 +329,8 @@ export class TelegramProcessor {
           lastAssistantMessage: lastAssistantMessage?.content ?? null,
         });
         if (rating === 'positive') {
+          const preferredLanguage = getPreferredLanguageFromMetadata(convMeta);
+          const positiveMessage = buildLocalizedCsatPositiveMessage(preferredLanguage);
           await this.prisma.conversation.update({
             where: { id: conversation.id },
             data: { status: 'RESOLVED', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'positive' } },
@@ -339,7 +349,7 @@ export class TelegramProcessor {
           await firstValueFrom(
             this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
               chat_id: telegramChatId,
-              text: 'Great, glad I could help! Feel free to reach out any time.',
+              text: positiveMessage,
             }),
           );
           return;
@@ -534,8 +544,24 @@ export class TelegramProcessor {
       where: { id: conversationId },
     });
     if (!latestConversation) return;
+    const languageDecision = await this.languagePreference.resolveForTurn({
+      userMessage: userText,
+      channel: 'TELEGRAM',
+      metadata: latestConversation.metadata,
+    });
+    const conversationForContext = {
+      ...latestConversation,
+      metadata: {
+        ...asObject(latestConversation.metadata),
+        ...languageDecision.metadataPatch,
+        customerMemory: {
+          ...asObject(asObject(latestConversation.metadata).customerMemory),
+          ...asObject(languageDecision.metadataPatch.customerMemory),
+        },
+      },
+    };
     const aiContext = buildCompactAiContext({
-      conversation: latestConversation,
+      conversation: conversationForContext,
       priorMessages: priorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
@@ -543,10 +569,20 @@ export class TelegramProcessor {
     const history = aiContext.history;
     const customerContext = aiContext.customerContext;
 
+    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Record<string, unknown>;
+    const mergedMetadataPatch: Record<string, unknown> = {
+      ...contextMetadataPatch,
+      ...languageDecision.metadataPatch,
+      customerMemory: {
+        ...asObject(contextMetadataPatch.customerMemory),
+        ...asObject(languageDecision.metadataPatch.customerMemory),
+      },
+    };
+
     await this.prisma.conversation.update({
       where: { id: conversationId },
       data: {
-        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Prisma.InputJsonValue,
+        metadata: mergedMetadataPatch as Prisma.InputJsonValue,
       },
     }).catch(() => null);
 
@@ -554,6 +590,7 @@ export class TelegramProcessor {
       systemPrompt,
       aiContext.statePrompt,
       aiContext.responseStylePrompt,
+      languageDecision.promptBlock,
       skillBehaviorPrompt,
       buildOperationalIntegrityPromptBlock(
         forwardingResult.status,

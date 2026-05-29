@@ -1,6 +1,6 @@
 import {
-  Controller, Post, Param, Body, Headers,
-  Logger, HttpCode, HttpStatus, UseInterceptors, Req,
+  Controller, Post, Param, Body, Headers, Get, Query,
+  Logger, HttpCode, HttpStatus, UseInterceptors, Req, ForbiddenException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
@@ -9,20 +9,36 @@ import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { PrismaService } from '../prisma/prisma.service';
 import { Public } from '../../common/decorators/public.decorator';
-import { TELEGRAM_QUEUE, EMAIL_QUEUE } from '../queue/queue.module';
+import { TELEGRAM_QUEUE, EMAIL_QUEUE, WHATSAPP_QUEUE } from '../queue/queue.module';
 import { TelegramMessageJob } from '../queue/telegram.processor';
 import { EmailMessageJob } from '../queue/email.processor';
+import { WhatsAppMessageJob } from '../queue/whatsapp.processor';
 import { BillingService } from '../billing/billing.service';
+import { extractWhatsAppConfig, verifyMetaWebhookSignature, verifyTwilioWebhookSignature } from '../../common/utils/whatsapp';
 
 @ApiExcludeController()
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
+  private getTwilioSignatureUrl(req: any): string {
+    const forwardedProtoRaw = typeof req?.headers?.['x-forwarded-proto'] === 'string'
+      ? req.headers['x-forwarded-proto']
+      : undefined;
+    const forwardedHostRaw = typeof req?.headers?.['x-forwarded-host'] === 'string'
+      ? req.headers['x-forwarded-host']
+      : undefined;
+    const proto = (forwardedProtoRaw ?? req?.protocol ?? 'https').split(',')[0].trim();
+    const host = (forwardedHostRaw ?? req?.get?.('host') ?? '').split(',')[0].trim();
+    const path = typeof req?.originalUrl === 'string' ? req.originalUrl : '';
+    return `${proto}://${host}${path}`;
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(TELEGRAM_QUEUE) private readonly telegramQueue: Queue,
     @InjectQueue(EMAIL_QUEUE) private readonly emailQueue: Queue,
+    @InjectQueue(WHATSAPP_QUEUE) private readonly whatsappQueue: Queue,
     private readonly billing: BillingService,
   ) {}
 
@@ -163,6 +179,122 @@ export class WebhooksController {
       removeOnComplete: true,
       removeOnFail: false,
     });
+
+    return { ok: true };
+  }
+
+  @Get('whatsapp/:botId')
+  @Public()
+  @HttpCode(HttpStatus.OK)
+  async verifyWhatsAppWebhook(
+    @Param('botId') botId: string,
+    @Query('hub.mode') mode?: string,
+    @Query('hub.verify_token') verifyToken?: string,
+    @Query('hub.challenge') challenge?: string,
+  ) {
+    const bot = await this.prisma.bot.findFirst({
+      where: { id: botId, isActive: true, whatsappEnabled: true, whatsappChannelIdentifier: { not: null } },
+      select: { whatsappVerifyToken: true },
+    });
+
+    if (!bot || mode !== 'subscribe' || !verifyToken || verifyToken !== bot.whatsappVerifyToken) {
+      throw new ForbiddenException('forbidden');
+    }
+
+    return challenge ?? 'ok';
+  }
+
+  @Post('whatsapp/:botId')
+  @Public()
+  @Throttle({ default: { limit: 600, ttl: 60_000 } })
+  @HttpCode(HttpStatus.OK)
+  async handleWhatsAppInbound(
+    @Param('botId') botId: string,
+    @Headers('x-hub-signature-256') metaSignature: string | undefined,
+    @Headers('x-twilio-signature') twilioSignature: string | undefined,
+    @Req() req: any,
+    @Body() body: Record<string, any>,
+  ) {
+    const bot = await this.prisma.bot.findFirst({
+      where: { id: botId, isActive: true, whatsappEnabled: true, whatsappChannelIdentifier: { not: null } },
+    });
+
+    if (!bot) {
+      this.logger.warn(`Received WhatsApp webhook for unknown/inactive bot: ${botId}`);
+      return { ok: true };
+    }
+
+    const config = extractWhatsAppConfig(bot.whatsappConfig);
+    if (bot.whatsappProvider === 'META') {
+      const appSecret = typeof config.appSecret === 'string' ? config.appSecret.trim() : '';
+      if (!appSecret || !verifyMetaWebhookSignature(appSecret, req?.rawBody ?? Buffer.from(''), metaSignature)) {
+        this.logger.warn(`Meta WhatsApp signature mismatch for bot ${botId}`);
+        return { ok: true };
+      }
+
+      const entries = Array.isArray(body.entry) ? body.entry : [];
+      for (const entry of entries) {
+        const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+        for (const change of changes) {
+          const value = change?.value ?? {};
+          const contacts = Array.isArray(value.contacts) ? value.contacts : [];
+          const messages = Array.isArray(value.messages) ? value.messages : [];
+          for (const message of messages) {
+            const text = message?.text?.body;
+            if (!text || message?.type !== 'text') continue;
+            const contact = contacts.find((item: any) => item?.wa_id === message?.from);
+            const job: WhatsAppMessageJob = {
+              botId: bot.id,
+              organizationId: bot.organizationId,
+              provider: 'META',
+              userId: String(message.from),
+              phoneNumber: String(message.from),
+              profileName: contact?.profile?.name,
+              messageId: String(message.id),
+              text,
+            };
+            await this.whatsappQueue.add(job, {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2000 },
+              removeOnComplete: true,
+              removeOnFail: false,
+            });
+          }
+        }
+      }
+
+      return { ok: true };
+    }
+
+    if (bot.whatsappProvider === 'TWILIO') {
+      const authToken = typeof config.authToken === 'string' ? config.authToken.trim() : '';
+      const url = this.getTwilioSignatureUrl(req);
+      if (!authToken || !verifyTwilioWebhookSignature(authToken, twilioSignature, url, body as Record<string, string | string[] | undefined>)) {
+        this.logger.warn(`Twilio WhatsApp signature mismatch for bot ${botId}`);
+        return { ok: true };
+      }
+
+      const text = typeof body.Body === 'string' ? body.Body.trim() : '';
+      if (!text) return { ok: true };
+
+      const job: WhatsAppMessageJob = {
+        botId: bot.id,
+        organizationId: bot.organizationId,
+        provider: 'TWILIO',
+        userId: typeof body.WaId === 'string' ? body.WaId : String(body.From ?? ''),
+        phoneNumber: typeof body.From === 'string' ? body.From.replace(/^whatsapp:/, '') : null,
+        profileName: typeof body.ProfileName === 'string' ? body.ProfileName : undefined,
+        messageId: typeof body.MessageSid === 'string' ? body.MessageSid : `${Date.now()}`,
+        text,
+      };
+
+      await this.whatsappQueue.add(job, {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: true,
+        removeOnFail: false,
+      });
+    }
 
     return { ok: true };
   }

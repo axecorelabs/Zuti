@@ -9,7 +9,7 @@ interface ClassifyCsatInput {
   organizationId: string;
   botId?: string | null;
   conversationId?: string | null;
-  channel: 'WIDGET' | 'EMAIL' | 'TELEGRAM';
+  channel: 'WIDGET' | 'EMAIL' | 'TELEGRAM' | 'WHATSAPP';
   userReply: string;
   lastAssistantMessage?: string | null;
   model?: string | null;

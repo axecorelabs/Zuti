@@ -18,6 +18,7 @@ import { CannedResponsesService } from '../canned-responses/canned-responses.ser
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
+import { LanguagePreferenceService } from '../ai-usage/language-preference.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
@@ -30,6 +31,7 @@ import {
 } from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -74,6 +76,11 @@ function isBlockedCapabilityReason(reason?: string): boolean {
     || reason === 'CHANNEL_NOT_ALLOWED'
     || reason === 'EXECUTOR_DISABLED'
     || reason === 'FORWARDING_DISABLED';
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
 }
 
 function estimateTokens(value: unknown): number {
@@ -136,6 +143,7 @@ export class EmailProcessor {
     private readonly teamChat: TeamChatService,
     private readonly aiUsage: AiUsageService,
     private readonly csatClassifier: CsatClassifierService,
+    private readonly languagePreference: LanguagePreferenceService,
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
     private readonly actionForwarding: ActionForwardingService,
@@ -306,6 +314,8 @@ export class EmailProcessor {
         ? `${bot.organization.slug}@bords.app`
         : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
       if (rating === 'positive') {
+        const preferredLanguage = getPreferredLanguageFromMetadata(existingMeta);
+        const positiveMessage = buildLocalizedCsatPositiveMessage(preferredLanguage);
         await this.prisma.conversation.update({
           where: { id: conversation.id },
           data: { status: 'RESOLVED', metadata: { ...existingMeta, awaitingCsat: false, csatRating: 'positive' } },
@@ -321,7 +331,7 @@ export class EmailProcessor {
         ).catch(() => null);
         this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
         await this.sendEmail(fromAddress2, toAddress, fromEmail, `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-          'Great, glad I could help! Feel free to reach out any time.', conversation.emailThreadId, bot.name, bot.organization?.name ?? '');
+          positiveMessage, conversation.emailThreadId, bot.name, bot.organization?.name ?? '');
         return;
       } else if (rating === 'negative') {
         await this.prisma.conversation.update({
@@ -517,8 +527,25 @@ export class EmailProcessor {
       where: { id: conversation.id },
       select: { metadata: true },
     });
+    const latestMetadata = latestConversation?.metadata;
+    const languageDecision = await this.languagePreference.resolveForTurn({
+      userMessage: userText,
+      channel: 'EMAIL',
+      metadata: latestMetadata,
+    });
+
     const aiContext = buildCompactAiContext({
-      conversation,
+      conversation: {
+        ...conversation,
+        metadata: {
+          ...asObject(latestMetadata),
+          ...languageDecision.metadataPatch,
+          customerMemory: {
+            ...asObject(asObject(latestMetadata).customerMemory),
+            ...asObject(languageDecision.metadataPatch.customerMemory),
+          },
+        },
+      },
       priorMessages: priorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
@@ -526,10 +553,20 @@ export class EmailProcessor {
     const history = aiContext.history;
     const customerContext = aiContext.customerContext;
 
+    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation?.metadata, aiContext) as Record<string, unknown>;
+    const mergedMetadataPatch: Record<string, unknown> = {
+      ...contextMetadataPatch,
+      ...languageDecision.metadataPatch,
+      customerMemory: {
+        ...asObject(contextMetadataPatch.customerMemory),
+        ...asObject(languageDecision.metadataPatch.customerMemory),
+      },
+    };
+
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
-        metadata: buildConversationMetadataPatch(latestConversation?.metadata, aiContext) as Prisma.InputJsonValue,
+        metadata: mergedMetadataPatch as Prisma.InputJsonValue,
       },
     }).catch(() => null);
 
@@ -541,6 +578,7 @@ export class EmailProcessor {
       systemPrompt,
       aiContext.statePrompt,
       aiContext.responseStylePrompt,
+      languageDecision.promptBlock,
       skillBehaviorPrompt,
       buildOperationalIntegrityPromptBlock(
         forwardingResult.status,

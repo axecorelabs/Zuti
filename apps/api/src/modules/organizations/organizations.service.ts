@@ -357,7 +357,7 @@ export class OrganizationsService {
     requestingUserId: string,
     data: {
       label: string;
-      channel: 'TELEGRAM' | 'EMAIL';
+      channel: 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
       destination: string;
       userId?: string | null;
       isPrimary?: boolean;
@@ -391,7 +391,7 @@ export class OrganizationsService {
     endpointId: string,
     data: {
       label?: string;
-      channel?: 'TELEGRAM' | 'EMAIL';
+      channel?: 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
       destination?: string;
       userId?: string | null;
       isActive?: boolean;

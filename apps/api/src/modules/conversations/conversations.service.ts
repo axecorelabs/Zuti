@@ -14,6 +14,7 @@ import { OrganizationsService } from '../organizations/organizations.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { BillingService } from '../billing/billing.service';
+import { sendWhatsAppText } from '../../common/utils/whatsapp';
 
 interface FindAllFilters {
   status?: string;
@@ -250,6 +251,7 @@ export class ConversationsService {
       ? existingMetadata.allowExternalDelivery !== false
       : true;
     const canSendExternalEmail = conversation.channel === 'EMAIL' && (!isInternalOnly || allowExternalDelivery);
+    const canSendExternalWhatsApp = conversation.channel === 'WHATSAPP' && (!isInternalOnly || allowExternalDelivery);
 
     const updated = await this.prisma.conversation.update({
       where: { id: conversationId },
@@ -323,6 +325,18 @@ export class ConversationsService {
       });
     };
 
+    const sendCustomerWhatsApp = async (text: string) => {
+      if (!canSendExternalWhatsApp) return;
+      const target = conversation.whatsappPhoneNumber ?? conversation.whatsappUserId;
+      if (!target) return;
+      await sendWhatsAppText(this.http, {
+        provider: conversation.bot.whatsappProvider,
+        channelIdentifier: conversation.bot.whatsappChannelIdentifier,
+        phoneNumber: conversation.bot.whatsappPhoneNumber,
+        config: conversation.bot.whatsappConfig,
+      }, target, text).catch(() => null);
+    };
+
     // Agent takes over from AI
     if (dto.mode === 'HUMAN' && conversation.mode !== 'HUMAN') {
       if (token && chatId) {
@@ -334,6 +348,7 @@ export class ConversationsService {
         ).catch(() => null);
       }
       await sendCustomerEmail('You have been connected to a support agent. We will be with you shortly.');
+      await sendCustomerWhatsApp('You have been connected to a support agent. We will be with you shortly.');
       await sendWidgetMessage('You have been connected to a support agent. We will be with you shortly.');
 
       await Promise.all([
@@ -367,6 +382,7 @@ export class ConversationsService {
         ).catch(() => null);
       }
       await sendCustomerEmail('You\'ve been reconnected to our AI assistant. Feel free to reply to this email if you need further help.');
+      await sendCustomerWhatsApp('You\'ve been reconnected to our AI assistant. Feel free to continue the conversation.');
       await sendWidgetMessage('You\'ve been reconnected to our AI assistant. Feel free to continue the conversation.');
 
       await this.activity.log(
@@ -479,6 +495,8 @@ export class ConversationsService {
           }),
         ).catch(() => null);
       }
+
+      await sendCustomerWhatsApp(resolvedText);
 
       // Send resolution email
       if (canSendExternalEmail) {
@@ -756,6 +774,23 @@ export class ConversationsService {
         this.logger.warn(`Failed to send outbound email for conversation ${conversationId}: ${errorMessage}`);
         throw new BadRequestException('Failed to send outbound email');
       }
+    } else if (conversation.channel === 'WHATSAPP' && (!isInternalOnly || allowExternalDelivery)) {
+      const target = conversation.whatsappPhoneNumber ?? conversation.whatsappUserId;
+      if (!target) {
+        throw new BadRequestException('WhatsApp recipient is missing for outbound delivery');
+      }
+      try {
+        await sendWhatsAppText(this.http, {
+          provider: conversation.bot.whatsappProvider,
+          channelIdentifier: conversation.bot.whatsappChannelIdentifier,
+          phoneNumber: conversation.bot.whatsappPhoneNumber,
+          config: conversation.bot.whatsappConfig,
+        }, target, signedContent);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to send outbound WhatsApp for conversation ${conversationId}: ${errorMessage}`);
+        throw new BadRequestException('Failed to send outbound WhatsApp message');
+      }
     } else if (conversation.bot.telegramToken && conversation.telegramChatId) {
       // Send via Telegram
       await firstValueFrom(
@@ -973,7 +1008,7 @@ export class ConversationsService {
       : null;
 
     // Channel breakdown
-    const channelBreakdown: Record<string, number> = { WIDGET: 0, TELEGRAM: 0, EMAIL: 0 };
+    const channelBreakdown: Record<string, number> = { WIDGET: 0, TELEGRAM: 0, EMAIL: 0, WHATSAPP: 0 };
     for (const c of conversations) channelBreakdown[c.channel] = (channelBreakdown[c.channel] ?? 0) + 1;
 
     // Volume by day (UTC date buckets)

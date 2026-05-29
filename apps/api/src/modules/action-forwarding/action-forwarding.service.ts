@@ -85,7 +85,7 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
       actionType: 'MEETING_REQUEST',
       capabilityKey: 'BOOKING',
       requiredFields: ['customer_name', 'customer_email', 'preferred_datetime', 'booking_reason'],
-      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM', 'WHATSAPP'],
       executor: {
         kind: 'ACTION_TASK',
         enabled: true,
@@ -99,7 +99,7 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
       actionType: 'CONSULTATION_REQUEST',
       capabilityKey: 'SALES',
       requiredFields: ['customer_name', 'customer_email', 'customer_phone', 'company_name', 'consultation_purpose'],
-      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM', 'WHATSAPP'],
       executor: {
         kind: 'ACTION_TASK',
         enabled: true,
@@ -113,7 +113,7 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
       actionType: 'SALES_ORDER_REQUEST',
       capabilityKey: 'SALES',
       requiredFields: ['customer_name', 'customer_email', 'product'],
-      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM', 'WHATSAPP'],
       executor: {
         kind: 'ACTION_TASK',
         enabled: true,
@@ -127,7 +127,7 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
       actionType: 'TECHNICAL_ISSUE',
       capabilityKey: 'TECHNICAL',
       requiredFields: ['issue_summary'],
-      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM', 'WHATSAPP'],
       executor: {
         kind: 'ACTION_TASK',
         enabled: true,
@@ -141,7 +141,7 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
       actionType: 'OWNER_ATTENTION_NEEDED',
       capabilityKey: 'FORWARDING',
       requiredFields: ['customer_name', 'customer_email'],
-      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM', 'WHATSAPP'],
       executor: {
         kind: 'ACTION_TASK',
         enabled: true,

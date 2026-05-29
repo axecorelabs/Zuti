@@ -19,6 +19,7 @@ interface EmailDeliveryMeta {
 interface Conversation {
   id: string;
   channel?: string | null;
+  metadata?: Record<string, unknown>;
   telegramChatId: string | null;
   customerName?: string | null;
   customerUsername?: string | null;
@@ -108,6 +109,21 @@ function messageDateLabel(date: string) {
 function getMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | null {
   const value = metadata?.[key];
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function getConversationLanguageCode(metadata: Record<string, unknown> | undefined): string | null {
+  const languagePreference = (metadata?.languagePreference as Record<string, unknown> | undefined) ?? undefined;
+  const customerMemory = (metadata?.customerMemory as Record<string, unknown> | undefined) ?? undefined;
+  const fromPreference = typeof languagePreference?.code === 'string' ? languagePreference.code.trim() : '';
+  const fromMemory = typeof customerMemory?.preferredLanguage === 'string' ? customerMemory.preferredLanguage.trim() : '';
+  const resolved = (fromPreference || fromMemory).toLowerCase();
+  if (!resolved) return null;
+  const normalized = resolved.split('-')[0];
+  return /^[a-z]{2,3}$/.test(normalized) ? normalized : null;
+}
+
+function formatLanguageBadgeLabel(languageCode: string): string {
+  return languageCode.toUpperCase();
 }
 
 export default function InboxPage() {
@@ -599,24 +615,36 @@ export default function InboxPage() {
   const sourceRecordType = getMetadataString(selectedMetadata, 'sourceRecordType');
   const sourceRecordId = getMetadataString(selectedMetadata, 'sourceRecordId');
   const sourceConversationId = getMetadataString(selectedMetadata, 'sourceConversationId');
+  const selectedLanguageCode = getConversationLanguageCode(selectedMetadata);
 
   const CustomerPanelContent = () => (
     <>
       <section className="rounded-xl border border-zinc-900 bg-zinc-900/30 p-3">
         <h3 className="text-xs font-semibold text-zinc-300 mb-2">
-          {selected?.channel === 'EMAIL' ? 'Email customer' : selected?.telegramChatId ? 'Telegram user' : 'Widget visitor'}
+          {selected?.channel === 'EMAIL'
+            ? 'Email customer'
+            : selected?.channel === 'WHATSAPP'
+              ? 'WhatsApp user'
+              : selected?.telegramChatId
+                ? 'Telegram user'
+                : 'Widget visitor'}
         </h3>
         <div className="space-y-1.5 text-xs">
           <div className="flex items-center justify-between gap-2">
             <span className="text-zinc-500">Name</span>
             <span className="text-zinc-200 truncate max-w-[190px] text-right">
-              {selected?.customerName || (selected?.channel === 'EMAIL' ? '—' : selected?.telegramChatId ? 'Unknown' : 'Anonymous')}
+              {selected?.customerName || (selected?.channel === 'EMAIL' ? '—' : selected?.channel === 'WHATSAPP' ? 'Unknown' : selected?.telegramChatId ? 'Unknown' : 'Anonymous')}
             </span>
           </div>
           {selected?.channel === 'EMAIL' ? (
             <div className="flex items-center justify-between gap-2">
               <span className="text-zinc-500">Email</span>
               <span className="text-zinc-200 font-mono truncate max-w-[190px] text-right">{selected?.customerEmail || '—'}</span>
+            </div>
+          ) : selected?.channel === 'WHATSAPP' ? (
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-zinc-500">WhatsApp</span>
+              <span className="text-zinc-200 font-mono truncate max-w-[190px] text-right">{selected?.customerEmail || selected?.customerUsername || '—'}</span>
             </div>
           ) : (
             <>
@@ -831,8 +859,13 @@ export default function InboxPage() {
                 const lastMsg = conv.messages?.[conv.messages.length - 1];
                 const isActive = selected?.id === conv.id;
                 const cfg = STATUS_CONFIG[conv.status] ?? STATUS_CONFIG.OPEN;
+                const conversationLanguageCode = getConversationLanguageCode(conv.metadata);
                 const displayName = conv.customerName
-                  || (conv.channel === 'EMAIL' ? conv.customerEmail : conv.telegramChatId ? `User ···${conv.telegramChatId.slice(-4)}` : null)
+                  || (conv.channel === 'EMAIL'
+                    ? conv.customerEmail
+                    : conv.channel === 'WHATSAPP'
+                      ? (conv.customerUsername || conv.customerEmail || 'WhatsApp user')
+                      : conv.telegramChatId ? `User ···${conv.telegramChatId.slice(-4)}` : null)
                   || 'Anonymous';
                 return (
                   <button
@@ -888,6 +921,9 @@ export default function InboxPage() {
                           {conv.channel === 'EMAIL' && (
                             <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/10 text-blue-200 border border-blue-500/25">email</span>
                           )}
+                          {conv.channel === 'WHATSAPP' && (
+                            <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-emerald-500/10 text-emerald-200 border border-emerald-500/25">whatsapp</span>
+                          )}
                           {conv.bot?.name && (
                             <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/10 text-blue-200 border border-blue-500/20 max-w-[90px] truncate">
                               {conv.bot.name}
@@ -896,6 +932,14 @@ export default function InboxPage() {
                           {conv.assignedAgent?.name && (
                             <span className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-blue-500/15 text-blue-200 border border-blue-500/25 max-w-[120px] truncate">
                               {conv.assignedAgent.name}
+                            </span>
+                          )}
+                          {conversationLanguageCode && (
+                            <span
+                              title={`Language: ${conversationLanguageCode.toUpperCase()}`}
+                              className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/25"
+                            >
+                              {formatLanguageBadgeLabel(conversationLanguageCode)}
                             </span>
                           )}
                         </div>
@@ -926,11 +970,11 @@ export default function InboxPage() {
                   <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-medium ${
                     selected.status === 'ESCALATED' ? 'bg-red-500/20 text-red-400' : 'bg-zinc-800 text-zinc-400'
                   }`}>
-                    {nameInitials(selected.customerName || (selected.channel === 'EMAIL' ? selected.customerEmail : selected.telegramChatId ? `U${selected.telegramChatId.slice(-4)}` : null) || 'Anonymous')}
+                    {nameInitials(selected.customerName || (selected.channel === 'EMAIL' ? selected.customerEmail : selected.channel === 'WHATSAPP' ? (selected.customerUsername || selected.customerEmail) : selected.telegramChatId ? `U${selected.telegramChatId.slice(-4)}` : null) || 'Anonymous')}
                   </div>
                   <div className="min-w-0">
                     <h2 className="font-semibold text-sm text-white tracking-tight truncate">
-                      {selected.customerName || (selected.channel === 'EMAIL' ? selected.customerEmail : selected.telegramChatId ? `User ···${selected.telegramChatId.slice(-4)}` : 'Anonymous') || 'Anonymous'}
+                      {selected.customerName || (selected.channel === 'EMAIL' ? selected.customerEmail : selected.channel === 'WHATSAPP' ? (selected.customerUsername || selected.customerEmail || 'WhatsApp user') : selected.telegramChatId ? `User ···${selected.telegramChatId.slice(-4)}` : 'Anonymous') || 'Anonymous'}
                     </h2>
                     <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                       <span className="text-xs text-zinc-600 font-light">via {selected.bot?.name}</span>
@@ -962,6 +1006,14 @@ export default function InboxPage() {
                           {selected.assignedAgent.name}
                         </span>
                       )}
+                      {selectedLanguageCode && (
+                        <span
+                          title={`Language: ${selectedLanguageCode.toUpperCase()}`}
+                          className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/25"
+                        >
+                          {formatLanguageBadgeLabel(selectedLanguageCode)}
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -982,13 +1034,6 @@ export default function InboxPage() {
                     >
                       <Eye className="w-4 h-4" />
                     </button>
-                  )}
-
-                  {selected.status === 'ESCALATED' && (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-zinc-800 text-zinc-600 text-[11px] font-medium cursor-not-allowed opacity-70">
-                      <AlertTriangle className="w-3 h-3" />
-                      Escalation view unavailable
-                    </span>
                   )}
 
                   {selected.channel === 'EMAIL' && deliveryStatus === 'FAILED' && (

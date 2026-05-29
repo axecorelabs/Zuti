@@ -9,6 +9,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { CompleteMetaEmbeddedSignupDto, CompleteMetaEmbeddedSelectionDto } from './dto/bot.dto';
 
 @ApiTags('bots')
 @ApiBearerAuth()
@@ -105,5 +106,73 @@ export class BotsController {
   @ApiOperation({ summary: 'Disconnect Telegram from this bot' })
   disconnectTelegram(@Param('id') orgId: string, @Param('botId') botId: string) {
     return this.botsService.disconnectTelegram(orgId, botId);
+  }
+
+  @Post(':botId/whatsapp/connect')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Connect WhatsApp Cloud API credentials to this bot' })
+  connectWhatsApp(
+    @Param('id') orgId: string,
+    @Param('botId') botId: string,
+    @Body() dto: {
+      provider: 'META' | 'TWILIO';
+      integrationMode: 'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO';
+      channelIdentifier: string;
+      phoneNumber?: string;
+      displayName?: string;
+      verifyToken?: string;
+      config?: Record<string, unknown>;
+    },
+  ) {
+    return this.botsService.connectWhatsApp(orgId, botId, dto);
+  }
+
+  @Post(':botId/whatsapp/disconnect')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Disconnect WhatsApp from this bot' })
+  disconnectWhatsApp(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.disconnectWhatsApp(orgId, botId);
+  }
+
+  @Get(':botId/whatsapp/meta/embedded/start')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Start Meta embedded-signup OAuth flow for WhatsApp' })
+  startMetaEmbeddedSignup(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.startMetaEmbeddedSignup(orgId, botId);
+  }
+
+  @Post(':botId/whatsapp/meta/embedded/complete')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Complete Meta embedded-signup OAuth flow for WhatsApp' })
+  completeMetaEmbeddedSignup(
+    @Param('id') orgId: string,
+    @Param('botId') botId: string,
+    @Body() dto: CompleteMetaEmbeddedSignupDto,
+  ) {
+    return this.botsService.completeMetaEmbeddedSignup(
+      orgId,
+      botId,
+      dto.code,
+      dto.state,
+      dto.selectedBusinessAccountId,
+      dto.selectedPhoneNumberId,
+    );
+  }
+
+  @Post(':botId/whatsapp/meta/embedded/complete-selection')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Finalize Meta embedded-signup by choosing a specific WhatsApp number' })
+  completeMetaEmbeddedSelection(
+    @Param('id') orgId: string,
+    @Param('botId') botId: string,
+    @Body() dto: CompleteMetaEmbeddedSelectionDto,
+  ) {
+    return this.botsService.completeMetaEmbeddedSelection(
+      orgId,
+      botId,
+      dto.sessionId,
+      dto.selectedPhoneNumberId,
+      dto.selectedBusinessAccountId,
+    );
   }
 }

@@ -7,7 +7,7 @@ export type ActionType =
 
 export type CapabilityKey = 'BOOKING' | 'SALES' | 'TECHNICAL' | 'FORWARDING';
 
-export type RuntimeChannel = 'WIDGET' | 'EMAIL' | 'TELEGRAM';
+export type RuntimeChannel = 'WIDGET' | 'EMAIL' | 'TELEGRAM' | 'WHATSAPP';
 
 export interface ActionCapabilityDefinition {
   actionType: ActionType;
@@ -96,7 +96,7 @@ export interface ActionForwardingResult {
   blockedCapability?: string;
 }
 
-export type ContactChannel = 'TELEGRAM' | 'EMAIL';
+export type ContactChannel = 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
 
 export interface ContactEndpointConfig {
   id: string;

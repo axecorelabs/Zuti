@@ -11,6 +11,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActionForwardingService } from './action-forwarding.service';
 import { ActionForwardingEmail } from '../mail/templates/ActionForwardingEmail';
+import { sendWhatsAppText } from '../../common/utils/whatsapp';
 
 export interface ActionForwardingJob {
   actionTaskId: string;
@@ -106,6 +107,31 @@ export class ActionForwardingProcessor {
         },
       ),
     );
+  }
+
+  private async sendWhatsApp(destination: string, text: string) {
+    const provider = (this.config.get<string>('ACTION_FORWARDING_WHATSAPP_PROVIDER') ?? '').trim().toUpperCase();
+    const channelIdentifier = this.config.get<string>('ACTION_FORWARDING_WHATSAPP_CHANNEL') ?? '';
+    const connection = provider === 'TWILIO'
+      ? {
+          provider: 'TWILIO' as const,
+          channelIdentifier,
+          config: {
+            accountSid: this.config.get<string>('ACTION_FORWARDING_WHATSAPP_TWILIO_ACCOUNT_SID') ?? '',
+            authToken: this.config.get<string>('ACTION_FORWARDING_WHATSAPP_TWILIO_AUTH_TOKEN') ?? '',
+            messagingServiceSid: this.config.get<string>('ACTION_FORWARDING_WHATSAPP_TWILIO_MESSAGING_SERVICE_SID') ?? '',
+          },
+        }
+      : {
+          provider: 'META' as const,
+          channelIdentifier,
+          config: {
+            accessToken: this.config.get<string>('ACTION_FORWARDING_WHATSAPP_META_ACCESS_TOKEN') ?? '',
+            appSecret: this.config.get<string>('ACTION_FORWARDING_WHATSAPP_META_APP_SECRET') ?? '',
+          },
+        };
+
+    await sendWhatsAppText(this.http, connection, destination, text);
   }
 
   @Process()
@@ -228,13 +254,15 @@ export class ActionForwardingProcessor {
     try {
       const sendResult = route.endpoint.channel === 'TELEGRAM'
         ? await this.sendTelegram(route.endpoint.destination, deliveryText)
-        : await this.sendEmail(
-            route.endpoint.destination,
-            `New customer request: ${action.actionType}`,
-            deliveryText,
-            actionHtml,
-            action.bot?.name ?? 'Bot',
-          );
+        : route.endpoint.channel === 'WHATSAPP'
+          ? await this.sendWhatsApp(route.endpoint.destination, deliveryText)
+          : await this.sendEmail(
+              route.endpoint.destination,
+              `New customer request: ${action.actionType}`,
+              deliveryText,
+              actionHtml,
+              action.bot?.name ?? 'Bot',
+            );
 
       await prismaAny.actionDelivery.update({
         where: { id: deliveryRecord.id },

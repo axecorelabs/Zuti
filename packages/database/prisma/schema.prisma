@@ -156,6 +156,16 @@ model Bot {
   customEmailAddress    String?            // e.g. support@their-company.com
   customEmailVerified   Boolean  @default(false)
 
+  // ── WhatsApp channel (Meta Cloud API) ───────────────────────────────────
+  whatsappEnabled           Boolean  @default(false)
+  whatsappProvider          WhatsAppProvider?
+  whatsappIntegrationMode   WhatsAppIntegrationMode?
+  whatsappChannelIdentifier String?  @unique
+  whatsappPhoneNumber       String?
+  whatsappDisplayName       String?
+  whatsappVerifyToken       String?
+  whatsappConfig            Json     @default("{}")
+
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -181,6 +191,18 @@ enum BotPrimaryChannel {
   TELEGRAM
   WEB_WIDGET
   EMAIL
+  WHATSAPP
+}
+
+enum WhatsAppProvider {
+  META
+  TWILIO
+}
+
+enum WhatsAppIntegrationMode {
+  META_EMBEDDED_SIGNUP
+  META_MANUAL
+  TWILIO
 }
 
 // ─── Knowledge Base ───────────────────────────────────────────────────────────
@@ -275,6 +297,10 @@ model Conversation {
   customerEmail    String?   // sender address (email channel)
   emailThreadId    String?   // original Message-ID for In-Reply-To threading
   emailSubject     String?   // subject line
+  // WhatsApp channel fields
+  whatsappUserId   String?
+  whatsappPhoneNumber String?
+  whatsappProfileName String?
   status           ConversationStatus @default(OPEN)
   mode             ConversationMode   @default(AI)
   assignedAgentId  String?
@@ -298,6 +324,8 @@ model Conversation {
   @@index([botId, telegramChatId])
   @@index([botId, widgetVisitorId])
   @@index([botId, customerEmail])
+  @@index([botId, whatsappUserId])
+  @@index([botId, whatsappPhoneNumber])
   @@index([organizationId, lastMessageAt(sort: Desc)])
   @@index([organizationId, status, lastMessageAt(sort: Desc)])
   @@index([organizationId, assignedAgentId, lastMessageAt(sort: Desc)])
@@ -308,6 +336,7 @@ enum ConversationChannel {
   WIDGET
   TELEGRAM
   EMAIL
+  WHATSAPP
 }
 
 model Message {
@@ -316,6 +345,7 @@ model Message {
   role           MessageRole
   content        String
   telegramMsgId  Int?
+  whatsappMsgId  String?
   metadata       Json        @default("{}")
   createdAt      DateTime    @default(now())
 
@@ -405,6 +435,7 @@ enum ContactPolicyScope {
 enum ContactChannel {
   TELEGRAM
   EMAIL
+  WHATSAPP
 }
 
 model ActionTask {

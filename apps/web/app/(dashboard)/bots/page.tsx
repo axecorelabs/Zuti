@@ -1,8 +1,8 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown, MessageCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
@@ -582,7 +582,7 @@ function PresetDropdown({
 interface BotRecord {
   id: string;
   name: string;
-  primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
+  primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL' | 'WHATSAPP';
   template: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
   skills?: BotSkill[];
   capabilities?: Record<string, unknown>;
@@ -594,11 +594,31 @@ interface BotRecord {
   webWidgetAllowedDomains: string[];
   emailEnabled: boolean;
   emailAddress: string | null;
+  whatsappEnabled: boolean;
+  whatsappProvider: 'META' | 'TWILIO' | null;
+  whatsappIntegrationMode: 'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO' | null;
+  whatsappChannelIdentifier: string | null;
+  whatsappPhoneNumber: string | null;
+  whatsappDisplayName: string | null;
   isActive: boolean;
   webhookSet: boolean;
   createdAt: string;
   aiConfig: AiConfig | null;
   routeToRoles: string[];
+}
+
+interface MetaEmbeddedSelectionOption {
+  businessAccountId: string;
+  businessAccountName?: string;
+  phoneNumberId: string;
+  displayPhoneNumber?: string;
+  verifiedName?: string;
+}
+
+interface MetaEmbeddedSelectionResponse {
+  requiresSelection: true;
+  sessionId: string;
+  options: MetaEmbeddedSelectionOption[];
 }
 
 interface ForwardingEndpointRecord {
@@ -624,6 +644,7 @@ function Modal({ children, onClose }: { children: React.ReactNode; onClose: () =
 
 export default function BotsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { activeOrgId } = useAuthStore();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [bots, setBots] = useState<BotRecord[]>([]);
@@ -671,12 +692,32 @@ export default function BotsPage() {
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'skills' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'skills' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram' | 'whatsapp'>('ai');
   const [saving, setSaving] = useState(false);
   const [emailLocalPart, setEmailLocalPart] = useState('');
   const [emailSaving, setEmailSaving] = useState(false);
   const [editTelegramToken, setEditTelegramToken] = useState('');
   const [telegramSaving, setTelegramSaving] = useState(false);
+  const [editWhatsAppProvider, setEditWhatsAppProvider] = useState<'META' | 'TWILIO'>('META');
+  const [editWhatsAppMode, setEditWhatsAppMode] = useState<'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO'>('META_EMBEDDED_SIGNUP');
+  const [editWhatsAppChannelIdentifier, setEditWhatsAppChannelIdentifier] = useState('');
+  const [editWhatsAppPhoneNumber, setEditWhatsAppPhoneNumber] = useState('');
+  const [editWhatsAppDisplayName, setEditWhatsAppDisplayName] = useState('');
+  const [editWhatsAppAccessToken, setEditWhatsAppAccessToken] = useState('');
+  const [editWhatsAppAppSecret, setEditWhatsAppAppSecret] = useState('');
+  const [editWhatsAppBusinessAccountId, setEditWhatsAppBusinessAccountId] = useState('');
+  const [editWhatsAppTwilioAccountSid, setEditWhatsAppTwilioAccountSid] = useState('');
+  const [editWhatsAppTwilioAuthToken, setEditWhatsAppTwilioAuthToken] = useState('');
+  const [editWhatsAppTwilioMessagingServiceSid, setEditWhatsAppTwilioMessagingServiceSid] = useState('');
+  const [whatsAppSaving, setWhatsAppSaving] = useState(false);
+  const [embeddedSignupCompleting, setEmbeddedSignupCompleting] = useState(false);
+  const [showMetaSelectionModal, setShowMetaSelectionModal] = useState(false);
+  const [metaSelectionSessionId, setMetaSelectionSessionId] = useState<string | null>(null);
+  const [metaSelectionBotId, setMetaSelectionBotId] = useState<string | null>(null);
+  const [metaSelectionOptions, setMetaSelectionOptions] = useState<MetaEmbeddedSelectionOption[]>([]);
+  const [metaSelectionPhoneNumberId, setMetaSelectionPhoneNumberId] = useState('');
+  const [metaSelectionBusinessAccountId, setMetaSelectionBusinessAccountId] = useState('');
+  const [metaSelectionSaving, setMetaSelectionSaving] = useState(false);
 
   const hasOrgForwardingConfiguration = async (): Promise<boolean> => {
     if (!orgId) return false;
@@ -741,6 +782,57 @@ export default function BotsPage() {
     if (!orgId) return;
     botsApi.list(orgId).then((res) => setBots(res.data)).catch(() => {}).finally(() => setLoading(false));
   }, [orgId]);
+
+  useEffect(() => {
+    if (!orgId) return;
+    const code = searchParams.get('code');
+    const state = searchParams.get('state');
+    const botId = searchParams.get('wa_bot_id')
+      ?? (typeof window !== 'undefined' ? window.localStorage.getItem('wa_embedded_signup_bot_id') : null);
+    if (!code || !state || !botId || embeddedSignupCompleting) return;
+
+    setEmbeddedSignupCompleting(true);
+    botsApi.completeMetaEmbeddedSignup(orgId, botId, { code, state })
+      .then(async (res) => {
+        const payload = res.data as Partial<MetaEmbeddedSelectionResponse> | BotRecord;
+        if ((payload as Partial<MetaEmbeddedSelectionResponse>).requiresSelection === true) {
+          const selectionPayload = payload as MetaEmbeddedSelectionResponse;
+          const options = Array.isArray(selectionPayload.options) ? selectionPayload.options : [];
+          if (!selectionPayload.sessionId || options.length === 0) {
+            toast.error('Meta signup completed but no selectable numbers were returned. Restart the flow.');
+            return;
+          }
+
+          const defaultOption = options[0];
+          setMetaSelectionSessionId(selectionPayload.sessionId);
+          setMetaSelectionBotId(botId);
+          setMetaSelectionOptions(options);
+          setMetaSelectionPhoneNumberId(defaultOption.phoneNumberId);
+          setMetaSelectionBusinessAccountId(defaultOption.businessAccountId);
+          setShowMetaSelectionModal(true);
+          toast('Choose which WhatsApp number to connect.');
+          return;
+        }
+
+        const refreshed = await botsApi.list(orgId);
+        setBots(refreshed.data);
+        if (settingsBot?.id === botId) {
+          setSettingsBot(payload as BotRecord);
+        }
+        toast.success('Meta embedded signup completed. WhatsApp connected.');
+      })
+      .catch((err: unknown) => {
+        const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message ?? 'Failed to complete Meta embedded signup';
+        toast.error(Array.isArray(msg) ? msg[0] : msg);
+      })
+      .finally(() => {
+        setEmbeddedSignupCompleting(false);
+        if (typeof window !== 'undefined') {
+          window.localStorage.removeItem('wa_embedded_signup_bot_id');
+        }
+        router.replace('/bots');
+      });
+  }, [embeddedSignupCompleting, orgId, router, searchParams, settingsBot?.id]);
 
   const effectiveTone = useMemo(
     () => (editTone === 'Custom' ? editToneCustom.trim() : editTone),
@@ -1178,6 +1270,17 @@ onBeforeUnmount(() => {
     setEditSkillIntakeConfig(normalizeSkillIntakeConfig((aiConfig as AiConfig).skillIntakeConfig));
     setEmailLocalPart(sourceBot.emailAddress ? sourceBot.emailAddress.split('@')[0] : '');
     setEditTelegramToken('');
+    setEditWhatsAppProvider(sourceBot.whatsappProvider ?? 'META');
+    setEditWhatsAppMode(sourceBot.whatsappIntegrationMode ?? (sourceBot.whatsappProvider === 'TWILIO' ? 'TWILIO' : 'META_EMBEDDED_SIGNUP'));
+    setEditWhatsAppChannelIdentifier(sourceBot.whatsappChannelIdentifier ?? '');
+    setEditWhatsAppPhoneNumber(sourceBot.whatsappPhoneNumber ?? '');
+    setEditWhatsAppDisplayName(sourceBot.whatsappDisplayName ?? '');
+    setEditWhatsAppAccessToken('');
+    setEditWhatsAppAppSecret('');
+    setEditWhatsAppBusinessAccountId('');
+    setEditWhatsAppTwilioAccountSid('');
+    setEditWhatsAppTwilioAuthToken('');
+    setEditWhatsAppTwilioMessagingServiceSid('');
     setSettingsTab('ai');
   };
 
@@ -1441,6 +1544,121 @@ onBeforeUnmount(() => {
       setSettingsBot(updated);
       toast.success('Telegram disconnected');
     } catch { toast.error('Failed to disconnect Telegram'); } finally { setTelegramSaving(false); }
+  };
+
+  const handleConnectWhatsApp = async () => {
+    if (!orgId || !settingsBot || !editWhatsAppChannelIdentifier.trim()) return;
+    setWhatsAppSaving(true);
+    try {
+      const config = editWhatsAppProvider === 'TWILIO'
+        ? {
+            accountSid: editWhatsAppTwilioAccountSid.trim(),
+            authToken: editWhatsAppTwilioAuthToken.trim(),
+            messagingServiceSid: editWhatsAppTwilioMessagingServiceSid.trim() || undefined,
+          }
+        : {
+            accessToken: editWhatsAppAccessToken.trim(),
+            appSecret: editWhatsAppAppSecret.trim(),
+            businessAccountId: editWhatsAppBusinessAccountId.trim() || undefined,
+          };
+
+      const integrationMode = editWhatsAppProvider === 'TWILIO'
+        ? 'TWILIO'
+        : editWhatsAppMode;
+
+      const res = await botsApi.connectWhatsApp(orgId, settingsBot.id, {
+        provider: editWhatsAppProvider,
+        integrationMode,
+        channelIdentifier: editWhatsAppChannelIdentifier.trim(),
+        phoneNumber: editWhatsAppPhoneNumber.trim() || undefined,
+        displayName: editWhatsAppDisplayName.trim() || undefined,
+        config,
+      });
+
+      const updated = res.data as BotRecord;
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? updated : b)));
+      setSettingsBot(updated);
+      setEditWhatsAppAccessToken('');
+      setEditWhatsAppAppSecret('');
+      setEditWhatsAppTwilioAuthToken('');
+      toast.success('WhatsApp connected');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message ?? 'Failed to connect WhatsApp';
+      toast.error(Array.isArray(msg) ? msg[0] : msg);
+    } finally {
+      setWhatsAppSaving(false);
+    }
+  };
+
+  const handleStartMetaEmbeddedSignup = async () => {
+    if (!orgId || !settingsBot) return;
+    setWhatsAppSaving(true);
+    try {
+      const res = await botsApi.startMetaEmbeddedSignup(orgId, settingsBot.id);
+      const authUrl = (res.data?.authUrl as string | undefined) ?? '';
+      if (!authUrl) {
+        toast.error('Unable to start Meta embedded signup');
+        setWhatsAppSaving(false);
+        return;
+      }
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('wa_embedded_signup_bot_id', settingsBot.id);
+      }
+      window.location.href = authUrl;
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message ?? 'Failed to start Meta embedded signup';
+      toast.error(Array.isArray(msg) ? msg[0] : msg);
+      setWhatsAppSaving(false);
+    }
+  };
+
+  const handleCompleteMetaEmbeddedSelection = async () => {
+    if (!orgId || !metaSelectionSessionId || !metaSelectionBotId || !metaSelectionPhoneNumberId) return;
+
+    setMetaSelectionSaving(true);
+    try {
+      const res = await botsApi.completeMetaEmbeddedSelection(orgId, metaSelectionBotId, {
+        sessionId: metaSelectionSessionId,
+        selectedPhoneNumberId: metaSelectionPhoneNumberId,
+        selectedBusinessAccountId: metaSelectionBusinessAccountId || undefined,
+      });
+
+      const updated = res.data as BotRecord;
+      const refreshed = await botsApi.list(orgId);
+      setBots(refreshed.data);
+      if (settingsBot?.id === metaSelectionBotId) {
+        setSettingsBot(updated);
+      }
+
+      setShowMetaSelectionModal(false);
+      setMetaSelectionSessionId(null);
+      setMetaSelectionBotId(null);
+      setMetaSelectionOptions([]);
+      setMetaSelectionPhoneNumberId('');
+      setMetaSelectionBusinessAccountId('');
+      toast.success('WhatsApp number selected and connected.');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message ?? 'Failed to finalize WhatsApp number selection';
+      toast.error(Array.isArray(msg) ? msg[0] : msg);
+    } finally {
+      setMetaSelectionSaving(false);
+    }
+  };
+
+  const handleDisconnectWhatsApp = async () => {
+    if (!orgId || !settingsBot || !confirm('Disconnect WhatsApp? This bot will stop receiving WhatsApp messages.')) return;
+    setWhatsAppSaving(true);
+    try {
+      const res = await botsApi.disconnectWhatsApp(orgId, settingsBot.id);
+      const updated = res.data as BotRecord;
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? updated : b)));
+      setSettingsBot(updated);
+      toast.success('WhatsApp disconnected');
+    } catch {
+      toast.error('Failed to disconnect WhatsApp');
+    } finally {
+      setWhatsAppSaving(false);
+    }
   };
 
   const handleSetWebhookInSettings = async (bot: BotRecord) => {
@@ -1730,6 +1948,8 @@ onBeforeUnmount(() => {
                   ? 'Escalation Routing'
                   : settingsTab === 'email'
                     ? 'Email Channel'
+                    : settingsTab === 'whatsapp'
+                      ? 'WhatsApp Channel'
                     : settingsTab === 'telegram'
                       ? 'Telegram Channel'
                       : 'Website Widget'}
@@ -1745,6 +1965,7 @@ onBeforeUnmount(() => {
               { key: 'routing', label: 'Routing' },
               { key: 'widget', label: 'Widget' },
               { key: 'email', label: 'Email' },
+              { key: 'whatsapp', label: 'WhatsApp' },
               { key: 'telegram', label: 'Telegram' },
             ] as const).map((tab) => (
               <button
@@ -2199,6 +2420,244 @@ onBeforeUnmount(() => {
             </div>
             )}
 
+            {settingsTab === 'whatsapp' && (
+            <div className="card p-6 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+                  <MessageCircle className="w-4 h-4 text-zinc-400" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">WhatsApp Channel</h2>
+                  <p className="text-xs text-zinc-500 font-light">Connect Meta embedded/manual setups or Twilio WhatsApp to this bot.</p>
+                </div>
+              </div>
+
+              {settingsBot.whatsappEnabled && settingsBot.whatsappChannelIdentifier ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-zinc-500">Provider</span>
+                      <span className="text-sm text-blue-300 font-medium">{settingsBot.whatsappProvider ?? '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] text-zinc-500">Mode</span>
+                      <span className="text-sm text-zinc-300 font-medium">{settingsBot.whatsappIntegrationMode ?? '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[11px] text-zinc-500">Identifier</span>
+                      <span className="text-sm text-zinc-300 font-mono truncate max-w-[250px]">{settingsBot.whatsappChannelIdentifier}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[11px] text-zinc-500">Phone number</span>
+                      <span className="text-sm text-zinc-300 font-mono">{settingsBot.whatsappPhoneNumber ?? '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-[11px] text-zinc-500">Display name</span>
+                      <span className="text-sm text-zinc-300">{settingsBot.whatsappDisplayName ?? '—'}</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectWhatsApp}
+                    disabled={whatsAppSaving}
+                    className="w-full py-2.5 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/10 transition-colors text-xs font-medium disabled:opacity-50"
+                  >
+                    {whatsAppSaving ? 'Disconnecting…' : 'Disconnect WhatsApp'}
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Provider</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditWhatsAppProvider('META');
+                          if (editWhatsAppMode === 'TWILIO') setEditWhatsAppMode('META_EMBEDDED_SIGNUP');
+                        }}
+                        className={`rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                          editWhatsAppProvider === 'META'
+                            ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                        }`}
+                      >
+                        Meta
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditWhatsAppProvider('TWILIO');
+                          setEditWhatsAppMode('TWILIO');
+                        }}
+                        className={`rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                          editWhatsAppProvider === 'TWILIO'
+                            ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                        }`}
+                      >
+                        Twilio
+                      </button>
+                    </div>
+                  </div>
+
+                  {editWhatsAppProvider === 'META' && (
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Integration mode</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {([
+                          { key: 'META_EMBEDDED_SIGNUP', label: 'Embedded signup' },
+                          { key: 'META_MANUAL', label: 'Manual credentials' },
+                        ] as const).map((option) => (
+                          <button
+                            key={option.key}
+                            type="button"
+                            onClick={() => setEditWhatsAppMode(option.key)}
+                            className={`rounded-xl border px-3 py-2.5 text-sm transition-colors ${
+                              editWhatsAppMode === option.key
+                                ? 'border-blue-500/40 bg-blue-500/10 text-blue-300'
+                                : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:border-zinc-700'
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Channel identifier</label>
+                      <input
+                        type="text"
+                        value={editWhatsAppChannelIdentifier}
+                        onChange={(e) => setEditWhatsAppChannelIdentifier(e.target.value)}
+                        placeholder={editWhatsAppProvider === 'TWILIO' ? 'whatsapp:+14155238886 or MG...' : editWhatsAppMode === 'META_EMBEDDED_SIGNUP' ? 'Auto-detected after Meta login' : 'Phone Number ID'}
+                        disabled={editWhatsAppProvider === 'META' && editWhatsAppMode === 'META_EMBEDDED_SIGNUP'}
+                        className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Customer-facing number</label>
+                      <input
+                        type="text"
+                        value={editWhatsAppPhoneNumber}
+                        onChange={(e) => setEditWhatsAppPhoneNumber(e.target.value)}
+                        placeholder="+2348000000000"
+                        className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Display name</label>
+                    <input
+                      type="text"
+                      value={editWhatsAppDisplayName}
+                      onChange={(e) => setEditWhatsAppDisplayName(e.target.value)}
+                      placeholder="Support"
+                      className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50"
+                    />
+                  </div>
+
+                  {editWhatsAppProvider === 'META' && editWhatsAppMode === 'META_MANUAL' ? (
+                    <>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Access token</label>
+                        <input
+                          type="password"
+                          value={editWhatsAppAccessToken}
+                          onChange={(e) => setEditWhatsAppAccessToken(e.target.value)}
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">App secret</label>
+                        <input
+                          type="password"
+                          value={editWhatsAppAppSecret}
+                          onChange={(e) => setEditWhatsAppAppSecret(e.target.value)}
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Business account ID</label>
+                        <input
+                          type="text"
+                          value={editWhatsAppBusinessAccountId}
+                          onChange={(e) => setEditWhatsAppBusinessAccountId(e.target.value)}
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                        />
+                      </div>
+                    </>
+                  ) : editWhatsAppProvider === 'META' ? (
+                    <div className="rounded-xl border border-blue-500/25 bg-blue-500/10 p-3">
+                      <p className="text-[11px] text-blue-200 font-medium">Embedded signup mode</p>
+                      <p className="text-[11px] text-blue-100/70 mt-1">You will authenticate directly with Meta and we will fetch channel credentials securely.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Twilio Account SID</label>
+                        <input
+                          type="text"
+                          value={editWhatsAppTwilioAccountSid}
+                          onChange={(e) => setEditWhatsAppTwilioAccountSid(e.target.value)}
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Twilio Auth Token</label>
+                        <input
+                          type="password"
+                          value={editWhatsAppTwilioAuthToken}
+                          onChange={(e) => setEditWhatsAppTwilioAuthToken(e.target.value)}
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Messaging Service SID</label>
+                        <input
+                          type="text"
+                          value={editWhatsAppTwilioMessagingServiceSid}
+                          onChange={(e) => setEditWhatsAppTwilioMessagingServiceSid(e.target.value)}
+                          placeholder="Optional"
+                          className="w-full h-9 bg-zinc-950 border border-zinc-800 rounded-xl px-3 text-sm text-zinc-200 placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 font-mono"
+                        />
+                      </div>
+                    </>
+                  )}
+
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3 space-y-1.5">
+                    <p className="text-[11px] text-zinc-400 font-medium">Webhook target</p>
+                    <p className="text-[11px] text-zinc-600 font-light">After connection, point your provider webhook to <span className="font-mono text-zinc-500">/api/webhooks/whatsapp/{settingsBot.id}</span>.</p>
+                  </div>
+
+                  {editWhatsAppProvider === 'META' && editWhatsAppMode === 'META_EMBEDDED_SIGNUP' ? (
+                    <button
+                      type="button"
+                      onClick={handleStartMetaEmbeddedSignup}
+                      disabled={whatsAppSaving}
+                      className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
+                    >
+                      {whatsAppSaving ? 'Redirecting…' : 'Continue with Meta'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleConnectWhatsApp}
+                      disabled={!editWhatsAppChannelIdentifier.trim() || whatsAppSaving}
+                      className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-medium transition-colors"
+                    >
+                      {whatsAppSaving ? 'Connecting…' : 'Connect WhatsApp'}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            )}
+
             {/* Telegram Channel */}
             {settingsTab === 'telegram' && (
             <div className="card p-6 border border-zinc-800">
@@ -2328,7 +2787,13 @@ onBeforeUnmount(() => {
                     <p className="text-xs text-zinc-500 truncate">@{settingsBot.telegramUsername}</p>
                   )}
                   <p className="text-xs text-zinc-600 mt-0.5">
-                    {settingsBot.primaryChannel === 'TELEGRAM' ? 'Telegram' : settingsBot.primaryChannel === 'EMAIL' ? 'Email' : 'Website Widget'} primary
+                    {settingsBot.primaryChannel === 'TELEGRAM'
+                      ? 'Telegram'
+                      : settingsBot.primaryChannel === 'EMAIL'
+                        ? 'Email'
+                        : settingsBot.primaryChannel === 'WHATSAPP'
+                          ? 'WhatsApp'
+                          : 'Website Widget'} primary
                   </p>
                 </div>
               </div>
@@ -2376,6 +2841,14 @@ onBeforeUnmount(() => {
                     settingsBot.webWidgetEnabled ? 'bg-blue-500/15 text-blue-400' : 'bg-zinc-800 text-zinc-500'
                   }`}>
                     {settingsBot.webWidgetEnabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500">WhatsApp</span>
+                  <span className={`px-2 py-0.5 rounded-lg font-medium text-[11px] ${
+                    settingsBot.whatsappEnabled ? 'bg-blue-500/15 text-blue-400' : 'bg-zinc-800 text-zinc-500'
+                  }`}>
+                    {settingsBot.whatsappEnabled ? 'Connected' : 'Disconnected'}
                   </span>
                 </div>
                 {settingsBot.webWidgetEnabled && (
@@ -2502,6 +2975,68 @@ onBeforeUnmount(() => {
                   className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500"
                 >
                   Turn it on
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
+        {showMetaSelectionModal && (
+          <Modal
+            onClose={() => {
+              if (metaSelectionSaving) return;
+              setShowMetaSelectionModal(false);
+            }}
+          >
+            <div className="w-[92vw] max-w-lg rounded-2xl border border-zinc-800 bg-zinc-950 p-5 shadow-2xl">
+              <h3 className="text-sm font-semibold text-white">Choose WhatsApp Number</h3>
+              <p className="text-xs text-zinc-500 mt-1">
+                Meta returned multiple WhatsApp numbers. Select the exact number to connect to this bot.
+              </p>
+
+              <div className="mt-4 space-y-2">
+                {metaSelectionOptions.map((option) => {
+                  const selected = option.phoneNumberId === metaSelectionPhoneNumberId;
+                  const label = option.displayPhoneNumber || option.verifiedName || option.phoneNumberId;
+                  return (
+                    <button
+                      key={`${option.businessAccountId}:${option.phoneNumberId}`}
+                      type="button"
+                      onClick={() => {
+                        setMetaSelectionPhoneNumberId(option.phoneNumberId);
+                        setMetaSelectionBusinessAccountId(option.businessAccountId);
+                      }}
+                      className={`w-full rounded-xl border px-3 py-2.5 text-left transition-colors ${
+                        selected
+                          ? 'border-blue-500/40 bg-blue-500/10 text-blue-200'
+                          : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      <p className="text-sm font-medium">{label}</p>
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        {option.businessAccountName || option.businessAccountId}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-4 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowMetaSelectionModal(false)}
+                  disabled={metaSelectionSaving}
+                  className="px-3 py-1.5 rounded-lg text-xs border border-zinc-700 text-zinc-400 hover:text-white hover:border-zinc-600 disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCompleteMetaEmbeddedSelection}
+                  disabled={!metaSelectionPhoneNumberId || metaSelectionSaving}
+                  className="px-3 py-1.5 rounded-lg text-xs bg-blue-600 text-white hover:bg-blue-500 disabled:opacity-40"
+                >
+                  {metaSelectionSaving ? 'Connecting…' : 'Connect selected number'}
                 </button>
               </div>
             </div>

@@ -4,7 +4,8 @@ import { BullModule } from '@nestjs/bull';
 import { WebhooksController } from './webhooks.controller';
 import { TelegramProcessor } from '../queue/telegram.processor';
 import { EmailProcessor } from '../queue/email.processor';
-import { TELEGRAM_QUEUE, EMAIL_QUEUE } from '../queue/queue.module';
+import { WhatsAppProcessor } from '../queue/whatsapp.processor';
+import { TELEGRAM_QUEUE, EMAIL_QUEUE, WHATSAPP_QUEUE } from '../queue/queue.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CannedResponsesModule } from '../canned-responses/canned-responses.module';
@@ -19,6 +20,7 @@ import { ActionForwardingModule } from '../action-forwarding/action-forwarding.m
     HttpModule,
     BullModule.registerQueue({ name: TELEGRAM_QUEUE }),
     BullModule.registerQueue({ name: EMAIL_QUEUE }),
+    BullModule.registerQueue({ name: WHATSAPP_QUEUE }),
     OrganizationsModule,
     NotificationsModule,
     CannedResponsesModule,
@@ -29,6 +31,6 @@ import { ActionForwardingModule } from '../action-forwarding/action-forwarding.m
     ActionForwardingModule,
   ],
   controllers: [WebhooksController],
-  providers: [TelegramProcessor, EmailProcessor],
+  providers: [TelegramProcessor, EmailProcessor, WhatsAppProcessor],
 })
 export class WebhooksModule {}

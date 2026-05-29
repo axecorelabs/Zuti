@@ -19,7 +19,7 @@ interface Analytics {
   totals: { conversations: number; resolved: number; escalated: number; open: number; pending: number };
   rates: { resolutionRate: number | null; escalationRate: number | null; aiResolutionRate: number | null };
   avgFirstResponseSec: number | null;
-  channelBreakdown: { WIDGET: number; TELEGRAM: number; EMAIL: number };
+  channelBreakdown: { WIDGET: number; TELEGRAM: number; EMAIL: number; WHATSAPP: number };
   volumeByDay: { date: string; count: number }[];
   csatScore: number | null;
   csatSampleSize: number;
@@ -129,6 +129,7 @@ export default function AnalyticsPage() {
         { name: 'Widget', value: data.channelBreakdown.WIDGET, color: '#3b82f6' },
         { name: 'Telegram', value: data.channelBreakdown.TELEGRAM, color: '#06b6d4' },
         { name: 'Email', value: data.channelBreakdown.EMAIL, color: '#a78bfa' },
+        { name: 'WhatsApp', value: data.channelBreakdown.WHATSAPP, color: '#22c55e' },
       ].filter((c) => c.value > 0)
     : [];
 
@@ -325,6 +326,7 @@ export default function AnalyticsPage() {
                 { key: 'WIDGET', label: 'Widget', icon: <Globe className="w-3.5 h-3.5" />, color: 'bg-blue-500' },
                 { key: 'TELEGRAM', label: 'Telegram', icon: <Wifi className="w-3.5 h-3.5" />, color: 'bg-cyan-500' },
                 { key: 'EMAIL', label: 'Email', icon: <Mail className="w-3.5 h-3.5" />, color: 'bg-violet-500' },
+                { key: 'WHATSAPP', label: 'WhatsApp', icon: <Bot className="w-3.5 h-3.5" />, color: 'bg-emerald-500' },
               ].map(({ key, label, icon, color }) => {
                 const count = data?.channelBreakdown[key as keyof typeof data.channelBreakdown] ?? 0;
                 const total = data?.totals.conversations ?? 0;

@@ -16,6 +16,7 @@ import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
 import { CannedResponsesService } from '../canned-responses/canned-responses.service';
 import { AiUsageService } from '../ai-usage/ai-usage.service';
 import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
+import { LanguagePreferenceService } from '../ai-usage/language-preference.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
@@ -30,6 +31,8 @@ import {
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { extractWhatsAppConfig, prepareWhatsAppConfigForStorage } from '../../common/utils/whatsapp';
+import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -42,6 +45,39 @@ function estimateUsageCredits(promptTokens: number, completionTokens: number): n
 type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
 type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 type CapabilitySkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
+type BotPrimaryChannel = 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL' | 'WHATSAPP';
+type WhatsAppProvider = 'META' | 'TWILIO';
+type WhatsAppIntegrationMode = 'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO';
+
+interface WhatsAppConnectionInput {
+  provider: WhatsAppProvider;
+  integrationMode: WhatsAppIntegrationMode;
+  channelIdentifier: string;
+  phoneNumber?: string;
+  displayName?: string;
+  verifyToken?: string;
+  config?: Record<string, unknown>;
+}
+
+interface MetaEmbeddedStatePayload {
+  state: string;
+  issuedAt: string;
+  consumedAt?: string;
+}
+
+interface MetaEmbeddedPhoneOption {
+  businessAccountId: string;
+  businessAccountName?: string;
+  phoneNumberId: string;
+  displayPhoneNumber?: string;
+  verifiedName?: string;
+}
+
+export interface MetaEmbeddedSelectionRequiredResponse {
+  requiresSelection: true;
+  sessionId: string;
+  options: MetaEmbeddedPhoneOption[];
+}
 
 const BOT_SKILLS: BotSkill[] = ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'];
 
@@ -154,6 +190,73 @@ function normalizeDomain(value: string): string {
     const withoutProtocol = trimmed.replace(/^https?:\/\//, '');
     return withoutProtocol.split('/')[0].split(':')[0].trim();
   }
+}
+
+function sanitizePhoneNumber(value: string | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.startsWith('+') ? trimmed : `+${trimmed.replace(/^\+/, '')}`;
+}
+
+function isE164PhoneNumber(value: string | null): boolean {
+  return Boolean(value && /^\+[1-9]\d{6,14}$/.test(value));
+}
+
+function normalizeWhatsAppConnection(input: WhatsAppConnectionInput): WhatsAppConnectionInput {
+  return {
+    provider: input.provider,
+    integrationMode: input.integrationMode,
+    channelIdentifier: input.channelIdentifier.trim(),
+    phoneNumber: sanitizePhoneNumber(input.phoneNumber) ?? undefined,
+    displayName: input.displayName?.trim() || undefined,
+    verifyToken: input.verifyToken?.trim() || undefined,
+    config: input.config ?? {},
+  };
+}
+
+function parseMetaEmbeddedState(config: unknown): MetaEmbeddedStatePayload | null {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
+  const embedded = (config as Record<string, unknown>).metaEmbedded as Record<string, unknown> | undefined;
+  if (!embedded) return null;
+  const state = typeof embedded.state === 'string' ? embedded.state : '';
+  const issuedAt = typeof embedded.issuedAt === 'string' ? embedded.issuedAt : '';
+  const consumedAt = typeof embedded.consumedAt === 'string' ? embedded.consumedAt : undefined;
+  if (!state || !issuedAt) return null;
+  return { state, issuedAt, consumedAt };
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function toMetaEmbeddedOptions(accounts: Array<{
+  id: string;
+  name?: string;
+  phone_numbers?: {
+    data?: Array<{
+      id: string;
+      display_phone_number?: string;
+      verified_name?: string;
+    }>;
+  };
+}>): MetaEmbeddedPhoneOption[] {
+  const options: MetaEmbeddedPhoneOption[] = [];
+  for (const account of accounts) {
+    const numbers = Array.isArray(account?.phone_numbers?.data) ? account.phone_numbers.data : [];
+    for (const phone of numbers) {
+      if (!phone?.id) continue;
+      options.push({
+        businessAccountId: account.id,
+        businessAccountName: account.name,
+        phoneNumberId: phone.id,
+        displayPhoneNumber: phone.display_phone_number,
+        verifiedName: phone.verified_name,
+      });
+    }
+  }
+  return options;
 }
 
 function extractHostFromHeader(value: string | undefined): string | null {
@@ -285,6 +388,7 @@ export class BotsService {
     private readonly cannedResponses: CannedResponsesService,
     private readonly aiUsage: AiUsageService,
     private readonly csatClassifier: CsatClassifierService,
+    private readonly languagePreference: LanguagePreferenceService,
     private readonly teamChat: TeamChatService,
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
@@ -319,10 +423,28 @@ export class BotsService {
     });
   }
 
+  private sanitizeBot<T extends Record<string, unknown>>(bot: T): Omit<T, 'whatsappConfig' | 'whatsappVerifyToken'> {
+    const { whatsappConfig: _whatsappConfig, whatsappVerifyToken: _whatsappVerifyToken, ...safeBot } = bot as T & {
+      whatsappConfig?: unknown;
+      whatsappVerifyToken?: unknown;
+    };
+    return safeBot;
+  }
+
   async create(organizationId: string, dto: CreateBotDto) {
-    const primaryChannel = dto.primaryChannel ?? 'TELEGRAM';
+    const primaryChannel: BotPrimaryChannel = dto.primaryChannel ?? 'TELEGRAM';
     const telegramToken = dto.telegramToken?.trim();
     const needsTelegram = primaryChannel === 'TELEGRAM';
+    const requestedWhatsAppConnection = dto.whatsappProvider && dto.whatsappIntegrationMode && dto.whatsappChannelIdentifier
+      ? normalizeWhatsAppConnection({
+          provider: dto.whatsappProvider,
+          integrationMode: dto.whatsappIntegrationMode,
+          channelIdentifier: dto.whatsappChannelIdentifier,
+          phoneNumber: dto.whatsappPhoneNumber,
+          displayName: dto.whatsappDisplayName,
+          config: dto.whatsappConfig,
+        })
+      : null;
     const initialAllowedDomains = Array.from(new Set(
       (dto.webWidgetAllowedDomains ?? [])
         .map((domain) => normalizeDomain(domain))
@@ -346,6 +468,19 @@ export class BotsService {
       throw new BadRequestException('Set at least one allowed widget domain before enabling the web widget channel');
     }
 
+    if (primaryChannel === 'WHATSAPP' && !requestedWhatsAppConnection) {
+      throw new BadRequestException('WhatsApp connection details are required when WhatsApp is the primary channel');
+    }
+
+    if (requestedWhatsAppConnection) {
+      await this.validateWhatsAppConnection(requestedWhatsAppConnection);
+      await this.ensureWhatsAppChannelAvailable(requestedWhatsAppConnection.channelIdentifier);
+    }
+
+    const requestedWhatsAppConfig = requestedWhatsAppConnection
+      ? prepareWhatsAppConfigForStorage(requestedWhatsAppConnection.provider, (requestedWhatsAppConnection.config ?? {}) as Record<string, unknown>)
+      : {};
+
     let telegramUsername: string | null = null;
 
     if (telegramToken) {
@@ -361,7 +496,7 @@ export class BotsService {
       }
     }
 
-    return this.prisma.bot.create({
+    const created = await this.prisma.bot.create({
       data: {
         organizationId,
         name: dto.name,
@@ -371,12 +506,21 @@ export class BotsService {
         webWidgetEnabled: primaryChannel === 'WEB_WIDGET',
         webWidgetKey: primaryChannel === 'WEB_WIDGET' ? this.generateWidgetKey() : null,
         webWidgetAllowedDomains: initialAllowedDomains,
+        whatsappEnabled: primaryChannel === 'WHATSAPP',
+        whatsappProvider: requestedWhatsAppConnection?.provider,
+        whatsappIntegrationMode: requestedWhatsAppConnection?.integrationMode,
+        whatsappChannelIdentifier: requestedWhatsAppConnection?.channelIdentifier,
+        whatsappPhoneNumber: requestedWhatsAppConnection?.phoneNumber ?? null,
+        whatsappDisplayName: requestedWhatsAppConnection?.displayName ?? null,
+        whatsappVerifyToken: requestedWhatsAppConnection?.verifyToken ?? this.generateWhatsappVerifyToken(),
+        whatsappConfig: requestedWhatsAppConfig as Prisma.InputJsonValue,
         isActive: true,
         template,
         capabilities: capabilities as any,
         actionForwardingEnabled,
       },
     });
+    return this.sanitizeBot(created as any);
   }
 
   getTemplateCatalog() {
@@ -384,10 +528,11 @@ export class BotsService {
   }
 
   async findAll(organizationId: string) {
-    return this.prisma.bot.findMany({
+    const bots = await this.prisma.bot.findMany({
       where: { organizationId },
       orderBy: { createdAt: 'desc' },
     });
+    return bots.map((bot) => this.sanitizeBot(bot as any));
   }
 
   async findOne(organizationId: string, botId: string) {
@@ -395,11 +540,15 @@ export class BotsService {
       where: { id: botId, organizationId },
     });
     if (!bot) throw new NotFoundException('Bot not found');
-    return bot;
+    return this.sanitizeBot(bot as any);
   }
 
   async update(organizationId: string, botId: string, dto: UpdateBotDto) {
-    const existing = await this.findOne(organizationId, botId);
+    const existing = await this.prisma.bot.findFirst({
+      where: { id: botId, organizationId },
+    });
+    if (!existing) throw new NotFoundException('Bot not found');
+
     const enableWidget = dto.webWidgetEnabled === true;
     const currentAllowedDomains = Array.from(new Set(
       (existing.webWidgetAllowedDomains ?? [])
@@ -411,6 +560,8 @@ export class BotsService {
       : Array.from(new Set(dto.webWidgetAllowedDomains.map((domain) => normalizeDomain(domain)).filter(Boolean)));
     const resolvedAllowedDomains = nextAllowedDomains ?? currentAllowedDomains;
     const widgetWillBeEnabled = dto.webWidgetEnabled === undefined ? existing.webWidgetEnabled : dto.webWidgetEnabled;
+    const whatsappWillBeEnabled = dto.whatsappEnabled === undefined ? existing.whatsappEnabled : dto.whatsappEnabled;
+    const existingWhatsAppConfig = extractWhatsAppConfig(existing.whatsappConfig);
     const nextTemplate = (dto.template ?? existing.template) as BotTemplate;
     const preset = getTemplatePreset(nextTemplate);
     const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled);
@@ -428,7 +579,60 @@ export class BotsService {
       throw new BadRequestException('Set at least one allowed widget domain before enabling the web widget channel');
     }
 
-    return this.prisma.bot.update({
+    if (whatsappWillBeEnabled && !existing.whatsappChannelIdentifier && !dto.whatsappChannelIdentifier) {
+      throw new BadRequestException('Connect WhatsApp before enabling the WhatsApp channel');
+    }
+
+    const resolvedWhatsAppProvider = (dto.whatsappProvider ?? existing.whatsappProvider ?? undefined) as WhatsAppProvider | undefined;
+    const resolvedWhatsAppMode = (dto.whatsappIntegrationMode ?? existing.whatsappIntegrationMode ?? undefined) as WhatsAppIntegrationMode | undefined;
+    const resolvedWhatsAppChannelIdentifier = (dto.whatsappChannelIdentifier ?? existing.whatsappChannelIdentifier ?? '').trim();
+    const resolvedWhatsAppPhoneNumber = dto.whatsappPhoneNumber !== undefined
+      ? sanitizePhoneNumber(dto.whatsappPhoneNumber)
+      : existing.whatsappPhoneNumber;
+    const resolvedWhatsAppDisplayName = dto.whatsappDisplayName !== undefined
+      ? (dto.whatsappDisplayName.trim() || null)
+      : existing.whatsappDisplayName;
+    const resolvedWhatsAppConfig = dto.whatsappConfig !== undefined
+      ? dto.whatsappConfig
+      : existingWhatsAppConfig;
+
+    const whatsappConnectionTouched = dto.whatsappProvider !== undefined
+      || dto.whatsappIntegrationMode !== undefined
+      || dto.whatsappChannelIdentifier !== undefined
+      || dto.whatsappPhoneNumber !== undefined
+      || dto.whatsappDisplayName !== undefined
+      || dto.whatsappConfig !== undefined;
+    const whatsappConnectionIdentityTouched = dto.whatsappProvider !== undefined
+      || dto.whatsappIntegrationMode !== undefined
+      || dto.whatsappChannelIdentifier !== undefined;
+
+    let normalizedWhatsAppConnection: WhatsAppConnectionInput | null = null;
+    let preparedWhatsAppConfig: Record<string, unknown> | null = null;
+
+    if (whatsappConnectionTouched || (whatsappWillBeEnabled && (resolvedWhatsAppProvider || resolvedWhatsAppChannelIdentifier))) {
+      if (!resolvedWhatsAppProvider || !resolvedWhatsAppMode || !resolvedWhatsAppChannelIdentifier) {
+        if (whatsappWillBeEnabled) {
+          throw new BadRequestException('Connect WhatsApp before enabling the WhatsApp channel');
+        }
+      } else {
+        normalizedWhatsAppConnection = normalizeWhatsAppConnection({
+          provider: resolvedWhatsAppProvider,
+          integrationMode: resolvedWhatsAppMode,
+          channelIdentifier: resolvedWhatsAppChannelIdentifier,
+          phoneNumber: resolvedWhatsAppPhoneNumber ?? undefined,
+          displayName: resolvedWhatsAppDisplayName ?? undefined,
+          config: (resolvedWhatsAppConfig ?? {}) as Record<string, unknown>,
+        });
+        await this.validateWhatsAppConnection(normalizedWhatsAppConnection);
+        await this.ensureWhatsAppChannelAvailable(normalizedWhatsAppConnection.channelIdentifier, botId);
+        preparedWhatsAppConfig = prepareWhatsAppConfigForStorage(
+          normalizedWhatsAppConnection.provider,
+          (normalizedWhatsAppConnection.config ?? {}) as Record<string, unknown>,
+        );
+      }
+    }
+
+    const updated = await this.prisma.bot.update({
       where: { id: botId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
@@ -437,12 +641,22 @@ export class BotsService {
         ...(dto.routeToRoles !== undefined && { routeToRoles: dto.routeToRoles }),
         ...(dto.webWidgetEnabled !== undefined && { webWidgetEnabled: dto.webWidgetEnabled }),
         ...(nextAllowedDomains !== undefined && { webWidgetAllowedDomains: nextAllowedDomains }),
+        ...(dto.whatsappEnabled !== undefined && { whatsappEnabled: dto.whatsappEnabled }),
+        ...(dto.whatsappProvider !== undefined && { whatsappProvider: normalizedWhatsAppConnection?.provider ?? dto.whatsappProvider }),
+        ...(dto.whatsappIntegrationMode !== undefined && { whatsappIntegrationMode: normalizedWhatsAppConnection?.integrationMode ?? dto.whatsappIntegrationMode }),
+        ...(dto.whatsappChannelIdentifier !== undefined && { whatsappChannelIdentifier: normalizedWhatsAppConnection?.channelIdentifier ?? null }),
+        ...(dto.whatsappPhoneNumber !== undefined && { whatsappPhoneNumber: normalizedWhatsAppConnection?.phoneNumber ?? null }),
+        ...(dto.whatsappDisplayName !== undefined && { whatsappDisplayName: normalizedWhatsAppConnection?.displayName ?? null }),
+        ...((dto.whatsappConfig !== undefined || whatsappConnectionIdentityTouched) && {
+          whatsappConfig: ((preparedWhatsAppConfig ?? resolvedWhatsAppConfig ?? {}) as Prisma.InputJsonValue),
+        }),
         ...(resolvedCapabilities !== undefined && { capabilities: resolvedCapabilities as any }),
         ...(resolvedTemplate !== undefined && { template: resolvedTemplate as BotTemplate }),
         ...(resolvedActionForwardingEnabled !== undefined && { actionForwardingEnabled: resolvedActionForwardingEnabled }),
         ...((enableWidget && !existing.webWidgetKey) && { webWidgetKey: this.generateWidgetKey() }),
       },
     });
+    return this.sanitizeBot(updated as any);
   }
 
   async remove(organizationId: string, botId: string) {
@@ -467,7 +681,7 @@ export class BotsService {
       throw new BadRequestException('This Telegram bot token is already registered');
     }
 
-    return this.prisma.bot.update({
+    const updated = await this.prisma.bot.update({
       where: { id: botId },
       data: {
         telegramToken: trimmedToken,
@@ -493,6 +707,362 @@ export class BotsService {
         webhookSet: false,
       },
     });
+  }
+
+  // ── WhatsApp channel ─────────────────────────────────────────────────────
+
+  async connectWhatsApp(organizationId: string, botId: string, input: WhatsAppConnectionInput) {
+    await this.findOne(organizationId, botId);
+    const connection = normalizeWhatsAppConnection(input);
+    await this.validateWhatsAppConnection(connection);
+    await this.ensureWhatsAppChannelAvailable(connection.channelIdentifier, botId);
+    const storedConfig = prepareWhatsAppConfigForStorage(connection.provider, (connection.config ?? {}) as Record<string, unknown>);
+
+    const verifyToken = connection.verifyToken ?? this.generateWhatsappVerifyToken();
+
+    const updated = await this.prisma.bot.update({
+      where: { id: botId },
+      data: {
+        whatsappEnabled: true,
+        whatsappProvider: connection.provider,
+        whatsappIntegrationMode: connection.integrationMode,
+        whatsappChannelIdentifier: connection.channelIdentifier,
+        whatsappPhoneNumber: connection.phoneNumber ?? null,
+        whatsappDisplayName: connection.displayName ?? null,
+        whatsappVerifyToken: verifyToken,
+        whatsappConfig: storedConfig as Prisma.InputJsonValue,
+      },
+    });
+    return this.sanitizeBot(updated as any);
+  }
+
+  async disconnectWhatsApp(organizationId: string, botId: string) {
+    const bot = await this.findOne(organizationId, botId);
+    if (!bot.whatsappChannelIdentifier) {
+      throw new BadRequestException('WhatsApp is not connected');
+    }
+
+    const updated = await this.prisma.bot.update({
+      where: { id: botId },
+      data: {
+        whatsappEnabled: false,
+        whatsappProvider: null,
+        whatsappIntegrationMode: null,
+        whatsappChannelIdentifier: null,
+        whatsappPhoneNumber: null,
+        whatsappDisplayName: null,
+        whatsappVerifyToken: null,
+        whatsappConfig: {} as Prisma.InputJsonValue,
+      },
+    });
+    return this.sanitizeBot(updated as any);
+  }
+
+  async startMetaEmbeddedSignup(organizationId: string, botId: string) {
+    await this.findOne(organizationId, botId);
+    const appId = (this.config.get<string>('META_APP_ID') ?? '').trim();
+    if (!appId) {
+      throw new BadRequestException('META_APP_ID is not configured');
+    }
+
+    const state = randomBytes(24).toString('hex');
+    const redirectUri = this.getMetaEmbeddedRedirectUri();
+    const existing = await this.prisma.bot.findUnique({ where: { id: botId }, select: { whatsappConfig: true } });
+    const currentConfig = (existing?.whatsappConfig && typeof existing.whatsappConfig === 'object' && !Array.isArray(existing.whatsappConfig))
+      ? existing.whatsappConfig as Record<string, unknown>
+      : {};
+
+    await this.prisma.bot.update({
+      where: { id: botId },
+      data: {
+        whatsappConfig: {
+          ...currentConfig,
+          metaEmbedded: {
+            state,
+            issuedAt: new Date().toISOString(),
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    const params = new URLSearchParams({
+      client_id: appId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: 'business_management,whatsapp_business_management,whatsapp_business_messaging',
+      state,
+    });
+
+    return {
+      authUrl: `https://www.facebook.com/v20.0/dialog/oauth?${params.toString()}`,
+      state,
+      redirectUri,
+    };
+  }
+
+  async completeMetaEmbeddedSignup(
+    organizationId: string,
+    botId: string,
+    code: string,
+    state: string,
+    selectedBusinessAccountId?: string,
+    selectedPhoneNumberId?: string,
+  ): Promise<Record<string, unknown> | MetaEmbeddedSelectionRequiredResponse> {
+    const bot = await this.prisma.bot.findFirst({
+      where: { id: botId, organizationId },
+      select: { id: true, whatsappConfig: true },
+    });
+    if (!bot) throw new NotFoundException('Bot not found');
+
+    const appId = (this.config.get<string>('META_APP_ID') ?? '').trim();
+    const appSecret = (this.config.get<string>('META_APP_SECRET') ?? '').trim();
+    if (!appId || !appSecret) {
+      throw new BadRequestException('META_APP_ID and META_APP_SECRET must be configured');
+    }
+
+    const embeddedState = parseMetaEmbeddedState(bot.whatsappConfig);
+    if (!embeddedState || embeddedState.state !== state) {
+      throw new BadRequestException('Invalid or expired embedded signup state');
+    }
+    if (embeddedState.consumedAt) {
+      throw new BadRequestException('Embedded signup state already used. Restart the connection flow.');
+    }
+
+    const ageMs = Date.now() - new Date(embeddedState.issuedAt).getTime();
+    if (!Number.isFinite(ageMs) || ageMs > 15 * 60 * 1000) {
+      throw new BadRequestException('Embedded signup state expired. Restart the connection flow.');
+    }
+
+    const currentConfig = (bot.whatsappConfig && typeof bot.whatsappConfig === 'object' && !Array.isArray(bot.whatsappConfig))
+      ? bot.whatsappConfig as Record<string, unknown>
+      : {};
+    const currentMetaEmbedded = (currentConfig.metaEmbedded && typeof currentConfig.metaEmbedded === 'object' && !Array.isArray(currentConfig.metaEmbedded))
+      ? currentConfig.metaEmbedded as Record<string, unknown>
+      : {};
+
+    const redirectUri = this.getMetaEmbeddedRedirectUri();
+    const tokenRes = await firstValueFrom(
+      this.http.get<{ access_token: string }>('https://graph.facebook.com/v20.0/oauth/access_token', {
+        params: {
+          client_id: appId,
+          client_secret: appSecret,
+          redirect_uri: redirectUri,
+          code,
+        },
+      }),
+    ).catch(() => null);
+
+    const accessToken = tokenRes?.data?.access_token?.trim();
+    if (!accessToken) {
+      throw new BadRequestException('Failed to exchange Meta authorization code');
+    }
+
+    const wabaRes = await firstValueFrom(
+      this.http.get<{
+        data?: Array<{
+          id: string;
+          name?: string;
+          phone_numbers?: {
+            data?: Array<{
+              id: string;
+              display_phone_number?: string;
+              verified_name?: string;
+            }>;
+          };
+        }>;
+      }>('https://graph.facebook.com/v20.0/me/owned_whatsapp_business_accounts', {
+        params: {
+          access_token: accessToken,
+          fields: 'id,name,phone_numbers{id,display_phone_number,verified_name}',
+        },
+      }),
+    ).catch(() => null);
+
+    const fallbackWabaRes = wabaRes?.data?.data?.length
+      ? null
+      : await firstValueFrom(
+          this.http.get<{
+            data?: Array<{
+              id: string;
+              name?: string;
+              phone_numbers?: {
+                data?: Array<{
+                  id: string;
+                  display_phone_number?: string;
+                  verified_name?: string;
+                }>;
+              };
+            }>;
+          }>('https://graph.facebook.com/v20.0/me/whatsapp_business_accounts', {
+            params: {
+              access_token: accessToken,
+              fields: 'id,name,phone_numbers{id,display_phone_number,verified_name}',
+            },
+          }),
+        ).catch(() => null);
+
+    const accounts = wabaRes?.data?.data?.length
+      ? (wabaRes.data.data ?? [])
+      : (fallbackWabaRes?.data?.data ?? []);
+    const options = toMetaEmbeddedOptions(accounts);
+    if (options.length === 0) {
+      throw new BadRequestException('No WhatsApp phone number found for this Meta account');
+    }
+
+    const resolvedPhoneNumberId = selectedPhoneNumberId?.trim() || null;
+    const resolvedBusinessAccountId = selectedBusinessAccountId?.trim() || null;
+    const selectedOption = resolvedPhoneNumberId
+      ? options.find((option) =>
+          option.phoneNumberId === resolvedPhoneNumberId
+          && (!resolvedBusinessAccountId || option.businessAccountId === resolvedBusinessAccountId),
+        )
+      : null;
+
+    if (!selectedOption && options.length > 1) {
+      const sessionId = randomBytes(24).toString('hex');
+      const pendingCredentials = prepareWhatsAppConfigForStorage('META', { accessToken, appSecret });
+      const optionsForStorage = options.map((option) => ({
+        businessAccountId: option.businessAccountId,
+        businessAccountName: option.businessAccountName ?? null,
+        phoneNumberId: option.phoneNumberId,
+        displayPhoneNumber: option.displayPhoneNumber ?? null,
+        verifiedName: option.verifiedName ?? null,
+      }));
+
+      await this.prisma.bot.update({
+        where: { id: botId },
+        data: {
+          whatsappConfig: {
+            ...currentConfig,
+            metaEmbedded: {
+              ...currentMetaEmbedded,
+              consumedAt: new Date().toISOString(),
+              pendingSelection: {
+                sessionId,
+                issuedAt: new Date().toISOString(),
+                options: optionsForStorage,
+                credentials: pendingCredentials,
+              },
+            },
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      return {
+        requiresSelection: true,
+        sessionId,
+        options,
+      };
+    }
+
+    const option = selectedOption ?? options[0];
+
+    await this.prisma.bot.update({
+      where: { id: botId },
+      data: {
+        whatsappConfig: {
+          ...currentConfig,
+          metaEmbedded: {
+            ...currentMetaEmbedded,
+            consumedAt: new Date().toISOString(),
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    const connected = await this.connectWhatsApp(organizationId, botId, {
+      provider: 'META',
+      integrationMode: 'META_EMBEDDED_SIGNUP',
+      channelIdentifier: option.phoneNumberId,
+      phoneNumber: option.displayPhoneNumber,
+      displayName: option.verifiedName,
+      config: {
+        accessToken,
+        appSecret,
+        businessAccountId: option.businessAccountId,
+      },
+    });
+
+    return connected;
+  }
+
+  async completeMetaEmbeddedSelection(
+    organizationId: string,
+    botId: string,
+    sessionId: string,
+    selectedPhoneNumberId: string,
+    selectedBusinessAccountId?: string,
+  ): Promise<Record<string, unknown>> {
+    const bot = await this.prisma.bot.findFirst({
+      where: { id: botId, organizationId },
+      select: { whatsappConfig: true },
+    });
+    if (!bot) throw new NotFoundException('Bot not found');
+
+    const currentConfig = (bot.whatsappConfig && typeof bot.whatsappConfig === 'object' && !Array.isArray(bot.whatsappConfig))
+      ? bot.whatsappConfig as Record<string, unknown>
+      : {};
+    const metaEmbedded = (currentConfig.metaEmbedded && typeof currentConfig.metaEmbedded === 'object' && !Array.isArray(currentConfig.metaEmbedded))
+      ? currentConfig.metaEmbedded as Record<string, unknown>
+      : {};
+    const pendingSelection = (metaEmbedded.pendingSelection && typeof metaEmbedded.pendingSelection === 'object' && !Array.isArray(metaEmbedded.pendingSelection))
+      ? metaEmbedded.pendingSelection as Record<string, unknown>
+      : null;
+
+    const pendingSessionId = typeof pendingSelection?.sessionId === 'string' ? pendingSelection.sessionId : '';
+    if (!pendingSelection || !pendingSessionId || pendingSessionId !== sessionId) {
+      throw new BadRequestException('Embedded signup selection session is invalid or expired');
+    }
+
+    const pendingIssuedAt = typeof pendingSelection.issuedAt === 'string' ? pendingSelection.issuedAt : '';
+    const ageMs = Date.now() - new Date(pendingIssuedAt).getTime();
+    if (!Number.isFinite(ageMs) || ageMs > 15 * 60 * 1000) {
+      throw new BadRequestException('Embedded signup selection expired. Restart the connection flow.');
+    }
+
+    const optionsRaw = Array.isArray(pendingSelection.options) ? pendingSelection.options : [];
+    const options = optionsRaw
+      .filter((option): option is MetaEmbeddedPhoneOption => Boolean(
+        option
+        && typeof option === 'object'
+        && typeof (option as MetaEmbeddedPhoneOption).phoneNumberId === 'string'
+        && typeof (option as MetaEmbeddedPhoneOption).businessAccountId === 'string',
+      ));
+
+    const resolvedPhoneNumberId = selectedPhoneNumberId.trim();
+    const resolvedBusinessAccountId = selectedBusinessAccountId?.trim() || null;
+    const selectedOption = options.find((option) =>
+      option.phoneNumberId === resolvedPhoneNumberId
+      && (!resolvedBusinessAccountId || option.businessAccountId === resolvedBusinessAccountId),
+    );
+    if (!selectedOption) {
+      throw new BadRequestException('Selected WhatsApp phone number is not available for this session');
+    }
+
+    const credentialsRaw = (pendingSelection.credentials && typeof pendingSelection.credentials === 'object' && !Array.isArray(pendingSelection.credentials))
+      ? pendingSelection.credentials
+      : {};
+    const credentials = extractWhatsAppConfig(credentialsRaw);
+    const accessToken = typeof credentials.accessToken === 'string' ? credentials.accessToken.trim() : '';
+    const appSecret = typeof credentials.appSecret === 'string' ? credentials.appSecret.trim() : '';
+    if (!accessToken || !appSecret) {
+      throw new BadRequestException('Embedded signup credentials expired. Restart the connection flow.');
+    }
+
+    const connected = await this.connectWhatsApp(organizationId, botId, {
+      provider: 'META',
+      integrationMode: 'META_EMBEDDED_SIGNUP',
+      channelIdentifier: selectedOption.phoneNumberId,
+      phoneNumber: selectedOption.displayPhoneNumber,
+      displayName: selectedOption.verifiedName,
+      config: {
+        accessToken,
+        appSecret,
+        businessAccountId: selectedOption.businessAccountId,
+      },
+    });
+
+    return connected as Record<string, unknown>;
   }
 
   // ── Email channel ──────────────────────────────────────────────────────────
@@ -637,6 +1207,83 @@ export class BotsService {
     } catch {
       throw new BadRequestException('Invalid Telegram bot token');
     }
+  }
+
+  private generateWhatsappVerifyToken(): string {
+    return randomBytes(24).toString('hex');
+  }
+
+  private async ensureWhatsAppChannelAvailable(channelIdentifier: string, currentBotId?: string): Promise<void> {
+    const existing = await this.prisma.bot.findFirst({ where: { whatsappChannelIdentifier: channelIdentifier } });
+    if (existing && existing.id !== currentBotId) {
+      throw new BadRequestException('This WhatsApp channel is already connected to another bot');
+    }
+  }
+
+  private async validateWhatsAppConnection(connection: WhatsAppConnectionInput): Promise<void> {
+    if (!connection.channelIdentifier) {
+      throw new BadRequestException('WhatsApp channel identifier is required');
+    }
+
+    if (connection.phoneNumber && !isE164PhoneNumber(connection.phoneNumber ?? null)) {
+      throw new BadRequestException('WhatsApp phone number must be in E.164 format');
+    }
+
+    if (connection.provider === 'META') {
+      if (!['META_EMBEDDED_SIGNUP', 'META_MANUAL'].includes(connection.integrationMode)) {
+        throw new BadRequestException('Meta provider must use embedded signup or manual mode');
+      }
+      const accessToken = typeof connection.config?.accessToken === 'string' ? connection.config.accessToken.trim() : '';
+      const appSecret = typeof connection.config?.appSecret === 'string' ? connection.config.appSecret.trim() : '';
+      if (!accessToken) {
+        throw new BadRequestException('Meta WhatsApp access token is required');
+      }
+      if (!appSecret) {
+        throw new BadRequestException('Meta app secret is required for secure webhook verification');
+      }
+      try {
+        await firstValueFrom(
+          this.http.get(`https://graph.facebook.com/v20.0/${connection.channelIdentifier}`, {
+            params: { access_token: accessToken, fields: 'id,display_phone_number,verified_name' },
+          }),
+        );
+      } catch {
+        throw new BadRequestException('Unable to validate Meta WhatsApp connection');
+      }
+      return;
+    }
+
+    if (connection.provider === 'TWILIO') {
+      if (connection.integrationMode !== 'TWILIO') {
+        throw new BadRequestException('Twilio provider must use TWILIO integration mode');
+      }
+      const accountSid = typeof connection.config?.accountSid === 'string' ? connection.config.accountSid.trim() : '';
+      const authToken = typeof connection.config?.authToken === 'string' ? connection.config.authToken.trim() : '';
+      if (!accountSid || !authToken) {
+        throw new BadRequestException('Twilio Account SID and Auth Token are required');
+      }
+      try {
+        await firstValueFrom(
+          this.http.get(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}.json`, {
+            auth: { username: accountSid, password: authToken },
+          }),
+        );
+      } catch {
+        throw new BadRequestException('Unable to validate Twilio WhatsApp connection');
+      }
+      return;
+    }
+
+    throw new BadRequestException('Unsupported WhatsApp provider');
+  }
+
+  private getMetaEmbeddedRedirectUri(): string {
+    const explicit = (this.config.get<string>('META_EMBEDDED_REDIRECT_URI') ?? '').trim();
+    if (explicit) {
+      return explicit;
+    }
+    const appUrl = (this.config.get<string>('APP_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
+    return `${appUrl}/bots`;
   }
 
   async findByWidgetKey(widgetKey: string) {
@@ -817,6 +1464,8 @@ export class BotsService {
         lastAssistantMessage: lastAssistantMessage?.content ?? null,
       });
       if (rating === 'positive') {
+        const preferredLanguage = getPreferredLanguageFromMetadata(convMeta);
+        const positiveMessage = buildLocalizedCsatPositiveMessage(preferredLanguage);
         await this.prisma.conversation.update({
           where: { id: conversation.id },
           data: { status: 'RESOLVED', metadata: { ...convMeta, awaitingCsat: false, csatRating: 'positive' } },
@@ -832,7 +1481,7 @@ export class BotsService {
         ).catch(() => null);
         this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'RESOLVED' });
         const thankMsg = await this.prisma.message.create({
-          data: { conversationId: conversation.id, role: 'ASSISTANT', content: 'Great, glad I could help! Feel free to reach out any time.' },
+          data: { conversationId: conversation.id, role: 'ASSISTANT', content: positiveMessage },
         });
         this.events.emitNewMessage(bot.organizationId, {
           conversationId: conversation.id,
@@ -916,8 +1565,24 @@ export class BotsService {
     const latestConversation = await this.prisma.conversation.findUnique({
       where: { id: conversation.id },
     }) ?? conversation;
+    const languageDecision = await this.languagePreference.resolveForTurn({
+      userMessage: userText.trim(),
+      channel: 'WIDGET',
+      metadata: latestConversation.metadata,
+    });
+    const conversationForContext = {
+      ...latestConversation,
+      metadata: {
+        ...asObject(latestConversation.metadata),
+        ...languageDecision.metadataPatch,
+        customerMemory: {
+          ...asObject(asObject(latestConversation.metadata).customerMemory),
+          ...asObject(languageDecision.metadataPatch.customerMemory),
+        },
+      },
+    };
     const aiContext = buildCompactAiContext({
-      conversation: latestConversation,
+      conversation: conversationForContext,
       priorMessages,
       forwarding: forwardingResult,
       previousCustomerContext,
@@ -925,10 +1590,20 @@ export class BotsService {
     const history = aiContext.history;
     const customerContext = aiContext.customerContext;
 
+    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Record<string, unknown>;
+    const mergedMetadataPatch: Record<string, unknown> = {
+      ...contextMetadataPatch,
+      ...languageDecision.metadataPatch,
+      customerMemory: {
+        ...asObject(contextMetadataPatch.customerMemory),
+        ...asObject(languageDecision.metadataPatch.customerMemory),
+      },
+    };
+
     await this.prisma.conversation.update({
       where: { id: conversation.id },
       data: {
-        metadata: buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Prisma.InputJsonValue,
+        metadata: mergedMetadataPatch as Prisma.InputJsonValue,
       },
     }).catch(() => null);
 
@@ -982,6 +1657,7 @@ export class BotsService {
         buildCapabilityAvailabilityPrompt(botCapabilities),
         aiContext.statePrompt,
         aiContext.responseStylePrompt,
+        languageDecision.promptBlock,
         canApplySkillBehavior ? buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType) : null,
         buildOperationalIntegrityPromptBlock(
           forwardingResult.status,

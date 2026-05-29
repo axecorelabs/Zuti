@@ -34,8 +34,8 @@ class CreateContactEndpointDto {
   declare label: string;
 
   @IsString()
-  @IsIn(['TELEGRAM', 'EMAIL'])
-  declare channel: 'TELEGRAM' | 'EMAIL';
+  @IsIn(['TELEGRAM', 'EMAIL', 'WHATSAPP'])
+  declare channel: 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
 
   @IsString()
   declare destination: string;
@@ -60,8 +60,8 @@ class UpdateContactEndpointDto {
 
   @IsOptional()
   @IsString()
-  @IsIn(['TELEGRAM', 'EMAIL'])
-  declare channel?: 'TELEGRAM' | 'EMAIL';
+  @IsIn(['TELEGRAM', 'EMAIL', 'WHATSAPP'])
+  declare channel?: 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
 
   @IsOptional()
   @IsString()

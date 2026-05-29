@@ -115,7 +115,7 @@ export const orgsApi = {
     orgId: string,
     data: {
       label: string;
-      channel: 'TELEGRAM' | 'EMAIL';
+      channel: 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
       destination: string;
       userId?: string;
       isPrimary?: boolean;
@@ -127,7 +127,7 @@ export const orgsApi = {
     endpointId: string,
     data: {
       label?: string;
-      channel?: 'TELEGRAM' | 'EMAIL';
+      channel?: 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
       destination?: string;
       userId?: string | null;
       isActive?: boolean;
@@ -206,9 +206,15 @@ export const botsApi = {
     orgId: string,
     data: {
       name: string;
-      primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL';
+      primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL' | 'WHATSAPP';
       telegramToken?: string;
       webWidgetAllowedDomains?: string[];
+      whatsappProvider?: 'META' | 'TWILIO';
+      whatsappIntegrationMode?: 'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO';
+      whatsappChannelIdentifier?: string;
+      whatsappPhoneNumber?: string;
+      whatsappDisplayName?: string;
+      whatsappConfig?: Record<string, unknown>;
       template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
       skills?: Array<'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING'>;
       actionForwardingEnabled?: boolean;
@@ -228,6 +234,44 @@ export const botsApi = {
     api.post(`/organizations/${orgId}/bots/${botId}/telegram/connect`, { token }),
   disconnectTelegram: (orgId: string, botId: string) =>
     api.post(`/organizations/${orgId}/bots/${botId}/telegram/disconnect`),
+  connectWhatsApp: (
+    orgId: string,
+    botId: string,
+    data: {
+      provider: 'META' | 'TWILIO';
+      integrationMode: 'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO';
+      channelIdentifier: string;
+      phoneNumber?: string;
+      displayName?: string;
+      verifyToken?: string;
+      config?: Record<string, unknown>;
+    },
+  ) => api.post(`/organizations/${orgId}/bots/${botId}/whatsapp/connect`, data),
+  disconnectWhatsApp: (orgId: string, botId: string) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/whatsapp/disconnect`),
+  startMetaEmbeddedSignup: (orgId: string, botId: string) =>
+    api.get(`/organizations/${orgId}/bots/${botId}/whatsapp/meta/embedded/start`),
+  completeMetaEmbeddedSignup: (
+    orgId: string,
+    botId: string,
+    data: {
+      code: string;
+      state: string;
+      selectedBusinessAccountId?: string;
+      selectedPhoneNumberId?: string;
+    },
+  ) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/whatsapp/meta/embedded/complete`, data),
+  completeMetaEmbeddedSelection: (
+    orgId: string,
+    botId: string,
+    data: {
+      sessionId: string;
+      selectedPhoneNumberId: string;
+      selectedBusinessAccountId?: string;
+    },
+  ) =>
+    api.post(`/organizations/${orgId}/bots/${botId}/whatsapp/meta/embedded/complete-selection`, data),
 };
 
 // ── Conversations ─────────────────────────────────────────────────────────────
