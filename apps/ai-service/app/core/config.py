@@ -21,7 +21,7 @@ class Settings(BaseSettings):
 
     # Media processing (transcription, image description, document extraction)
     MEDIA_PROCESSING_ENABLED: bool = True
-    MEDIA_VISION_MODEL: str = "google/gemini-flash-1.5"
+    MEDIA_VISION_MODEL: str = "google/gemini-2.0-flash-001"
 
     # Shared secret for internal API calls (NestJS → AI service).
     # Set INTERNAL_API_SECRET to a strong random string in both services.

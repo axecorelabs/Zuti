@@ -321,7 +321,7 @@ export class WhatsAppProcessor {
     let resolvedUserText = text?.trim() || (isVideoMessage
       ? '[Video received — a human agent will review]'
       : normalizedType === 'image'
-        ? '[Image received]'
+        ? '[Customer sent an image. Visual content analysis unavailable — do not describe the image; ask the customer what they need help with.]'
         : normalizedType === 'audio' || normalizedType === 'voice'
           ? '[Audio message received]'
           : normalizedType === 'document'
@@ -470,7 +470,7 @@ export class WhatsAppProcessor {
             messageId: userMessage.id,
             kind: attachmentKind,
             sourceRef: media?.mediaId ?? undefined,
-            url: media?.mediaUrl ?? undefined,
+            url: mediaPublicUrl ?? undefined,
             storageKey: mediaStorageKey,
             fileName: media?.fileName ?? undefined,
             mimeType: media?.mimeType ?? undefined,

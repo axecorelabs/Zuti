@@ -364,7 +364,7 @@ export class TelegramProcessor {
     let resolvedUserText = incomingText || (isVideoMessage
       ? '[Video received — a human agent will review]'
       : mediaKind === 'image'
-        ? '[Image received]'
+        ? '[Customer sent an image. Visual content analysis unavailable — do not describe the image; ask the customer what they need help with.]'
         : mediaKind === 'audio' || mediaKind === 'voice'
           ? '[Audio message received]'
           : mediaKind === 'document'
