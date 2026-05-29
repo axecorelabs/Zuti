@@ -145,7 +145,8 @@ function formatBytes(bytes: number): string {
 type MessageAttachment = NonNullable<NonNullable<Conversation['messages'][number]['attachments']>[number]>;
 
 function AttachmentPreview({ attachment }: { attachment: MessageAttachment }) {
-  const { kind, url, fileName, sizeBytes, durationSec } = attachment;
+  const { kind, url, fileName, mimeType, sizeBytes, durationSec } = attachment;
+  const [audioPlaybackFailed, setAudioPlaybackFailed] = useState(false);
 
   if (kind === 'IMAGE') {
     return url ? (
@@ -158,13 +159,32 @@ function AttachmentPreview({ attachment }: { attachment: MessageAttachment }) {
   }
 
   if (kind === 'AUDIO' || kind === 'VOICE') {
+    const audioMimeType = typeof mimeType === 'string' && mimeType.trim().length > 0 ? mimeType.trim() : undefined;
+    const likelyUnsupportedCodec = !!audioMimeType && /audio\/(oga|ogg|opus)|application\/ogg/i.test(audioMimeType);
     return url ? (
       <div className="bg-zinc-800/50 rounded-lg p-2">
         <div className="flex items-center gap-1.5 mb-1.5">
           <Mic className="w-3 h-3 text-zinc-400" />
           <span className="text-[10px] text-zinc-400">{kind === 'VOICE' ? 'Voice note' : 'Audio'}{durationSec ? ` · ${durationSec}s` : ''}</span>
         </div>
-        <audio controls className="w-full h-7" src={url} />
+        {!audioPlaybackFailed ? (
+          <audio controls preload="metadata" className="w-full h-7" onError={() => setAudioPlaybackFailed(true)}>
+            <source src={url} type={audioMimeType} />
+          </audio>
+        ) : (
+          <div className="text-[10px] text-zinc-500 italic">Audio preview is not supported in this browser.</div>
+        )}
+        <div className="mt-1.5 flex items-center gap-2 text-[10px]">
+          <a href={url} target="_blank" rel="noreferrer" className="text-zinc-300 hover:text-white underline underline-offset-2">
+            Open audio
+          </a>
+          <a href={url} download={fileName ?? undefined} className="text-zinc-400 hover:text-zinc-200 underline underline-offset-2">
+            Download
+          </a>
+        </div>
+        {likelyUnsupportedCodec && (
+          <div className="mt-1 text-[10px] text-zinc-500">This voice format may not play in some browsers.</div>
+        )}
       </div>
     ) : (
       <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
