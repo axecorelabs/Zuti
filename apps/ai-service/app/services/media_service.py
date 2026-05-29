@@ -33,6 +33,8 @@ _WHISPER_UPLOAD_MIME_MAP = {
     "application/ogg": "audio/ogg",
 }
 
+_WHISPER_ACCEPTED_EXTENSIONS = {"flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "opus", "wav", "webm"}
+
 
 def _clean_vision_output(text: str) -> str:
     """Remove meta lead-ins so output is directly customer-facing."""
@@ -71,6 +73,20 @@ class MediaService:
         upload_mime = _WHISPER_UPLOAD_MIME_MAP.get(normalized_mime, normalized_mime)
         ext = _WHISPER_EXTENSION_MAP.get(normalized_mime, "ogg")
         safe_name = filename or f"audio.{ext}"
+
+        # Some providers validate filename extension in multipart uploads.
+        # Telegram voice notes often arrive as .oga, which should be treated as .ogg.
+        provided_suffix = Path(safe_name).suffix.lower().lstrip(".")
+        normalized_suffix_map = {
+            "oga": "ogg",
+            "x-ogg": "ogg",
+        }
+        normalized_suffix = normalized_suffix_map.get(provided_suffix, provided_suffix)
+        if normalized_suffix not in _WHISPER_ACCEPTED_EXTENSIONS:
+            normalized_suffix = ext
+
+        stem = Path(safe_name).stem or "audio"
+        safe_name = f"{stem}.{normalized_suffix}"
 
         import httpx
         async with httpx.AsyncClient(timeout=60) as http:
