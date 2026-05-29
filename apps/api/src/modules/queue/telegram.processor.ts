@@ -432,8 +432,8 @@ export class TelegramProcessor {
                 let mediaUsageType: 'MEDIA_TRANSCRIPTION' | 'MEDIA_VISION' | null = null;
                 if (mediaKind === 'audio' || mediaKind === 'voice') {
                   resolvedUserText = caption
-                    ? `${caption}\n[Voice note transcript: ${understanding.text}]`
-                    : `[Voice note] ${understanding.text}`;
+                    ? `${caption}\n[Voice note transcript: ${understanding.text}]\n[Transcription note: may contain recognition errors for accents/dialects. Confirm key intent before triggering workflows.]`
+                    : `[Voice note transcript] ${understanding.text}\n[Transcription note: may contain recognition errors for accents/dialects. Confirm key intent before triggering workflows.]`;
                   mediaUsageType = 'MEDIA_TRANSCRIPTION';
                 } else if (mediaKind === 'image') {
                   resolvedUserText = caption

@@ -151,6 +151,8 @@ export function buildResponseStylePromptBlock(): string {
     '- Ask at most one clarifying question unless multiple fields are explicitly required for an active workflow.',
     '- Use simple, natural wording. Avoid long disclaimers, repeated apologies, and bloated summaries.',
     '- Expand only when the user asks for detail, the topic is complex, or safety/accuracy requires it.',
+    '- When a message includes [Voice note transcript], treat it as usable customer input; do not say you cannot process audio.',
+    '- For transcribed voice notes, confirm the key intent in one short question before triggering workflow actions if wording seems ambiguous.',
   ].join('\n');
 }
 

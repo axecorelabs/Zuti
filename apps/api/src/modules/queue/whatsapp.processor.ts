@@ -389,8 +389,8 @@ export class WhatsAppProcessor {
                 let mediaUsageType: 'MEDIA_TRANSCRIPTION' | 'MEDIA_VISION' | null = null;
                 if (normalizedType === 'audio' || normalizedType === 'voice') {
                   resolvedUserText = caption
-                    ? `${caption}\n[Voice note transcript: ${understanding.text}]`
-                    : `[Voice note] ${understanding.text}`;
+                    ? `${caption}\n[Voice note transcript: ${understanding.text}]\n[Transcription note: may contain recognition errors for accents/dialects. Confirm key intent before triggering workflows.]`
+                    : `[Voice note transcript] ${understanding.text}\n[Transcription note: may contain recognition errors for accents/dialects. Confirm key intent before triggering workflows.]`;
                   mediaUsageType = 'MEDIA_TRANSCRIPTION';
                 } else if (normalizedType === 'image') {
                   resolvedUserText = caption
