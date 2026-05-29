@@ -223,8 +223,8 @@ class MediaService:
         """
         lower_mime = (mime_type or "").lower().split(";")[0].strip()
 
-        # Some channels send generic mime_type (application/octet-stream) for images.
-        # Recover likely image mime from filename extension so vision can still run.
+        # Some channels send generic mime_type (application/octet-stream).
+        # Recover likely mime from filename extension so media routing still works.
         if lower_mime in ("", "application/octet-stream") and filename:
             suffix = Path(filename).suffix.lower()
             ext_map = {
@@ -236,6 +236,21 @@ class MediaService:
                 ".bmp": "image/bmp",
                 ".heic": "image/heic",
                 ".heif": "image/heif",
+                ".oga": "audio/oga",
+                ".ogg": "audio/ogg",
+                ".opus": "audio/ogg",
+                ".mp3": "audio/mpeg",
+                ".m4a": "audio/m4a",
+                ".wav": "audio/wav",
+                ".aac": "audio/aac",
+                ".flac": "audio/flac",
+                ".mp4": "audio/mp4",
+                ".pdf": "application/pdf",
+                ".doc": "application/msword",
+                ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ".txt": "text/plain",
+                ".csv": "text/csv",
+                ".md": "text/markdown",
             }
             lower_mime = ext_map.get(suffix, lower_mime)
 
