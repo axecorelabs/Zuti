@@ -68,65 +68,83 @@ class MediaService:
             logger.warning("OPENROUTER_API_KEY is not configured — image description skipped")
             return None
 
-        # Convert HEIC/HEIF → JPEG: most vision APIs only accept JPEG/PNG/GIF/WebP
-        _heif_mimes = {"image/heic", "image/heif", "image/heic-sequence", "image/heif-sequence"}
-        if mime_type.lower() in _heif_mimes:
-            try:
-                import pillow_heif
-                pillow_heif.register_heif_opener()
-                from PIL import Image as PILImage
-                img = PILImage.open(io.BytesIO(content_bytes))
+        # Normalize source images to improve provider compatibility.
+        # Keep animated GIFs unchanged; convert other formats (including HEIC/HEIF) to JPEG.
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+            from PIL import Image as PILImage
+
+            img = PILImage.open(io.BytesIO(content_bytes))
+            img.load()
+            image_format = (img.format or "").upper()
+            if image_format == "GIF" and getattr(img, "is_animated", False):
+                mime_type = "image/gif"
+            else:
                 buf = io.BytesIO()
                 img.convert("RGB").save(buf, format="JPEG", quality=90)
                 content_bytes = buf.getvalue()
                 mime_type = "image/jpeg"
-                logger.info("Converted HEIC/HEIF image to JPEG for vision processing")
-            except Exception as _e:
-                logger.warning("HEIC/HEIF → JPEG conversion failed: %s — sending raw to vision model", _e)
+        except Exception as _e:
+            logger.warning("Image normalization failed: %s — sending raw bytes to vision model", _e)
 
         b64 = base64.b64encode(content_bytes).decode("ascii")
         data_uri = f"data:{mime_type};base64,{b64}"
+        models_to_try: list[str] = []
+        configured_model = (settings.MEDIA_VISION_MODEL or "").strip()
+        if configured_model:
+            models_to_try.append(configured_model)
+        # Fallback to an image-focused model if the configured model is unavailable/rejected.
+        if "google/gemini-2.5-flash-image" not in models_to_try:
+            models_to_try.append("google/gemini-2.5-flash-image")
 
         import httpx
         async with httpx.AsyncClient(timeout=30) as http:
-            response = await http.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.MEDIA_VISION_MODEL,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": data_uri},
-                                },
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "Describe this image concisely for a customer service AI. "
-                                        "Focus on what the customer is likely showing or asking about. "
-                                        "If it contains text (e.g. a screenshot, form, invoice, label), "
-                                        "include all visible text verbatim."
-                                    ),
-                                },
-                            ],
-                        }
-                    ],
-                    "max_tokens": 512,
-                },
-            )
+            for model in models_to_try:
+                response = await http.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": data_uri},
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "Describe this image concisely for a customer service AI. "
+                                            "Focus on what the customer is likely showing or asking about. "
+                                            "If it contains text (e.g. a screenshot, form, invoice, label), "
+                                            "include all visible text verbatim."
+                                        ),
+                                    },
+                                ],
+                            }
+                        ],
+                        "max_tokens": 512,
+                    },
+                )
 
-        if not response.is_success:
-            logger.warning("Vision model request failed (%d): %s", response.status_code, response.text[:200])
-            return None
+                if response.is_success:
+                    result = response.json()
+                    return result.get("choices", [{}])[0].get("message", {}).get("content") or None
 
-        result = response.json()
-        return result.get("choices", [{}])[0].get("message", {}).get("content") or None
+                logger.warning(
+                    "Vision model request failed for %s (%d): %s",
+                    model,
+                    response.status_code,
+                    response.text[:200],
+                )
+
+        return None
 
     # ── Documents ────────────────────────────────────────────────────────────
 

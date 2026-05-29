@@ -359,6 +359,11 @@ export class WhatsAppProcessor {
               });
               mediaStorageKey = uploaded.storageKey;
               mediaPublicUrl = uploaded.publicUrl;
+              if (!mediaPublicUrl) {
+                this.logger.warn(
+                  `WhatsApp media uploaded without preview URL (bucket likely private and signed URL unavailable): ${uploaded.storageKey}`,
+                );
+              }
             } catch (error: unknown) {
               const reason = error instanceof Error ? error.message : String(error);
               this.logger.warn(`WhatsApp media upload to Supabase failed: ${reason}`);
@@ -410,6 +415,11 @@ export class WhatsAppProcessor {
                     metadata: { channel: 'WHATSAPP', kind: normalizedType },
                   }).catch(() => null);
                 }
+              } else {
+                const reason = understanding?.error ?? 'media processing service unreachable';
+                this.logger.warn(
+                  `WhatsApp media understanding unavailable for ${normalizedType} (${media.fileName ?? media.mediaId}): ${reason}`,
+                );
               }
             } else {
               this.logger.warn(`Daily media processing limit reached for org ${organizationId} — skipping AI understanding`);

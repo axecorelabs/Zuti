@@ -7,6 +7,7 @@ export interface SupabaseStorageConfig {
   bucket: string;
   publicBucket: boolean;
   publicBaseUrl?: string;
+  signedUrlExpiresSeconds: number;
 }
 
 export interface SupabaseUploadResult {
@@ -32,6 +33,10 @@ export function resolveSupabaseStorageConfig(config: ConfigService): SupabaseSto
   const publicBucketRaw = (config.get<string>('SUPABASE_STORAGE_PUBLIC') ?? 'false').trim().toLowerCase();
   const publicBucket = publicBucketRaw === 'true' || publicBucketRaw === '1' || publicBucketRaw === 'yes';
   const publicBaseUrl = (config.get<string>('SUPABASE_STORAGE_PUBLIC_BASE_URL') ?? '').trim() || undefined;
+  const signedUrlExpiresRaw = Number.parseInt((config.get<string>('SUPABASE_STORAGE_SIGNED_URL_EXPIRES_SECONDS') ?? '604800').trim(), 10);
+  const signedUrlExpiresSeconds = Number.isFinite(signedUrlExpiresRaw) && signedUrlExpiresRaw > 0
+    ? signedUrlExpiresRaw
+    : 604800;
 
   return {
     url: normalizeUrl(url),
@@ -39,7 +44,29 @@ export function resolveSupabaseStorageConfig(config: ConfigService): SupabaseSto
     bucket,
     publicBucket,
     publicBaseUrl,
+    signedUrlExpiresSeconds,
   };
+}
+
+async function createSignedObjectUrl(
+  storage: SupabaseStorageConfig,
+  storageKey: string,
+): Promise<string | undefined> {
+  const endpoint = `${storage.url}/storage/v1/object/sign/${encodeURIComponent(storage.bucket)}/${storageKey}`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${storage.serviceRoleKey}`,
+      apikey: storage.serviceRoleKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ expiresIn: storage.signedUrlExpiresSeconds }),
+  });
+  if (!response.ok) return undefined;
+  const payload = (await response.json().catch(() => ({}))) as { signedURL?: string; signedUrl?: string };
+  const raw = payload.signedURL ?? payload.signedUrl;
+  if (!raw) return undefined;
+  return raw.startsWith('http') ? raw : `${storage.url}${raw}`;
 }
 
 export async function uploadBufferToSupabaseStorage(
@@ -81,7 +108,7 @@ export async function uploadBufferToSupabaseStorage(
 
   const publicUrl = storage.publicBucket
     ? `${normalizeUrl(storage.publicBaseUrl ?? storage.url)}/storage/v1/object/public/${encodeURIComponent(storage.bucket)}/${storageKey}`
-    : undefined;
+    : await createSignedObjectUrl(storage, storageKey);
 
   return { storageKey, publicUrl };
 }
