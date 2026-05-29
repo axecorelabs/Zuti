@@ -373,10 +373,15 @@ export class WhatsAppProcessor {
           // Skip video: it is escalated to a human agent who will view it directly.
           if (!isVideoMessage) {
             if (await this.isMediaProcessingAllowed(organizationId)) {
+              const rawMimeType = downloaded.mimeType ?? media.mimeType ?? 'application/octet-stream';
+              const normalizedMimeType = rawMimeType.toLowerCase().split(';')[0].trim();
+              const mimeForAi = normalizedType === 'image' && (!normalizedMimeType || normalizedMimeType === 'application/octet-stream')
+                ? 'image/jpeg'
+                : rawMimeType;
               const understanding = await callMediaProcess(
                 this.config,
                 downloaded.bytes,
-                downloaded.mimeType ?? media.mimeType ?? 'application/octet-stream',
+                mimeForAi,
                 downloaded.fileName ?? media.fileName,
               );
               if (understanding?.text) {
