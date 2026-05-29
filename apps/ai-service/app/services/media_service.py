@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import re
 from pathlib import Path
 from app.core.config import settings
 
@@ -24,6 +25,26 @@ _WHISPER_EXTENSION_MAP = {
     "audio/webm": "webm", "audio/flac": "flac", "audio/m4a": "m4a",
     "audio/aac": "aac", "video/ogg": "ogg",
 }
+
+
+def _clean_vision_output(text: str) -> str:
+    """Remove meta lead-ins so output is directly customer-facing."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+
+    prefixes = [
+        r"^here'?s\s+a\s+concise\s+description\s+of\s+the\s+image(?:\s+for\s+a\s+customer\s+service\s+ai)?\s*:\s*",
+        r"^concise\s+description\s*:\s*",
+        r"^image\s+description\s*:\s*",
+        r"^the\s+image\s+shows\s*:\s*",
+    ]
+    for pattern in prefixes:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+
+    cleaned = cleaned.strip()
+    cleaned = re.sub(r"^['\"`\-:\s]+", "", cleaned)
+    return cleaned.strip()
 
 
 class MediaService:
@@ -121,10 +142,11 @@ class MediaService:
                                     {
                                         "type": "text",
                                         "text": (
-                                            "Describe this image concisely for a customer service AI. "
-                                            "Focus on what the customer is likely showing or asking about. "
-                                            "If it contains text (e.g. a screenshot, form, invoice, label), "
-                                            "include all visible text verbatim."
+                                            "Describe only what is visible in this image in plain, direct language. "
+                                            "Do not include meta-intro text (for example: 'Here is a description'). "
+                                            "Do not mention that you are an AI or explain your process. "
+                                            "If there is visible text, transcribe it verbatim. "
+                                            "Return only the description content."
                                         ),
                                     },
                                 ],
@@ -136,7 +158,9 @@ class MediaService:
 
                 if response.is_success:
                     result = response.json()
-                    return result.get("choices", [{}])[0].get("message", {}).get("content") or None
+                    raw_content = result.get("choices", [{}])[0].get("message", {}).get("content") or ""
+                    cleaned = _clean_vision_output(str(raw_content))
+                    return cleaned or None
 
                 logger.warning(
                     "Vision model request failed for %s (%d): %s",
