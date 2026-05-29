@@ -902,9 +902,13 @@ export class EmailProcessor {
       }
       const latestAssistantReply = recentMessages.find((m) => m.role === 'ASSISTANT')?.content;
       if (shouldCollapseRepeatedReply(finalAiText, latestAssistantReply)) {
-        finalAiText = forwardingResult.canClaimCompleted
-          ? 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.'
-          : 'I understand. I can continue helping once you share the remaining required details.';
+        const hasMissingFieldReason = forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS';
+        if (forwardingResult.canClaimCompleted) {
+          finalAiText = 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.';
+        } else if (hasMissingFieldReason) {
+          finalAiText = deterministicFollowUp
+            ?? 'I understand. I can continue helping once you share the remaining required details.';
+        }
       }
 
       this.logger.debug(

@@ -186,6 +186,94 @@ function isStrictPhone(value: string): boolean {
   return digits.length >= 7 && digits.length <= 15;
 }
 
+function normalizeSpokenEmail(raw: string): string | null {
+  const compact = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\u2018\u2019\u201C\u201D]/g, '')
+    .replace(/[,;!?]/g, ' ')
+    .replace(/\s+/g, ' ');
+
+  if (!compact) return null;
+
+  if (isStrictEmail(compact)) return compact;
+
+  const normalized = compact
+    .replace(/\s*\(at\)\s*|\s+at\s+/g, '@')
+    .replace(/\s*\(dot\)\s*|\s+dot\s+/g, '.')
+    .replace(/\s*\(underscore\)\s*|\s+underscore\s+/g, '_')
+    .replace(/\s*\(dash\)\s*|\s+dash\s+/g, '-')
+    .replace(/\s*\(plus\)\s*|\s+plus\s+/g, '+')
+    .replace(/\s+/g, '');
+
+  return isStrictEmail(normalized) ? normalized : null;
+}
+
+function extractLikelyEmail(text: string): string | null {
+  const directEmailMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+  if (directEmailMatch?.[0]) {
+    const direct = normalizeSpokenEmail(directEmailMatch[0]);
+    if (direct) return direct;
+  }
+
+  const spokenEmailPatterns = [
+    /\b([a-z0-9._%+-]{1,64})\s+(?:at|\(at\))\s+([a-z0-9.-]+\s+(?:dot|\(dot\))\s+[a-z]{2,}(?:\s+(?:dot|\(dot\))\s+[a-z]{2,})?)\b/i,
+    /\b([a-z0-9._%+-]{1,64})\s+(?:at|\(at\))\s+([a-z0-9.-]+\.[a-z]{2,}(?:\.[a-z]{2,})?)\b/i,
+  ];
+
+  for (const pattern of spokenEmailPatterns) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const candidate = normalizeSpokenEmail(`${match[1]} at ${match[2]}`);
+    if (candidate) return candidate;
+  }
+
+  return null;
+}
+
+function shouldContinuePendingContract(actionType: ActionType, messageText: string): boolean {
+  const text = messageText.trim().toLowerCase();
+  if (!text) return false;
+
+  const explicitStop = [
+    'no problem',
+    'no issue',
+    'there is no problem',
+    'there is no issue',
+    'never mind',
+    'nevermind',
+    'forget it',
+    'cancel this',
+    'not an issue',
+  ];
+  if (explicitStop.some((phrase) => text.includes(phrase))) return false;
+
+  const socialCheckIn = [
+    'how are you',
+    'are you good',
+    'hope you are good',
+    'what\'s up',
+    'reply to this',
+    'just checking',
+  ];
+  if (socialCheckIn.some((phrase) => text.includes(phrase))) return false;
+
+  if (extractLikelyEmail(text)) return true;
+
+  switch (actionType) {
+    case 'TECHNICAL_ISSUE':
+      return /(issue|problem|error|bug|failing|fails|crash|cannot|can\'t|unable|not working|internal server error)/i.test(text);
+    case 'MEETING_REQUEST':
+      return /(meeting|book|schedule|available|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm)/i.test(text);
+    case 'CONSULTATION_REQUEST':
+      return /(consultation|consulting|demo|sales|package|integration|onboarding|implementation)/i.test(text);
+    case 'SALES_ORDER_REQUEST':
+      return /(order|buy|purchase|quantity|unit|product)/i.test(text);
+    default:
+      return true;
+  }
+}
+
 function rankActionPriority(sourceText: string): 'LOW' | 'NORMAL' | 'HIGH' | 'URGENT' {
   const source = sourceText.toLowerCase();
   if (/(urgent|asap|critical|emergency|outage|immediately|today)/i.test(source)) return 'URGENT';
@@ -421,10 +509,13 @@ export class ActionForwardingService {
     const extracted: Record<string, string> = {};
 
     if (input.customerName?.trim()) extracted.customer_name = input.customerName.trim();
-    if (input.customerEmail?.trim()) extracted.customer_email = input.customerEmail.trim().toLowerCase();
+    if (input.customerEmail?.trim()) {
+      const normalizedCustomerEmail = normalizeSpokenEmail(input.customerEmail);
+      if (normalizedCustomerEmail) extracted.customer_email = normalizedCustomerEmail;
+    }
 
-    const emailMatch = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
-    if (emailMatch?.[0]) extracted.customer_email = emailMatch[0].toLowerCase();
+    const detectedEmail = extractLikelyEmail(text);
+    if (detectedEmail) extracted.customer_email = detectedEmail;
     const phoneMatch = text.match(/(?:\+?\d[\d\s().-]{6,}\d)/);
     if (phoneMatch?.[0]) extracted.customer_phone = phoneMatch[0].trim();
     const nameMatch = text.match(/\b(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z\s'-]{1,60})\b/i);
@@ -939,6 +1030,13 @@ export class ActionForwardingService {
       const metadata = ((conversation?.metadata as Record<string, unknown> | null) ?? {});
       const pendingActionType = this.findPendingContractAction(metadata);
       if (!pendingActionType) {
+        return this.buildForwardingResult({
+          status: 'NO_INTENT',
+          reason: 'NO_ACTIONABLE_INTENT',
+        });
+      }
+
+      if (!shouldContinuePendingContract(pendingActionType, input.messageText)) {
         return this.buildForwardingResult({
           status: 'NO_INTENT',
           reason: 'NO_ACTIONABLE_INTENT',

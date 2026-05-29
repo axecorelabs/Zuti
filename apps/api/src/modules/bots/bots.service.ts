@@ -1827,9 +1827,13 @@ export class BotsService {
 
       const latestAssistantReply = priorMessages.find((m) => m.role === 'ASSISTANT')?.content;
       if (shouldCollapseRepeatedReply(aiReply, latestAssistantReply)) {
-        aiReply = forwardingResult.canClaimCompleted
-          ? 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.'
-          : 'I understand. I can continue helping once you share the remaining required details.';
+        const hasMissingFieldReason = forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS';
+        if (forwardingResult.canClaimCompleted) {
+          aiReply = 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.';
+        } else if (hasMissingFieldReason) {
+          aiReply = deterministicFollowUp
+            ?? 'I understand. I can continue helping once you share the remaining required details.';
+        }
       }
 
       // Store AI message
