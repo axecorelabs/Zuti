@@ -12,7 +12,7 @@ export interface MediaProcessResult {
 /**
  * Ask the AI service to extract usable text from a media file
  * (transcription for audio/voice, description for images, text extraction for documents).
- * Returns null when the AI service is unreachable or not configured.
+ * Returns null only when AI service URL is not configured.
  */
 export async function callMediaProcess(
   config: ConfigService,
@@ -40,14 +40,24 @@ export async function callMediaProcess(
     });
 
     if (!response.ok) {
-      logger.warn(`Media process endpoint returned ${response.status} for ${fileName ?? mimeType}`);
-      return null;
+      const detail = (await response.text().catch(() => '')).trim();
+      const message = `media process endpoint returned ${response.status}${detail ? `: ${detail.slice(0, 300)}` : ''}`;
+      logger.warn(`${message} for ${fileName ?? mimeType}`);
+      return {
+        kind: 'unsupported',
+        text: null,
+        error: message,
+      };
     }
 
     return (await response.json()) as MediaProcessResult;
   } catch (error: unknown) {
     const reason = error instanceof Error ? error.message : String(error);
     logger.warn(`Media processing call failed for ${fileName ?? mimeType}: ${reason}`);
-    return null;
+    return {
+      kind: 'unsupported',
+      text: null,
+      error: `media processing call failed: ${reason}`,
+    };
   }
 }

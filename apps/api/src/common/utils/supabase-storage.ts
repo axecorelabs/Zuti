@@ -66,7 +66,10 @@ async function createSignedObjectUrl(
   const payload = (await response.json().catch(() => ({}))) as { signedURL?: string; signedUrl?: string };
   const raw = payload.signedURL ?? payload.signedUrl;
   if (!raw) return undefined;
-  return raw.startsWith('http') ? raw : `${storage.url}${raw}`;
+  if (raw.startsWith('http')) return raw;
+  if (raw.startsWith('/storage/v1/')) return `${storage.url}${raw}`;
+  if (raw.startsWith('/object/')) return `${storage.url}/storage/v1${raw}`;
+  return `${storage.url}/storage/v1/${raw.replace(/^\/+/, '')}`;
 }
 
 export async function uploadBufferToSupabaseStorage(
