@@ -10,6 +10,24 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str = ""
     JINA_API_KEY: str = ""  # https://jina.ai — free 1M tokens/month
 
+    # OpenAI — used for Whisper audio transcription (leave blank to use Groq instead)
+    OPENAI_API_KEY: str = ""
+
+    # Whisper transcription — configurable provider (Groq, OpenAI, or any OpenAI-compatible)
+    # If WHISPER_API_KEY is set it takes priority over OPENAI_API_KEY
+    WHISPER_API_KEY: str = ""  # e.g. Groq key: gsk_...
+    WHISPER_API_BASE_URL: str = "https://api.openai.com/v1"  # Groq: https://api.groq.com/openai/v1
+    WHISPER_MODEL: str = "whisper-1"  # Groq: whisper-large-v3-turbo
+
+    # Media processing (transcription, image description, document extraction)
+    MEDIA_PROCESSING_ENABLED: bool = True
+    MEDIA_VISION_MODEL: str = "google/gemini-flash-1.5"
+
+    # Shared secret for internal API calls (NestJS → AI service).
+    # Set INTERNAL_API_SECRET to a strong random string in both services.
+    # Leave blank to disable auth (development only).
+    INTERNAL_API_SECRET: str = ""
+
     # Qdrant
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""
@@ -25,6 +43,11 @@ class Settings(BaseSettings):
 
     # Knowledge ingest controls
     KNOWLEDGE_FILE_INGEST_ENABLED: bool = False
+
+    # Uploaded file safety / virus scanning
+    FILE_SCAN_URL: str = ""
+    FILE_SCAN_REQUIRED: bool = True
+    FILE_SCAN_TIMEOUT_MS: int = 10000
 
     class Config:
         env_file = "../../.env"

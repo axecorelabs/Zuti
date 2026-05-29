@@ -1,7 +1,7 @@
 import { Process, Processor } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
-import { Prisma } from '@prisma/client';
+import { AttachmentKind, AiUsageType, Prisma } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -28,6 +28,8 @@ import { ActionForwardingService, ActionForwardingResult } from '../action-forwa
 import { WHATSAPP_QUEUE } from './queue.module';
 import { extractWhatsAppConfig, sendWhatsAppText } from '../../common/utils/whatsapp';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
+import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
+import { callMediaProcess } from '../../common/utils/media-processing';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -51,11 +53,25 @@ export interface WhatsAppMessageJob {
   profileName?: string;
   messageId: string;
   text: string;
+  messageType?: string;
+  media?: {
+    type?: string;
+    mediaId?: string;
+    mediaUrl?: string;
+    mimeType?: string;
+    fileName?: string;
+    caption?: string;
+  };
 }
 
 @Processor(WHATSAPP_QUEUE)
 export class WhatsAppProcessor {
   private readonly logger = new Logger(WhatsAppProcessor.name);
+  private static readonly BLOCKED_UPLOAD_EXTENSIONS = new Set([
+    '.exe', '.dll', '.msi', '.scr', '.bat', '.cmd', '.com', '.ps1', '.vbs', '.js',
+    '.jar', '.apk', '.ipa', '.pkg', '.dmg', '.iso', '.lnk', '.reg', '.hta',
+  ]);
+  private static readonly EICAR_SIGNATURE = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -73,9 +89,156 @@ export class WhatsAppProcessor {
     private readonly actionForwarding: ActionForwardingService,
   ) {}
 
+  private get fileScanUrl(): string {
+    return (this.config.get<string>('FILE_SCAN_URL') ?? '').trim();
+  }
+
+  private get fileScanRequired(): boolean {
+    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'true').trim().toLowerCase();
+    return raw !== 'false' && raw !== '0' && raw !== 'no';
+  }
+
+  private get fileScanTimeoutMs(): number {
+    const parsed = Number(this.config.get<string>('FILE_SCAN_TIMEOUT_MS') ?? '10000');
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 10000;
+  }
+
+  private extensionIsBlocked(fileName?: string): boolean {
+    const lower = (fileName ?? '').toLowerCase();
+    return Array.from(WhatsAppProcessor.BLOCKED_UPLOAD_EXTENSIONS).some((ext) => lower.endsWith(ext));
+  }
+
+  private async isMediaProcessingAllowed(organizationId: string): Promise<boolean> {
+    const limit = Number(this.config.get<string>('MEDIA_PROCESSING_DAILY_LIMIT') ?? '200');
+    if (!Number.isFinite(limit) || limit <= 0) return true;
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const count = await this.prisma.aiUsageEvent.count({
+      where: {
+        organizationId,
+        usageType: { in: ['MEDIA_TRANSCRIPTION', 'MEDIA_VISION'] as any[] },
+        createdAt: { gte: startOfDay },
+      },
+    });
+    return count < limit;
+  }
+
+  private async runFileScan(content: Buffer, fileName?: string, mimeType?: string): Promise<{ clean: boolean; reason?: string }> {
+    if (this.extensionIsBlocked(fileName)) {
+      return { clean: false, reason: `Blocked file type: ${fileName ?? 'unknown'}` };
+    }
+
+    if (content.includes(Buffer.from(WhatsAppProcessor.EICAR_SIGNATURE))) {
+      return { clean: false, reason: 'EICAR test signature detected' };
+    }
+
+    const scanUrl = this.fileScanUrl;
+    if (!scanUrl) {
+      if (this.fileScanRequired) {
+        return { clean: false, reason: 'FILE_SCAN_URL is not configured' };
+      }
+      this.logger.warn(`FILE_SCAN_URL is not configured; accepted WhatsApp media ${fileName ?? '(unnamed)'} using heuristic checks only.`);
+      return { clean: true };
+    }
+
+    try {
+      const response = await fetch(scanUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: fileName,
+          content_type: mimeType,
+          content_base64: content.toString('base64'),
+        }),
+        signal: AbortSignal.timeout(this.fileScanTimeoutMs),
+      });
+
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        return { clean: false, reason: `scan service rejected file (${response.status})` };
+      }
+      if (!result || result.clean !== true) {
+        return { clean: false, reason: typeof result?.reason === 'string' ? result.reason : 'malware detected' };
+      }
+      return { clean: true };
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { clean: false, reason: `scan request failed: ${reason}` };
+    }
+  }
+
+  private extractFileNameFromContentDisposition(value?: string | null): string | undefined {
+    if (!value) return undefined;
+    const plain = value.match(/filename="?([^";]+)"?/i);
+    if (plain && plain[1]) return plain[1].trim();
+    return undefined;
+  }
+
+  private async downloadWhatsAppMedia(
+    bot: {
+      whatsappProvider: 'META' | 'TWILIO' | null;
+      whatsappConfig: unknown;
+    },
+    media: NonNullable<WhatsAppMessageJob['media']>,
+  ): Promise<{ bytes: Buffer; mimeType?: string; fileName?: string } | null> {
+    const config = extractWhatsAppConfig(bot.whatsappConfig);
+    const timeoutSignal = AbortSignal.timeout(this.fileScanTimeoutMs);
+
+    if (bot.whatsappProvider === 'META') {
+      const mediaId = media.mediaId?.trim();
+      const accessToken = typeof config.accessToken === 'string' ? config.accessToken.trim() : '';
+      if (!mediaId || !accessToken) return null;
+
+      const metaResponse = await fetch(`https://graph.facebook.com/v20.0/${encodeURIComponent(mediaId)}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: timeoutSignal,
+      });
+      if (!metaResponse.ok) return null;
+      const metaJson = await metaResponse.json().catch(() => null) as Record<string, unknown> | null;
+      const url = typeof metaJson?.url === 'string' ? metaJson.url : null;
+      if (!url) return null;
+
+      const fileResponse = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: timeoutSignal,
+      });
+      if (!fileResponse.ok) return null;
+
+      const bytes = Buffer.from(await fileResponse.arrayBuffer());
+      const mimeType = fileResponse.headers.get('content-type') ?? media.mimeType;
+      const fileName = media.fileName
+        ?? this.extractFileNameFromContentDisposition(fileResponse.headers.get('content-disposition'))
+        ?? `${mediaId}`;
+      return { bytes, mimeType: mimeType ?? undefined, fileName: fileName ?? undefined };
+    }
+
+    if (bot.whatsappProvider === 'TWILIO') {
+      const mediaUrl = media.mediaUrl?.trim();
+      const accountSid = typeof config.accountSid === 'string' ? config.accountSid.trim() : '';
+      const authToken = typeof config.authToken === 'string' ? config.authToken.trim() : '';
+      if (!mediaUrl || !accountSid || !authToken) return null;
+
+      const auth = Buffer.from(`${accountSid}:${authToken}`).toString('base64');
+      const fileResponse = await fetch(mediaUrl, {
+        headers: { Authorization: `Basic ${auth}` },
+        signal: timeoutSignal,
+      });
+      if (!fileResponse.ok) return null;
+
+      const bytes = Buffer.from(await fileResponse.arrayBuffer());
+      const mimeType = fileResponse.headers.get('content-type') ?? media.mimeType;
+      const fileName = media.fileName
+        ?? this.extractFileNameFromContentDisposition(fileResponse.headers.get('content-disposition'))
+        ?? `twilio-media`;
+      return { bytes, mimeType: mimeType ?? undefined, fileName: fileName ?? undefined };
+    }
+
+    return null;
+  }
+
   @Process()
   async handle(job: Job<WhatsAppMessageJob>) {
-    const { botId, organizationId, userId, phoneNumber, profileName, messageId, text } = job.data;
+    const { botId, organizationId, userId, phoneNumber, profileName, messageId, text, messageType, media } = job.data;
     this.logger.log(`Processing WhatsApp message for bot=${botId} user=${userId}`);
 
     const bot = await this.prisma.bot.findUnique({
@@ -153,20 +316,227 @@ export class WhatsAppProcessor {
       });
     }
 
+    const normalizedType = (messageType ?? 'text').toLowerCase();
+    const isVideoMessage = normalizedType === 'video';
+    let resolvedUserText = text?.trim() || (isVideoMessage
+      ? '[Video received — a human agent will review]'
+      : normalizedType === 'image'
+        ? '[Image received]'
+        : normalizedType === 'audio' || normalizedType === 'voice'
+          ? '[Audio message received]'
+          : normalizedType === 'document'
+            ? '[Document received]'
+            : '[Attachment received]');
+
+    let mediaScanStatus: 'SKIPPED' | 'CLEAN' | 'BLOCKED' = 'SKIPPED';
+    let mediaScanReason: string | undefined;
+    let mediaStorageKey: string | undefined;
+    let mediaPublicUrl: string | undefined;
+    if (normalizedType !== 'text' && media) {
+      const downloaded = await this.downloadWhatsAppMedia(bot, media).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`WhatsApp media download failed for scan: ${reason}`);
+        return null;
+      });
+      if (!downloaded) {
+        mediaScanStatus = this.fileScanRequired ? 'BLOCKED' : 'SKIPPED';
+        mediaScanReason = this.fileScanRequired ? 'Unable to retrieve media for virus scan' : 'Media retrieval skipped';
+      } else {
+        const verdict = await this.runFileScan(downloaded.bytes, downloaded.fileName ?? media.fileName, downloaded.mimeType ?? media.mimeType);
+        mediaScanStatus = verdict.clean ? 'CLEAN' : 'BLOCKED';
+        mediaScanReason = verdict.reason;
+        if (verdict.clean) {
+          // Upload ALL clean media to Supabase (audio/docs for AI context; video for agent viewing)
+          const storage = resolveSupabaseStorageConfig(this.config);
+          if (storage) {
+            try {
+              const uploaded = await uploadBufferToSupabaseStorage(storage, {
+                buffer: downloaded.bytes,
+                mimeType: downloaded.mimeType ?? media.mimeType ?? 'application/octet-stream',
+                organizationId,
+                channel: 'whatsapp',
+                fileName: downloaded.fileName ?? media.fileName,
+              });
+              mediaStorageKey = uploaded.storageKey;
+              mediaPublicUrl = uploaded.publicUrl;
+            } catch (error: unknown) {
+              const reason = error instanceof Error ? error.message : String(error);
+              this.logger.warn(`WhatsApp media upload to Supabase failed: ${reason}`);
+            }
+          }
+          // AI media understanding — extract content so the AI can respond meaningfully.
+          // Skip video: it is escalated to a human agent who will view it directly.
+          if (!isVideoMessage) {
+            if (await this.isMediaProcessingAllowed(organizationId)) {
+              const understanding = await callMediaProcess(
+                this.config,
+                downloaded.bytes,
+                downloaded.mimeType ?? media.mimeType ?? 'application/octet-stream',
+                downloaded.fileName ?? media.fileName,
+              );
+              if (understanding?.text) {
+                const caption = text?.trim() ?? '';
+                let mediaUsageType: 'MEDIA_TRANSCRIPTION' | 'MEDIA_VISION' | null = null;
+                if (normalizedType === 'audio' || normalizedType === 'voice') {
+                  resolvedUserText = caption
+                    ? `${caption}\n[Voice note transcript: ${understanding.text}]`
+                    : `[Voice note] ${understanding.text}`;
+                  mediaUsageType = 'MEDIA_TRANSCRIPTION';
+                } else if (normalizedType === 'image') {
+                  resolvedUserText = caption
+                    ? `${caption}\n[Image: ${understanding.text}]`
+                    : understanding.text;
+                  mediaUsageType = 'MEDIA_VISION';
+                } else {
+                  // document, file, other — text extracted locally, no external API cost
+                  resolvedUserText = caption
+                    ? `${caption}\n[Attachment content: ${understanding.text}]`
+                    : `[Attachment] ${understanding.text}`;
+                }
+                if (mediaUsageType) {
+                  await this.aiUsage.record({
+                    organizationId,
+                    botId,
+                    conversationId: conversation.id,
+                    usageType: mediaUsageType as unknown as AiUsageType,
+                    metadata: { channel: 'WHATSAPP', kind: normalizedType },
+                  }).catch(() => null);
+                  await this.billing.debitUsageCredits({
+                    organizationId,
+                    usageType: mediaUsageType,
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    idempotencyKey: `wa:media:${messageId}`,
+                    metadata: { channel: 'WHATSAPP', kind: normalizedType },
+                  }).catch(() => null);
+                }
+              }
+            } else {
+              this.logger.warn(`Daily media processing limit reached for org ${organizationId} — skipping AI understanding`);
+            }
+          }
+        }
+      }
+    }
+
+    // Cap resolved text to prevent excessive token usage in downstream AI calls
+    if (resolvedUserText.length > 8000) {
+      resolvedUserText = resolvedUserText.slice(0, 8000) + '\n[... content truncated]';
+    }
+
     const userMessage = await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         role: 'USER',
-        content: text.trim(),
+        content: resolvedUserText,
         whatsappMsgId: messageId,
+        ...(normalizedType !== 'text'
+          ? {
+              metadata: {
+                media: {
+                  type: normalizedType,
+                  mediaId: media?.mediaId,
+                  mediaUrl: media?.mediaUrl,
+                  mimeType: media?.mimeType,
+                  fileName: media?.fileName,
+                  caption: media?.caption,
+                  storageKey: mediaStorageKey,
+                  url: mediaPublicUrl,
+                },
+                mediaScan: {
+                  status: mediaScanStatus,
+                  reason: mediaScanReason,
+                },
+              },
+            }
+          : {}),
       },
     });
+
+      if (normalizedType !== 'text') {
+        const attachmentKind = normalizedType === 'video'
+          ? AttachmentKind.VIDEO
+          : normalizedType === 'image'
+            ? AttachmentKind.IMAGE
+            : normalizedType === 'audio'
+              ? AttachmentKind.AUDIO
+              : normalizedType === 'voice'
+                ? AttachmentKind.VOICE
+                : normalizedType === 'document'
+                  ? AttachmentKind.DOCUMENT
+                  : AttachmentKind.FILE;
+        await this.prisma.messageAttachment.create({
+          data: {
+            messageId: userMessage.id,
+            kind: attachmentKind,
+            sourceRef: media?.mediaId ?? undefined,
+            url: media?.mediaUrl ?? undefined,
+            storageKey: mediaStorageKey,
+            fileName: media?.fileName ?? undefined,
+            mimeType: media?.mimeType ?? undefined,
+            caption: media?.caption ?? undefined,
+            metadata: {
+              type: normalizedType,
+              mediaId: media?.mediaId,
+              mediaUrl: media?.mediaUrl,
+              storageKey: mediaStorageKey,
+              url: mediaPublicUrl,
+              mediaScanStatus,
+              mediaScanReason,
+            },
+          },
+        });
+      }
 
     this.events.emitNewMessage(organizationId, {
       conversationId: conversation.id,
       message: userMessage,
       customerName: conversation.customerName,
     });
+
+    if (mediaScanStatus === 'BLOCKED') {
+      await sendWhatsAppText(this.http, {
+        provider: bot.whatsappProvider,
+        channelIdentifier: bot.whatsappChannelIdentifier,
+        phoneNumber: bot.whatsappPhoneNumber,
+        config: bot.whatsappConfig,
+      }, phoneNumber ?? userId, 'For security reasons, we could not accept that attachment. Please share a safe file format or contact a human agent.');
+      return;
+    }
+
+    if (isVideoMessage && conversation.mode === 'AI') {
+      const bestAgent = await this.orgs.findBestAgent(organizationId, 'video', bot.routeToRoles?.length ? bot.routeToRoles : ['AGENT']);
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+        },
+      });
+      this.events.emitConversationUpdate(organizationId, {
+        conversationId: conversation.id,
+        status: 'ESCALATED',
+        mode: 'HUMAN',
+        ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+      });
+      if (!bestAgent) {
+        await this.notifications.createOrgNotification(
+          organizationId,
+          'no_agent_available',
+          'Escalated WhatsApp video message with no agent available',
+          'A customer sent a video. The conversation was escalated but no agent was available.',
+          { conversationId: conversation.id, reason: 'video_requires_human' },
+        );
+      }
+      await sendWhatsAppText(this.http, {
+        provider: bot.whatsappProvider,
+        channelIdentifier: bot.whatsappChannelIdentifier,
+        phoneNumber: bot.whatsappPhoneNumber,
+        config: bot.whatsappConfig,
+      }, phoneNumber ?? userId, 'Thanks for sharing the video. I am connecting you with a human agent to review it now.');
+      return;
+    }
 
     let forwardingResult: ActionForwardingResult = {
       status: 'NO_INTENT',
@@ -190,7 +560,7 @@ export class WhatsAppProcessor {
       botId,
       conversationId: conversation.id,
       messageId: userMessage.id,
-      messageText: text.trim(),
+      messageText: resolvedUserText,
       channel: 'WHATSAPP',
       customerName,
       customerEmail: null,
@@ -248,7 +618,7 @@ export class WhatsAppProcessor {
       }
     }
 
-    await this.callAiAndRespond(conversation.id, bot, text.trim(), phoneNumber ?? userId, forwardingResult, userMessage.id);
+    await this.callAiAndRespond(conversation.id, bot, resolvedUserText, phoneNumber ?? userId, forwardingResult, userMessage.id);
   }
 
   private async callAiAndRespond(

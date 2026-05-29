@@ -1,7 +1,7 @@
 import { Processor, Process } from '@nestjs/bull';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bull';
-import { Prisma } from '@prisma/client';
+import { AttachmentKind, AiUsageType, Prisma } from '@prisma/client';
 import { TELEGRAM_QUEUE } from './queue.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { HttpService } from '@nestjs/axios';
@@ -28,6 +28,8 @@ import {
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
+import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
+import { callMediaProcess } from '../../common/utils/media-processing';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -140,7 +142,16 @@ export interface TelegramMessageJob {
   organizationId: string;
   message: {
     messageId: number;
-    text: string;
+    text?: string;
+    media?: {
+      kind: 'video' | 'voice' | 'audio' | 'document' | 'image';
+      fileId?: string;
+      mimeType?: string;
+      fileName?: string;
+      durationSec?: number;
+      sizeBytes?: number;
+      caption?: string;
+    };
     from: {
       id: number;
       username?: string;
@@ -153,6 +164,11 @@ export interface TelegramMessageJob {
 @Processor(TELEGRAM_QUEUE)
 export class TelegramProcessor {
   private readonly logger = new Logger(TelegramProcessor.name);
+  private static readonly BLOCKED_UPLOAD_EXTENSIONS = new Set([
+    '.exe', '.dll', '.msi', '.scr', '.bat', '.cmd', '.com', '.ps1', '.vbs', '.js',
+    '.jar', '.apk', '.ipa', '.pkg', '.dmg', '.iso', '.lnk', '.reg', '.hta',
+  ]);
+  private static readonly EICAR_SIGNATURE = 'X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*';
 
   constructor(
     private readonly prisma: PrismaService,
@@ -170,6 +186,109 @@ export class TelegramProcessor {
     private readonly activity: ActivityService,
     private readonly actionForwarding: ActionForwardingService,
   ) {}
+
+  private get fileScanUrl(): string {
+    return (this.config.get<string>('FILE_SCAN_URL') ?? '').trim();
+  }
+
+  private get fileScanRequired(): boolean {
+    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'true').trim().toLowerCase();
+    return raw !== 'false' && raw !== '0' && raw !== 'no';
+  }
+
+  private get fileScanTimeoutMs(): number {
+    const parsed = Number(this.config.get<string>('FILE_SCAN_TIMEOUT_MS') ?? '10000');
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 10000;
+  }
+
+  private extensionIsBlocked(fileName?: string): boolean {
+    const lower = (fileName ?? '').toLowerCase();
+    return Array.from(TelegramProcessor.BLOCKED_UPLOAD_EXTENSIONS).some((ext) => lower.endsWith(ext));
+  }
+
+  private async isMediaProcessingAllowed(organizationId: string): Promise<boolean> {
+    const limit = Number(this.config.get<string>('MEDIA_PROCESSING_DAILY_LIMIT') ?? '200');
+    if (!Number.isFinite(limit) || limit <= 0) return true;
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const count = await this.prisma.aiUsageEvent.count({
+      where: {
+        organizationId,
+        usageType: { in: ['MEDIA_TRANSCRIPTION', 'MEDIA_VISION'] as any[] },
+        createdAt: { gte: startOfDay },
+      },
+    });
+    return count < limit;
+  }
+
+  private async runFileScan(content: Buffer, fileName?: string, mimeType?: string): Promise<{ clean: boolean; reason?: string }> {
+    if (this.extensionIsBlocked(fileName)) {
+      return { clean: false, reason: `Blocked file type: ${fileName ?? 'unknown'}` };
+    }
+
+    if (content.includes(Buffer.from(TelegramProcessor.EICAR_SIGNATURE))) {
+      return { clean: false, reason: 'EICAR test signature detected' };
+    }
+
+    const scanUrl = this.fileScanUrl;
+    if (!scanUrl) {
+      if (this.fileScanRequired) {
+        return { clean: false, reason: 'FILE_SCAN_URL is not configured' };
+      }
+      this.logger.warn(`FILE_SCAN_URL is not configured; accepted Telegram media ${fileName ?? '(unnamed)'} using heuristic checks only.`);
+      return { clean: true };
+    }
+
+    try {
+      const response = await fetch(scanUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename: fileName,
+          content_type: mimeType,
+          content_base64: content.toString('base64'),
+        }),
+        signal: AbortSignal.timeout(this.fileScanTimeoutMs),
+      });
+
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        return { clean: false, reason: `scan service rejected file (${response.status})` };
+      }
+      if (!result || result.clean !== true) {
+        return { clean: false, reason: typeof result?.reason === 'string' ? result.reason : 'malware detected' };
+      }
+      return { clean: true };
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return { clean: false, reason: `scan request failed: ${reason}` };
+    }
+  }
+
+  private async downloadTelegramMedia(
+    telegramToken: string,
+    media: NonNullable<TelegramMessageJob['message']['media']>,
+  ): Promise<{ bytes: Buffer; mimeType?: string; fileName?: string } | null> {
+    if (!media.fileId) return null;
+    const timeoutSignal = AbortSignal.timeout(this.fileScanTimeoutMs);
+
+    const metaResponse = await fetch(`https://api.telegram.org/bot${telegramToken}/getFile?file_id=${encodeURIComponent(media.fileId)}`, {
+      signal: timeoutSignal,
+    });
+    if (!metaResponse.ok) return null;
+    const metaJson = await metaResponse.json().catch(() => null) as { ok?: boolean; result?: { file_path?: string } } | null;
+    if (!metaJson?.ok || !metaJson.result?.file_path) return null;
+
+    const fileResponse = await fetch(`https://api.telegram.org/file/bot${telegramToken}/${metaJson.result.file_path}`, {
+      signal: timeoutSignal,
+    });
+    if (!fileResponse.ok) return null;
+
+    const bytes = Buffer.from(await fileResponse.arrayBuffer());
+    const mimeType = fileResponse.headers.get('content-type') ?? media.mimeType;
+    const fileName = media.fileName ?? metaJson.result.file_path.split('/').pop() ?? media.fileId;
+    return { bytes, mimeType: mimeType ?? undefined, fileName: fileName ?? undefined };
+  }
 
   @Process()
   async handleMessage(job: Job<TelegramMessageJob>) {
@@ -239,15 +358,181 @@ export class TelegramProcessor {
       });
     }
 
+    const mediaKind = message.media?.kind;
+    const isVideoMessage = mediaKind === 'video';
+    const incomingText = (message.text ?? '').trim();
+    let resolvedUserText = incomingText || (isVideoMessage
+      ? '[Video received — a human agent will review]'
+      : mediaKind === 'image'
+        ? '[Image received]'
+        : mediaKind === 'audio' || mediaKind === 'voice'
+          ? '[Audio message received]'
+          : mediaKind === 'document'
+            ? '[Document received]'
+            : '[Attachment received]');
+
+    let mediaScanStatus: 'SKIPPED' | 'CLEAN' | 'BLOCKED' = 'SKIPPED';
+    let mediaScanReason: string | undefined;
+    let mediaStorageKey: string | undefined;
+    let mediaPublicUrl: string | undefined;
+    if (message.media) {
+      const downloaded = await this.downloadTelegramMedia(telegramToken, message.media).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Telegram media download failed for scan: ${reason}`);
+        return null;
+      });
+      if (!downloaded) {
+        mediaScanStatus = this.fileScanRequired ? 'BLOCKED' : 'SKIPPED';
+        mediaScanReason = this.fileScanRequired ? 'Unable to retrieve media for virus scan' : 'Media retrieval skipped';
+      } else {
+        const verdict = await this.runFileScan(downloaded.bytes, downloaded.fileName ?? message.media.fileName, downloaded.mimeType ?? message.media.mimeType);
+        mediaScanStatus = verdict.clean ? 'CLEAN' : 'BLOCKED';
+        mediaScanReason = verdict.reason;
+        if (verdict.clean) {
+          // Upload ALL clean media to Supabase (audio/docs for AI context; video for agent viewing)
+          const storage = resolveSupabaseStorageConfig(this.config);
+          if (storage) {
+            try {
+              const uploaded = await uploadBufferToSupabaseStorage(storage, {
+                buffer: downloaded.bytes,
+                mimeType: downloaded.mimeType ?? message.media.mimeType ?? 'application/octet-stream',
+                organizationId,
+                channel: 'telegram',
+                fileName: downloaded.fileName ?? message.media.fileName,
+              });
+              mediaStorageKey = uploaded.storageKey;
+              mediaPublicUrl = uploaded.publicUrl;
+            } catch (error: unknown) {
+              const reason = error instanceof Error ? error.message : String(error);
+              this.logger.warn(`Telegram media upload to Supabase failed: ${reason}`);
+            }
+          }
+          // AI media understanding — extract content so the AI can respond meaningfully.
+          // Skip video: it is escalated to a human agent who will view it directly.
+          if (!isVideoMessage) {
+            if (await this.isMediaProcessingAllowed(organizationId)) {
+              const understanding = await callMediaProcess(
+                this.config,
+                downloaded.bytes,
+                downloaded.mimeType ?? message.media.mimeType ?? 'application/octet-stream',
+                downloaded.fileName ?? message.media.fileName,
+              );
+              if (understanding?.text) {
+                const caption = incomingText || message.media.caption?.trim() || '';
+                let mediaUsageType: 'MEDIA_TRANSCRIPTION' | 'MEDIA_VISION' | null = null;
+                if (mediaKind === 'audio' || mediaKind === 'voice') {
+                  resolvedUserText = caption
+                    ? `${caption}\n[Voice note transcript: ${understanding.text}]`
+                    : `[Voice note] ${understanding.text}`;
+                  mediaUsageType = 'MEDIA_TRANSCRIPTION';
+                } else if (mediaKind === 'image') {
+                  resolvedUserText = caption
+                    ? `${caption}\n[Image: ${understanding.text}]`
+                    : understanding.text;
+                  mediaUsageType = 'MEDIA_VISION';
+                } else {
+                  // document, file, other — text extracted locally, no external API cost
+                  resolvedUserText = caption
+                    ? `${caption}\n[Attachment content: ${understanding.text}]`
+                    : `[Attachment] ${understanding.text}`;
+                }
+                if (mediaUsageType) {
+                  await this.aiUsage.record({
+                    organizationId,
+                    botId,
+                    conversationId: conversation.id,
+                    usageType: mediaUsageType as unknown as AiUsageType,
+                    metadata: { channel: 'TELEGRAM', kind: mediaKind },
+                  }).catch(() => null);
+                  await this.billing.debitUsageCredits({
+                    organizationId,
+                    usageType: mediaUsageType,
+                    promptTokens: 0,
+                    completionTokens: 0,
+                    idempotencyKey: `tg:media:${message.messageId}`,
+                    metadata: { channel: 'TELEGRAM', kind: mediaKind },
+                  }).catch(() => null);
+                }
+              }
+            } else {
+              this.logger.warn(`Daily media processing limit reached for org ${organizationId} — skipping AI understanding`);
+            }
+          }
+        }
+      }
+    }
+
+    // Cap resolved text to prevent excessive token usage in downstream AI calls
+    if (resolvedUserText.length > 8000) {
+      resolvedUserText = resolvedUserText.slice(0, 8000) + '\n[... content truncated]';
+    }
+
     // Store incoming message
     const userMessage = await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         role: 'USER',
-        content: message.text,
+        content: resolvedUserText,
         telegramMsgId: message.messageId,
+        ...(message.media
+          ? {
+              metadata: {
+                media: {
+                  kind: message.media.kind,
+                  fileId: message.media.fileId,
+                  mimeType: message.media.mimeType,
+                  fileName: message.media.fileName,
+                  durationSec: message.media.durationSec,
+                  sizeBytes: message.media.sizeBytes,
+                  caption: message.media.caption,
+                  storageKey: mediaStorageKey,
+                  url: mediaPublicUrl,
+                },
+                mediaScan: {
+                  status: mediaScanStatus,
+                  reason: mediaScanReason,
+                },
+              },
+            }
+          : {}),
       },
     });
+
+    if (message.media) {
+      const attachmentKind = message.media.kind === 'video'
+        ? AttachmentKind.VIDEO
+        : message.media.kind === 'image'
+          ? AttachmentKind.IMAGE
+          : message.media.kind === 'audio'
+            ? AttachmentKind.AUDIO
+            : message.media.kind === 'voice'
+              ? AttachmentKind.VOICE
+              : message.media.kind === 'document'
+                ? AttachmentKind.DOCUMENT
+                : AttachmentKind.FILE;
+      await this.prisma.messageAttachment.create({
+        data: {
+          messageId: userMessage.id,
+          kind: attachmentKind,
+          sourceRef: message.media.fileId,
+          url: mediaPublicUrl,
+          storageKey: mediaStorageKey,
+          fileName: message.media.fileName,
+          mimeType: message.media.mimeType,
+          sizeBytes: message.media.sizeBytes,
+          durationSec: message.media.durationSec,
+          caption: message.media.caption,
+          metadata: {
+            kind: message.media.kind,
+            fileId: message.media.fileId,
+            storageKey: mediaStorageKey,
+            url: mediaPublicUrl,
+            mediaScanStatus,
+            mediaScanReason,
+          },
+        },
+      });
+    }
 
     // Emit to inbox in real-time
     this.events.emitNewMessage(organizationId, {
@@ -255,6 +540,16 @@ export class TelegramProcessor {
       message: userMessage,
       customerName: conversation.customerName,
     });
+
+    if (mediaScanStatus === 'BLOCKED') {
+      await firstValueFrom(
+        this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+          chat_id: telegramChatId,
+          text: 'For security reasons, we could not accept that attachment. Please share a safe file format or contact a human agent.',
+        }),
+      );
+      return;
+    }
 
     const bot = await this.prisma.bot.findUnique({
       where: { id: botId },
@@ -281,7 +576,7 @@ export class TelegramProcessor {
       botId,
       conversationId: conversation.id,
       messageId: userMessage.id,
-      messageText: message.text,
+      messageText: resolvedUserText,
       channel: 'TELEGRAM',
       customerName: conversation.customerName,
       customerEmail: null,
@@ -325,7 +620,7 @@ export class TelegramProcessor {
           botId,
           conversationId: conversation.id,
           channel: 'TELEGRAM',
-          userReply: message.text.trim(),
+          userReply: resolvedUserText.trim(),
           lastAssistantMessage: lastAssistantMessage?.content ?? null,
         });
         if (rating === 'positive') {
@@ -384,8 +679,43 @@ export class TelegramProcessor {
       const routeToRoles = Array.isArray(bot?.routeToRoles) && bot.routeToRoles.length > 0
         ? bot.routeToRoles
         : ['AGENT'];
+
+      if (isVideoMessage) {
+        const bestAgent = await this.orgs.findBestAgent(organizationId, 'video', routeToRoles);
+        await this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: {
+            status: 'ESCALATED',
+            mode: 'HUMAN',
+            ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+          },
+        });
+        this.events.emitConversationUpdate(organizationId, {
+          conversationId: conversation.id,
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+        });
+        if (!bestAgent) {
+          await this.notifications.createOrgNotification(
+            organizationId,
+            'no_agent_available',
+            'Escalated Telegram video message with no agent available',
+            'A customer sent a video. The conversation was escalated but no agent was available.',
+            { conversationId: conversation.id, reason: 'video_requires_human' },
+          );
+        }
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+            chat_id: telegramChatId,
+            text: 'Thanks for sharing the video. I am connecting you with a human agent to review it now.',
+          }),
+        );
+        return;
+      }
+
       await this.callAiAndRespond(
-        conversation.id, botId, telegramChatId, telegramToken, organizationId, message.text,
+        conversation.id, botId, telegramChatId, telegramToken, organizationId, resolvedUserText,
         bot?.name ?? 'Assistant', systemPrompt, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
       );
     }

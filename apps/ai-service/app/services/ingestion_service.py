@@ -3,6 +3,7 @@ Ingestion service — parses documents and stores chunks in Qdrant.
 """
 from __future__ import annotations
 import logging
+import base64
 import re
 import socket
 import uuid
@@ -21,6 +22,15 @@ BLOCKED_SOURCE_EXTENSIONS = {
     ".cs", ".php", ".rb", ".swift", ".kt", ".scala", ".sql", ".sh", ".bash", ".zsh",
     ".yaml", ".yml", ".json", ".toml", ".ini", ".env", ".pem", ".key",
 }
+
+BLOCKED_UPLOAD_EXTENSIONS = {
+    ".exe", ".dll", ".msi", ".scr", ".bat", ".cmd", ".com", ".ps1", ".vbs", ".js",
+    ".jar", ".apk", ".ipa", ".pkg", ".dmg", ".iso", ".lnk", ".reg", ".hta",
+}
+
+EICAR_SIGNATURE = (
+    b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+)
 
 SECRET_PATTERNS = [
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.IGNORECASE),
@@ -119,6 +129,7 @@ class IngestionService:
         content_type: str,
         bot_id: str | None = None,
     ) -> int:
+        await self._scan_uploaded_file(content, filename, content_type)
         text = self._extract_text(content, filename, content_type)
         self._validate_file_safety(filename)
         self._validate_text_safety(text)
@@ -133,6 +144,40 @@ class IngestionService:
                 "bot_id": bot_id,
             },
         )
+
+    async def _scan_uploaded_file(self, content: bytes, filename: str, content_type: str) -> None:
+        lower_name = filename.lower()
+        if any(lower_name.endswith(ext) for ext in BLOCKED_UPLOAD_EXTENSIONS):
+            raise ValueError(f"Blocked file type: {filename}")
+
+        if EICAR_SIGNATURE in content:
+            raise ValueError("Virus scan failed: EICAR test signature detected")
+
+        scan_url = settings.FILE_SCAN_URL.strip()
+        if scan_url:
+            timeout_ms = settings.FILE_SCAN_TIMEOUT_MS if settings.FILE_SCAN_TIMEOUT_MS > 0 else 10000
+            async with httpx.AsyncClient(timeout=timeout_ms / 1000) as http:
+                response = await http.post(
+                    scan_url,
+                    json={
+                        "filename": filename,
+                        "content_type": content_type,
+                        "content_base64": base64.b64encode(content).decode("ascii"),
+                    },
+                )
+            response.raise_for_status()
+            data = response.json() if response.content else {}
+            if not isinstance(data, dict):
+                raise ValueError("Virus scan service returned an invalid response")
+            if data.get("clean") is not True:
+                reason = data.get("reason") or "malware detected"
+                raise ValueError(f"Virus scan failed: {reason}")
+            return
+
+        if settings.FILE_SCAN_REQUIRED:
+            raise ValueError("File virus scanning is required but no FILE_SCAN_URL is configured")
+
+        logger.warning("File scan backend is not configured; proceeding with heuristic-only checks for %s", filename)
 
     async def _ingest_text(
         self,

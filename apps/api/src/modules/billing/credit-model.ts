@@ -1,6 +1,8 @@
 export const CREDIT_UNITS_PER_CREDIT = 100;
 export const BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY = 50;
 export const BASE_CREDIT_UNITS_DEFAULT = 100;
+/** 0.25 credits per Whisper/vision call — covers external API cost without overcharging */
+export const MEDIA_PROCESSING_CREDIT_UNITS = 25;
 export const INCLUDED_PROMPT_TOKENS_PER_ACTION = 1000;
 export const INCLUDED_COMPLETION_TOKENS_PER_ACTION = 500;
 

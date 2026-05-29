@@ -7,7 +7,7 @@ import { firstValueFrom } from 'rxjs';
 import { render } from '@react-email/render';
 import * as React from 'react';
 import { BotReplyEmail } from '../mail/templates/BotReplyEmail';
-import { Prisma } from '@prisma/client';
+import { AttachmentKind, AiUsageType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
@@ -126,6 +126,16 @@ export interface EmailMessageJob {
   messageId: string;
   /** In-Reply-To header — if set, this is a reply in an existing thread */
   inReplyTo?: string;
+  hasAttachments?: boolean;
+  attachments?: Array<{
+    fileName?: string;
+    mimeType?: string;
+    sizeBytes?: number;
+    storageKey?: string;
+    url?: string;
+    /** Extracted text content (transcript, document text, image description) from AI service */
+    extractedText?: string;
+  }>;
 }
 
 @Processor(EMAIL_QUEUE)
@@ -155,6 +165,7 @@ export class EmailProcessor {
       botId, organizationId, toAddress,
       fromEmail, fromName, subject,
       bodyText, messageId, inReplyTo,
+      hasAttachments, attachments,
     } = job.data;
 
     const bot = await this.prisma.bot.findUnique({
@@ -228,19 +239,143 @@ export class EmailProcessor {
     }
 
     // Store user message
+    const hasInboundAttachments = hasAttachments === true || (attachments?.length ?? 0) > 0;
+    const hasVideoAttachment = (attachments ?? []).some((file) => (file.mimeType ?? '').toLowerCase().startsWith('video/'));
+    // Supplement body text with AI-extracted attachment content (transcripts, doc text, image descriptions)
+    const attachmentContextLines = (attachments ?? [])
+      .filter((a) => typeof a.extractedText === 'string' && a.extractedText.length > 0)
+      .map((a) => {
+        const mt = (a.mimeType ?? '').toLowerCase();
+        const label = mt.startsWith('audio/') ? 'Voice/audio transcript'
+          : mt.startsWith('image/') ? 'Image'
+          : 'Attachment content';
+        return `[${label}: ${a.extractedText}]`;
+      });
+    const rawUserText = [bodyText.trim(), ...attachmentContextLines].filter(Boolean).join('\n')
+      || (hasInboundAttachments ? '[Email attachments received]' : '');
+    // Cap to prevent excessive token usage
+    const userText = rawUserText.length > 8000 ? rawUserText.slice(0, 8000) + '\n[... content truncated]' : rawUserText;
+
+    // Record metered usage for AI-processed email attachments (transcription/vision — not document extraction)
+    for (const att of (attachments ?? [])) {
+      if (typeof att.extractedText !== 'string' || !att.extractedText.length) continue;
+      const mt = (att.mimeType ?? '').toLowerCase();
+      const isAudio = mt.startsWith('audio/');
+      const isImage = mt.startsWith('image/');
+      if (!isAudio && !isImage) continue; // document text extraction is local compute — no external cost
+      const mediaUsageType = isAudio ? 'MEDIA_TRANSCRIPTION' : 'MEDIA_VISION';
+      await this.aiUsage.record({
+        organizationId,
+        conversationId: conversation.id,
+        usageType: mediaUsageType as unknown as AiUsageType,
+        metadata: { channel: 'EMAIL', mimeType: att.mimeType },
+      }).catch(() => null);
+      await this.billing.debitUsageCredits({
+        organizationId,
+        usageType: mediaUsageType,
+        promptTokens: 0,
+        completionTokens: 0,
+        idempotencyKey: `email:media:${messageId}:${att.fileName ?? att.mimeType}`,
+        metadata: { channel: 'EMAIL', mimeType: att.mimeType },
+      }).catch(() => null);
+    }
+
     const userMessage = await this.prisma.message.create({
       data: {
         conversationId: conversation.id,
         role: 'USER',
-        content: bodyText.trim(),
+        content: userText,
+        ...(hasInboundAttachments
+          ? {
+              metadata: {
+                attachments: (attachments ?? []).map((file) => ({
+                  fileName: file.fileName,
+                  mimeType: file.mimeType,
+                  sizeBytes: file.sizeBytes,
+                })),
+              },
+            }
+          : {}),
       },
     });
+
+    if (hasInboundAttachments) {
+      const attachmentsData = (attachments ?? []).map((file) => ({
+        messageId: userMessage.id,
+        kind: file.mimeType?.startsWith('video/')
+          ? AttachmentKind.VIDEO
+          : file.mimeType?.startsWith('image/')
+            ? AttachmentKind.IMAGE
+            : file.mimeType?.startsWith('audio/')
+              ? AttachmentKind.AUDIO
+              : AttachmentKind.FILE,
+        fileName: file.fileName,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        storageKey: file.storageKey,
+        url: file.url,
+        metadata: {
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          storageKey: file.storageKey,
+          url: file.url,
+        },
+      }));
+      if (attachmentsData.length > 0) {
+        await this.prisma.messageAttachment.createMany({ data: attachmentsData });
+      }
+    }
 
     this.events.emitNewMessage(organizationId, {
       conversationId: conversation.id,
       message: userMessage,
       customerName: conversation.customerName,
     });
+
+    if (hasVideoAttachment && conversation.mode === 'AI') {
+      const routeToRoles = Array.isArray(bot.routeToRoles) && bot.routeToRoles.length > 0
+        ? bot.routeToRoles
+        : ['AGENT'];
+      const bestAgent = await this.orgs.findBestAgent(organizationId, 'video', routeToRoles);
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: {
+          status: 'ESCALATED',
+          mode: 'HUMAN',
+          ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+        },
+      });
+      this.events.emitConversationUpdate(organizationId, {
+        conversationId: conversation.id,
+        status: 'ESCALATED',
+        mode: 'HUMAN',
+        ...(bestAgent ? { assignedAgentId: bestAgent.userId } : {}),
+      });
+      if (!bestAgent) {
+        await this.notifications.createOrgNotification(
+          organizationId,
+          'no_agent_available',
+          'Escalated email video attachment with no agent available',
+          'A customer sent a video attachment. The conversation was escalated but no agent was available.',
+          { conversationId: conversation.id, reason: 'video_requires_human' },
+        );
+      }
+      const fromAddress = bot.organization?.slug
+        ? `${bot.organization.slug}@bords.app`
+        : (this.config.get<string>('ZEPTOMAIL_FROM_ADDRESS') ?? 'zuti@bords.app');
+      await this.sendEmail(
+        fromAddress,
+        toAddress,
+        fromEmail,
+        `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+        'Thanks for sharing the video attachment. I am connecting you with a human agent to review it now.',
+        conversation.emailThreadId,
+        bot.name,
+        bot.organization?.name ?? '',
+      );
+      return;
+    }
 
     let forwardingResult: ActionForwardingResult = {
       status: 'NO_INTENT',
@@ -263,7 +398,7 @@ export class EmailProcessor {
       botId,
       conversationId: conversation.id,
       messageId: userMessage.id,
-      messageText: bodyText.trim(),
+      messageText: userText,
       channel: 'EMAIL',
       customerName: conversation.customerName,
       customerEmail: conversation.customerEmail,
@@ -365,7 +500,7 @@ export class EmailProcessor {
       : ['AGENT'];
     await this.callAiAndRespond(
       conversation, botId, toAddress, fromEmail, organizationId,
-      bodyText.trim(), bot.name, systemPrompt,
+      userText, bot.name, systemPrompt,
       buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,

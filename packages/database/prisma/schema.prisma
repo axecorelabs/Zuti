@@ -351,9 +351,41 @@ model Message {
 
   conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sourceForActionTasks ActionTask[]
+  attachments    MessageAttachment[]
 
   @@index([conversationId, createdAt(sort: Desc)])
   @@index([conversationId, role, createdAt(sort: Desc)])
+}
+
+model MessageAttachment {
+  id          String         @id @default(cuid())
+  messageId   String
+  kind        AttachmentKind
+  sourceRef   String?
+  url         String?
+  storageKey  String?
+  fileName    String?
+  mimeType    String?
+  sizeBytes   Int?
+  durationSec Int?
+  caption     String?
+  metadata    Json           @default("{}")
+  createdAt   DateTime       @default(now())
+
+  message     Message        @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, kind])
+  @@index([messageId, createdAt(sort: Desc)])
+}
+
+enum AttachmentKind {
+  IMAGE
+  AUDIO
+  VOICE
+  VIDEO
+  DOCUMENT
+  FILE
+  OTHER
 }
 
 enum ConversationStatus {
@@ -951,4 +983,6 @@ enum AiUsageType {
   KNOWLEDGE_SUGGESTION
   INTERNAL_ASSISTANT
   SUMMARIZATION
+  MEDIA_TRANSCRIPTION
+  MEDIA_VISION
 }

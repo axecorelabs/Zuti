@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText } from 'lucide-react';
+import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -33,7 +33,24 @@ interface Conversation {
   updatedAt: string;
   lastMessageAt?: string | null;
   bot: { id: string; name: string };
-  messages: Array<{ id: string; role: string; content: string; createdAt: string; metadata?: Record<string, unknown> }>;
+  messages: Array<{
+    id: string;
+    role: string;
+    content: string;
+    createdAt: string;
+    metadata?: Record<string, unknown>;
+    attachments?: Array<{
+      id: string;
+      kind: string;
+      storageKey?: string | null;
+      url?: string | null;
+      fileName?: string | null;
+      mimeType?: string | null;
+      sizeBytes?: number | null;
+      durationSec?: number | null;
+      caption?: string | null;
+    }>;
+  }>;
 }
 
 interface ConversationDetails extends Conversation {
@@ -119,6 +136,75 @@ function messageDateLabel(date: string) {
   });
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+type MessageAttachment = NonNullable<NonNullable<Conversation['messages'][number]['attachments']>[number]>;
+
+function AttachmentPreview({ attachment }: { attachment: MessageAttachment }) {
+  const { kind, url, fileName, sizeBytes, durationSec } = attachment;
+
+  if (kind === 'IMAGE') {
+    return url ? (
+      <a href={url} target="_blank" rel="noreferrer" className="block">
+        <img src={url} alt={fileName ?? 'Image'} className="max-w-full max-h-52 rounded-lg object-cover border border-zinc-700/40" />
+      </a>
+    ) : (
+      <div className="text-[10px] text-zinc-500 italic">[Image — no preview available]</div>
+    );
+  }
+
+  if (kind === 'AUDIO' || kind === 'VOICE') {
+    return url ? (
+      <div className="bg-zinc-800/50 rounded-lg p-2">
+        <div className="flex items-center gap-1.5 mb-1.5">
+          <Mic className="w-3 h-3 text-zinc-400" />
+          <span className="text-[10px] text-zinc-400">{kind === 'VOICE' ? 'Voice note' : 'Audio'}{durationSec ? ` · ${durationSec}s` : ''}</span>
+        </div>
+        <audio controls className="w-full h-7" src={url} />
+      </div>
+    ) : (
+      <div className="flex items-center gap-1.5 text-[10px] text-zinc-500">
+        <Mic className="w-3 h-3" />
+        <span className="italic">Audio — no playback available</span>
+      </div>
+    );
+  }
+
+  if (kind === 'VIDEO') {
+    return (
+      <a
+        href={url ?? '#'}
+        target={url ? '_blank' : undefined}
+        rel="noreferrer"
+        className="flex items-center gap-2 bg-zinc-800/50 rounded-lg px-3 py-2 text-xs text-zinc-300 hover:text-white hover:bg-zinc-700/60 transition-colors"
+      >
+        <Film className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+        <span className="truncate">{fileName ?? 'Video'}</span>
+        {url && <Download className="w-3 h-3 ml-auto shrink-0 opacity-70" />}
+      </a>
+    );
+  }
+
+  // DOCUMENT, FILE, OTHER
+  return (
+    <a
+      href={url ?? '#'}
+      target={url ? '_blank' : undefined}
+      rel="noreferrer"
+      className="flex items-center gap-2 bg-zinc-800/50 rounded-lg px-3 py-2 text-xs text-zinc-300 hover:text-white hover:bg-zinc-700/60 transition-colors"
+    >
+      <FileText className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+      <span className="truncate">{fileName ?? 'Attachment'}</span>
+      {sizeBytes != null && <span className="text-[10px] text-zinc-500 ml-auto shrink-0 whitespace-nowrap">{formatBytes(sizeBytes)}</span>}
+      {url && <Download className="w-3 h-3 ml-1 shrink-0 opacity-70" />}
+    </a>
+  );
+}
+
 function getMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | null {
   const value = metadata?.[key];
   return typeof value === 'string' && value.trim().length > 0 ? value : null;
@@ -136,7 +222,22 @@ function getConversationLanguageCode(metadata: Record<string, unknown> | undefin
 }
 
 function formatLanguageBadgeLabel(languageCode: string): string {
+  try {
+    const languageNames = new Intl.DisplayNames(['en'], { type: 'language' });
+    const fullName = languageNames.of(languageCode.toLowerCase());
+    if (typeof fullName === 'string' && fullName.trim().length > 0) {
+      return fullName;
+    }
+  } catch {
+    // Fallback to ISO code if Intl.DisplayNames is unavailable.
+  }
   return languageCode.toUpperCase();
+}
+
+function formatLanguageBadgeTitle(languageCode: string): string {
+  const label = formatLanguageBadgeLabel(languageCode);
+  const iso = languageCode.toUpperCase();
+  return label.toUpperCase() === iso ? `Language: ${iso}` : `Language: ${label} (${iso})`;
 }
 
 export default function InboxPage() {
@@ -1136,8 +1237,8 @@ export default function InboxPage() {
                           )}
                           {conversationLanguageCode && (
                             <span
-                              title={`Language: ${conversationLanguageCode.toUpperCase()}`}
-                              className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/25"
+                              title={formatLanguageBadgeTitle(conversationLanguageCode)}
+                              className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/25 max-w-[120px] truncate"
                             >
                               {formatLanguageBadgeLabel(conversationLanguageCode)}
                             </span>
@@ -1219,8 +1320,8 @@ export default function InboxPage() {
                       )}
                       {selectedLanguageCode && (
                         <span
-                          title={`Language: ${selectedLanguageCode.toUpperCase()}`}
-                          className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/25"
+                          title={formatLanguageBadgeTitle(selectedLanguageCode)}
+                          className="inbox-pill inbox-pill-blue text-[9px] px-1.5 py-0.5 rounded-md font-medium bg-fuchsia-500/10 text-fuchsia-200 border border-fuchsia-500/25 max-w-[140px] truncate"
                         >
                           {formatLanguageBadgeLabel(selectedLanguageCode)}
                         </span>
@@ -1446,6 +1547,13 @@ export default function InboxPage() {
                             >
                               {msg.content}
                             </ReactMarkdown>
+                          )}
+                          {Array.isArray(msg.attachments) && msg.attachments.length > 0 && (
+                            <div className="mt-2 space-y-1.5">
+                              {msg.attachments.map((att) => (
+                                <AttachmentPreview key={att.id} attachment={att} />
+                              ))}
+                            </div>
                           )}
                           <p className="text-[9px] mt-1 opacity-50 font-normal">
                             {isUser ? 'Customer' : isAgent ? 'Agent' : 'AI'} · {timeSince(msg.createdAt)}

@@ -236,6 +236,21 @@ export class ConversationsService {
       },
       orderBy: { createdAt: 'desc' },
       take: messageLimit + 1,
+      include: {
+        attachments: {
+          select: {
+            id: true,
+            kind: true,
+            storageKey: true,
+            url: true,
+            fileName: true,
+            mimeType: true,
+            sizeBytes: true,
+            durationSec: true,
+            caption: true,
+          },
+        },
+      },
     });
     const hasMoreMessages = messageRows.length > messageLimit;
     const pagedRows = hasMoreMessages ? messageRows.slice(0, messageLimit) : messageRows;

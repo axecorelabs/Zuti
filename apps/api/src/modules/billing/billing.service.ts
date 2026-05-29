@@ -25,6 +25,7 @@ import {
   BASE_CREDIT_UNITS_DEFAULT,
   BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY,
   CREDIT_UNITS_PER_CREDIT,
+  MEDIA_PROCESSING_CREDIT_UNITS,
   computeUsageOverageCredits,
   computeUsageOverageUnits,
 } from './credit-model';
@@ -173,9 +174,12 @@ export class BillingService {
       if (!billing) throw new NotFoundException('Billing record not found');
 
       const isCustomerReply = input.usageType === 'CUSTOMER_REPLY';
+      const isMediaProcessing = input.usageType === 'MEDIA_TRANSCRIPTION' || input.usageType === 'MEDIA_VISION';
       const baseCreditUnits = isCustomerReply
         ? BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY
-        : BASE_CREDIT_UNITS_DEFAULT;
+        : isMediaProcessing
+          ? MEDIA_PROCESSING_CREDIT_UNITS
+          : BASE_CREDIT_UNITS_DEFAULT;
       const overageCredits = computeUsageOverageCredits(input.promptTokens, input.completionTokens, 1);
       const overageCreditUnits = computeUsageOverageUnits(input.promptTokens, input.completionTokens, 1);
       const creditsToDebitUnits = baseCreditUnits + overageCreditUnits;
