@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+from pathlib import Path
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -198,6 +199,22 @@ class MediaService:
         """
         lower_mime = (mime_type or "").lower().split(";")[0].strip()
 
+        # Some channels send generic mime_type (application/octet-stream) for images.
+        # Recover likely image mime from filename extension so vision can still run.
+        if lower_mime in ("", "application/octet-stream") and filename:
+            suffix = Path(filename).suffix.lower()
+            ext_map = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".gif": "image/gif",
+                ".webp": "image/webp",
+                ".bmp": "image/bmp",
+                ".heic": "image/heic",
+                ".heif": "image/heif",
+            }
+            lower_mime = ext_map.get(suffix, lower_mime)
+
         if lower_mime.startswith("audio/") or lower_mime == "video/ogg":
             transcript = await self.transcribe_audio(content_bytes, lower_mime, filename)
             if transcript:
@@ -207,7 +224,10 @@ class MediaService:
         if lower_mime.startswith("image/"):
             description = await self.describe_image(content_bytes, lower_mime)
             if description:
-                return {"kind": "image_description", "text": description.strip(), "error": None}
+                clean = description.strip()
+                if clean:
+                    return {"kind": "image_description", "text": clean, "error": None}
+                return {"kind": "image_description", "text": None, "error": "vision returned empty text"}
             return {"kind": "image_description", "text": None, "error": "vision unavailable"}
 
         if (
@@ -220,7 +240,11 @@ class MediaService:
                 return {"kind": "document_text", "text": extracted, "error": None}
             return {"kind": "document_text", "text": None, "error": "extraction produced no text"}
 
-        return {"kind": "unsupported", "text": None, "error": None}
+        return {
+            "kind": "unsupported",
+            "text": None,
+            "error": f"unsupported mime_type: {lower_mime or 'unknown'} (filename={filename or 'n/a'})",
+        }
 
 
 media_service = MediaService()
