@@ -755,6 +755,9 @@ export class WhatsAppProcessor {
         completionTokens,
         idempotencyKey: `whatsapp:${inboundMessageId ?? conversationId}`,
         metadata: { channel: 'WHATSAPP', conversationId, botId: bot.id },
+      }).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to debit CUSTOMER_REPLY usage for WhatsApp conversation ${conversationId}: ${reason}`);
       });
 
       await this.aiUsage.record({

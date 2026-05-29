@@ -988,6 +988,9 @@ export class TelegramProcessor {
           botId,
           sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
         },
+      }).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to debit CUSTOMER_REPLY usage for Telegram conversation ${conversationId}: ${reason}`);
       });
 
       await this.aiUsage.record({
