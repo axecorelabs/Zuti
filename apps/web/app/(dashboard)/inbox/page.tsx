@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download } from 'lucide-react';
+import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -275,6 +275,7 @@ export default function InboxPage() {
   const [loadingPanelContext, setLoadingPanelContext] = useState(false);
   const [panelContextLoadedIds, setPanelContextLoadedIds] = useState<Record<string, boolean>>({});
   const [mobileShowConv, setMobileShowConv] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [customerPanelOpen, setCustomerPanelOpen] = useState(false);
   const [mobileCustomerPanelOpen, setMobileCustomerPanelOpen] = useState(false);
   const [showHandoffQuickButton, setShowHandoffQuickButton] = useState(false);
@@ -1065,7 +1066,20 @@ export default function InboxPage() {
   return (
     <div className="inbox-page flex h-full overflow-hidden">
       {/* ── Left panel ── */}
-      <div className={`inbox-sidebar ${mobileShowConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-[340px] xl:w-[360px] shrink-0 border-r border-zinc-900 h-full bg-zinc-950/70`}>
+      <div className={`inbox-sidebar ${mobileShowConv ? 'hidden md:flex' : 'flex'} flex-col ${sidebarCollapsed ? 'md:w-10 overflow-hidden' : 'w-full md:w-[340px] xl:w-[360px]'} shrink-0 border-r border-zinc-900 h-full bg-zinc-950/70 transition-[width] duration-200`}>
+        {sidebarCollapsed && (
+          <div className="hidden md:flex flex-col items-center pt-4">
+            <button
+              onClick={() => setSidebarCollapsed(false)}
+              aria-label="Expand sidebar"
+              title="Expand conversations list"
+              className="p-2 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+            >
+              <ChevronsRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+        <div className={sidebarCollapsed ? 'hidden' : 'flex flex-col flex-1 min-h-0'}>
         {/* Header */}
         <div className="px-3.5 md:px-4 pt-4 md:pt-5 pb-3.5 md:pb-4 border-b border-zinc-900/80 bg-zinc-950/90 backdrop-blur-sm">
           <div className="flex items-start justify-between mb-3">
@@ -1073,11 +1087,21 @@ export default function InboxPage() {
               <h1 className="font-brand font-semibold text-lg tracking-tight text-white">Inbox</h1>
               <p className="mt-0.5 text-[11px] text-zinc-600 hidden md:block">Customer conversations and queue controls</p>
             </div>
-            {escalatedCount > 0 && (
-              <span className="bg-red-500/15 border border-red-500/25 text-red-300 text-[10px] px-2 py-0.5 rounded-full font-medium">
-                {escalatedCount} escalated
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {escalatedCount > 0 && (
+                <span className="bg-red-500/15 border border-red-500/25 text-red-300 text-[10px] px-2 py-0.5 rounded-full font-medium">
+                  {escalatedCount} escalated
+                </span>
+              )}
+              <button
+                onClick={() => setSidebarCollapsed(true)}
+                aria-label="Collapse sidebar"
+                title="Collapse conversations list"
+                className="hidden md:inline-flex items-center justify-center w-7 h-7 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
+              >
+                <ChevronsLeft className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
 
           <div className="relative mb-2.5">
@@ -1262,6 +1286,7 @@ export default function InboxPage() {
               )}
             </div>
           )}
+        </div>
         </div>
       </div>
 
