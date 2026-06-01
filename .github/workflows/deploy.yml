@@ -40,7 +40,9 @@ jobs:
             rm -rf apps/web/.next
             cd apps/web && NEXT_PUBLIC_API_URL=https://zuti-api.bords.app npx pnpm@9 run build && cd ../..
 
-            # Restart services
-            pm2 restart zuti-api zuti-web zuti-ai
+            # Reload services with minimal downtime where possible.
+            pm2 reload zuti-api --update-env || pm2 restart zuti-api --update-env
+            pm2 reload zuti-web --update-env || pm2 restart zuti-web --update-env
+            pm2 reload zuti-ai --update-env || pm2 restart zuti-ai --update-env
 
             pm2 save
