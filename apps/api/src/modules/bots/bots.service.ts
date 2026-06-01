@@ -33,6 +33,7 @@ import { OrganizationsService } from '../organizations/organizations.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 import { extractWhatsAppConfig, prepareWhatsAppConfigForStorage } from '../../common/utils/whatsapp';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
+import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -45,9 +46,16 @@ function estimateUsageCredits(promptTokens: number, completionTokens: number): n
 type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
 type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 type CapabilitySkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
+type BotMode = 'GENERALIST' | 'SPECIALIST';
 type BotPrimaryChannel = 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL' | 'WHATSAPP';
 type WhatsAppProvider = 'META' | 'TWILIO';
 type WhatsAppIntegrationMode = 'META_EMBEDDED_SIGNUP' | 'META_MANUAL' | 'TWILIO';
+
+interface SpecialistProfile {
+  mode: BotMode;
+  skill: BotSkill;
+  strictScope: boolean;
+}
 
 interface WhatsAppConnectionInput {
   provider: WhatsAppProvider;
@@ -112,6 +120,12 @@ function buildCapabilitiesFromSkills(skills: BotSkill[]) {
   };
 }
 
+function extractSkillsFromCapabilities(capabilities: Record<string, unknown>): BotSkill[] {
+  const skills = (capabilities.skills ?? {}) as Record<string, unknown>;
+  const enabled = BOT_SKILLS.filter((skill) => skills[skill] === true);
+  return enabled;
+}
+
 function isSkillEnabledForAction(
   actionType: string | undefined,
   capabilities: Record<string, unknown>,
@@ -153,6 +167,74 @@ function applyForwardingPreference(skills: BotSkill[], actionForwardingEnabled?:
   if (actionForwardingEnabled === undefined) return skills;
   const withoutForwarding = skills.filter((skill) => skill !== 'FORWARDING');
   return actionForwardingEnabled ? [...withoutForwarding, 'FORWARDING'] : withoutForwarding;
+}
+
+function templateForSpecialistSkill(skill: BotSkill): BotTemplate {
+  switch (skill) {
+    case 'SALES':
+      return 'SALES';
+    case 'BOOKING':
+      return 'BOOKING';
+    case 'TECHNICAL':
+    case 'SUPPORT':
+      return 'TECHNICAL';
+    case 'FORWARDING':
+      return 'GENERAL';
+    default:
+      return 'GENERAL';
+  }
+}
+
+function parseSpecialistProfile(aiConfig: unknown): SpecialistProfile | null {
+  if (!aiConfig || typeof aiConfig !== 'object' || Array.isArray(aiConfig)) return null;
+  const profile = (aiConfig as Record<string, unknown>).specialistProfile;
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+
+  const mode = (profile as Record<string, unknown>).mode;
+  const skill = (profile as Record<string, unknown>).skill;
+  const strictScope = (profile as Record<string, unknown>).strictScope;
+  if ((mode !== 'GENERALIST' && mode !== 'SPECIALIST') || !BOT_SKILLS.includes(skill as BotSkill)) {
+    return null;
+  }
+
+  return {
+    mode,
+    skill: skill as BotSkill,
+    strictScope: strictScope !== false,
+  };
+}
+
+function normalizeSpecialistIntent(
+  botMode: BotMode,
+  specialistSkill: BotSkill | null,
+  requestedSkills: BotSkill[],
+  actionForwardingPreference?: boolean,
+): { mode: BotMode; specialistSkill: BotSkill | null; skills: BotSkill[] } {
+  if (botMode !== 'SPECIALIST') {
+    if (specialistSkill) {
+      throw new BadRequestException('specialistSkill can only be set when botMode is SPECIALIST');
+    }
+    return {
+      mode: 'GENERALIST',
+      specialistSkill: null,
+      skills: applyForwardingPreference(requestedSkills, actionForwardingPreference),
+    };
+  }
+
+  if (!specialistSkill) {
+    throw new BadRequestException('specialistSkill is required when botMode is SPECIALIST');
+  }
+
+  const nonForwardingRequested = requestedSkills.filter((skill) => skill !== 'FORWARDING');
+  if (nonForwardingRequested.length > 0 && nonForwardingRequested.some((skill) => skill !== specialistSkill)) {
+    throw new BadRequestException('SPECIALIST bots can only enable their specialist skill (and optional FORWARDING).');
+  }
+
+  return {
+    mode: 'SPECIALIST',
+    specialistSkill,
+    skills: applyForwardingPreference([specialistSkill], actionForwardingPreference ?? true),
+  };
 }
 
 function isBlockedCapabilityReason(reason: string | undefined): boolean {
@@ -450,10 +532,29 @@ export class BotsService {
         .map((domain) => normalizeDomain(domain))
         .filter(Boolean),
     ));
-    const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled ?? true);
-    const template: BotTemplate = 'GENERAL';
+    const requestedBotMode: BotMode = dto.botMode ?? 'GENERALIST';
+    const requestedSpecialistSkill = (dto.specialistSkill ?? null) as BotSkill | null;
+    const specialistResolution = normalizeSpecialistIntent(
+      requestedBotMode,
+      requestedSpecialistSkill,
+      normalizeSkills(dto.skills),
+      dto.actionForwardingEnabled ?? true,
+    );
+    const requestedSkills = specialistResolution.skills;
+    const template: BotTemplate = specialistResolution.mode === 'SPECIALIST' && specialistResolution.specialistSkill
+      ? templateForSpecialistSkill(specialistResolution.specialistSkill)
+      : 'GENERAL';
     const capabilities = buildCapabilitiesFromSkills(requestedSkills);
     const actionForwardingEnabled = requestedSkills.includes('FORWARDING');
+    const aiConfig: Record<string, unknown> = specialistResolution.mode === 'SPECIALIST' && specialistResolution.specialistSkill
+      ? {
+          specialistProfile: {
+            mode: 'SPECIALIST',
+            skill: specialistResolution.specialistSkill,
+            strictScope: true,
+          },
+        }
+      : {};
 
     if (actionForwardingEnabled) {
       const hasRoute = await this.hasForwardingRouteConfiguration(organizationId);
@@ -515,6 +616,7 @@ export class BotsService {
         whatsappVerifyToken: requestedWhatsAppConnection?.verifyToken ?? this.generateWhatsappVerifyToken(),
         whatsappConfig: requestedWhatsAppConfig as Prisma.InputJsonValue,
         isActive: true,
+        aiConfig: aiConfig as Prisma.InputJsonValue,
         template,
         capabilities: capabilities as any,
         actionForwardingEnabled,
@@ -564,11 +666,52 @@ export class BotsService {
     const existingWhatsAppConfig = extractWhatsAppConfig(existing.whatsappConfig);
     const nextTemplate = (dto.template ?? existing.template) as BotTemplate;
     const preset = getTemplatePreset(nextTemplate);
-    const requestedSkills = applyForwardingPreference(normalizeSkills(dto.skills), dto.actionForwardingEnabled);
+    const existingAiConfig = ((existing.aiConfig as Record<string, unknown> | null) ?? {});
+    const existingSpecialistProfile = parseSpecialistProfile(existingAiConfig);
+    const requestedBotMode: BotMode = dto.botMode
+      ?? existingSpecialistProfile?.mode
+      ?? 'GENERALIST';
+    const requestedSpecialistSkill = (dto.specialistSkill
+      ?? existingSpecialistProfile?.skill
+      ?? null) as BotSkill | null;
+    const currentSkills = extractSkillsFromCapabilities((existing.capabilities as Record<string, unknown> | null) ?? {});
+    const skillInputBase = dto.skills !== undefined ? normalizeSkills(dto.skills) : currentSkills;
+    const specialistResolution = normalizeSpecialistIntent(
+      requestedBotMode,
+      requestedSpecialistSkill,
+      skillInputBase,
+      dto.actionForwardingEnabled ?? existing.actionForwardingEnabled,
+    );
+    const requestedSkills = specialistResolution.skills;
     const hasSkillsUpdate = dto.skills !== undefined;
-    const resolvedCapabilities = hasSkillsUpdate ? buildCapabilitiesFromSkills(requestedSkills) : (dto.template !== undefined ? preset.capabilities : undefined);
-    const resolvedTemplate = hasSkillsUpdate ? 'GENERAL' : (dto.template !== undefined ? nextTemplate : undefined);
-    const resolvedActionForwardingEnabled = hasSkillsUpdate ? requestedSkills.includes('FORWARDING') : dto.actionForwardingEnabled;
+    const specialistTouched = dto.botMode !== undefined || dto.specialistSkill !== undefined;
+    const resolvedSpecialistSkill = specialistResolution.mode === 'SPECIALIST'
+      ? specialistResolution.specialistSkill
+      : null;
+    const isSpecialistMode = !!resolvedSpecialistSkill;
+    const resolvedCapabilities = (hasSkillsUpdate || specialistTouched)
+      ? buildCapabilitiesFromSkills(requestedSkills)
+      : (dto.template !== undefined ? preset.capabilities : undefined);
+    const resolvedTemplate = isSpecialistMode
+      ? templateForSpecialistSkill(resolvedSpecialistSkill)
+      : (hasSkillsUpdate ? 'GENERAL' : (dto.template !== undefined ? nextTemplate : undefined));
+    const resolvedActionForwardingEnabled = (hasSkillsUpdate || specialistTouched)
+      ? requestedSkills.includes('FORWARDING')
+      : dto.actionForwardingEnabled;
+
+    const mergedAiConfig: Record<string, unknown> = {
+      ...existingAiConfig,
+      ...((dto.aiConfig as Record<string, unknown> | undefined) ?? {}),
+    };
+    if (isSpecialistMode) {
+      mergedAiConfig.specialistProfile = {
+        mode: 'SPECIALIST',
+        skill: specialistResolution.specialistSkill,
+        strictScope: true,
+      };
+    } else if (specialistTouched) {
+      delete mergedAiConfig.specialistProfile;
+    }
 
     if (resolvedActionForwardingEnabled === true && existing.actionForwardingEnabled !== true) {
       const hasRoute = await this.hasForwardingRouteConfiguration(organizationId, botId);
@@ -637,7 +780,7 @@ export class BotsService {
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
-        ...(dto.aiConfig !== undefined && { aiConfig: dto.aiConfig as any }),
+        ...((dto.aiConfig !== undefined || specialistTouched) && { aiConfig: mergedAiConfig as Prisma.InputJsonValue }),
         ...(dto.routeToRoles !== undefined && { routeToRoles: dto.routeToRoles }),
         ...(dto.webWidgetEnabled !== undefined && { webWidgetEnabled: dto.webWidgetEnabled }),
         ...(nextAllowedDomains !== undefined && { webWidgetAllowedDomains: nextAllowedDomains }),
@@ -1644,7 +1787,19 @@ export class BotsService {
       };
     }
 
-    const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
+    const commerceGrounding = await buildCommerceGroundingContextBlock({
+      prisma: this.prisma,
+      organizationId: bot.organizationId,
+      aiConfig: bot.aiConfig as Record<string, unknown>,
+      userText: userText.trim(),
+    });
+    const effectiveCustomerContext = [
+      customerContext,
+      commerceGrounding,
+      await this.cannedResponses.buildPromptBlock(bot.organizationId),
+    ].filter(Boolean).join('\n\n') || null;
+
+    const preflightPromptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(bot.organizationId, preflightCredits);
     try {
@@ -1680,7 +1835,7 @@ export class BotsService {
           bot_name: bot.name,
           org_name: bot.organization?.name,
           system_prompt: effectiveSystemPrompt,
-          customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(bot.organizationId)].filter(Boolean).join('\n\n') || null,
+          customer_context: effectiveCustomerContext,
           forwarding_status: forwardingResult.status,
           forwarding_reason: forwardingResult.reason,
           action_task_id: forwardingResult.actionTaskId ?? null,
@@ -1695,7 +1850,7 @@ export class BotsService {
 
       aiReply = response.data?.reply ?? 'I am unable to respond right now. Please try again later.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
-      const promptTokens = estimateTokens({ userText, history, customerContext });
+      const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
       const completionTokens = estimateTokens(aiReply);
 
       await this.billing.debitUsageCredits({

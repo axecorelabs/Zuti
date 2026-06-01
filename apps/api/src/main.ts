@@ -9,13 +9,19 @@ async function bootstrap() {
   // Respect X-Forwarded-For when running behind a proxy/load balancer.
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
 
+  const isProduction = process.env.NODE_ENV === 'production';
+
   const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
   const allowedOrigins = new Set<string>([
     'https://zuti.bords.app',
-    'http://localhost:3000',
+    ...(isProduction ? ['https://zuti-admin.vercel.app'] : [
+      'http://localhost:3000',
+      'http://localhost:3002',
+      'http://localhost:3003',
+    ]),
     ...configuredOrigins,
   ]);
 

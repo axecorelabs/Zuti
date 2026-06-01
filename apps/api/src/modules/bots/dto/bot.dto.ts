@@ -77,6 +77,26 @@ export class CreateBotDto {
   whatsappConfig?: Record<string, unknown>;
 
   @ApiPropertyOptional({
+    description: 'Bot operating mode. SPECIALIST bots are constrained to one core skill.',
+    enum: ['GENERALIST', 'SPECIALIST'],
+    example: 'SPECIALIST',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['GENERALIST', 'SPECIALIST'])
+  botMode?: 'GENERALIST' | 'SPECIALIST';
+
+  @ApiPropertyOptional({
+    description: 'Required when botMode is SPECIALIST. Determines the single skill domain.',
+    enum: ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'],
+    example: 'SALES',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'])
+  specialistSkill?: 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
+
+  @ApiPropertyOptional({
     description: 'Optional skills to enable on the bot',
     enum: ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'],
     isArray: true,
@@ -179,6 +199,26 @@ export class UpdateBotDto {
   @IsOptional()
   @IsObject()
   whatsappConfig?: Record<string, unknown>;
+
+  @ApiPropertyOptional({
+    description: 'Bot operating mode. SPECIALIST bots are constrained to one core skill.',
+    enum: ['GENERALIST', 'SPECIALIST'],
+    example: 'SPECIALIST',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['GENERALIST', 'SPECIALIST'])
+  botMode?: 'GENERALIST' | 'SPECIALIST';
+
+  @ApiPropertyOptional({
+    description: 'Required when botMode is SPECIALIST. Determines the single skill domain.',
+    enum: ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'],
+    example: 'SALES',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'])
+  specialistSkill?: 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 
   @ApiPropertyOptional({
     description: 'Roles the AI may auto-assign escalated conversations to',

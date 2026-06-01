@@ -5,23 +5,32 @@ import {
   ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { CreditLedgerType } from '@prisma/client';
+import { CreditLedgerType, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
 import { CREDIT_UNITS_PER_CREDIT } from '../billing/credit-model';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class OrganizationsService {
   constructor(
     private prisma: PrismaService,
     private activity: ActivityService,
+    private mail: MailService,
   ) {}
 
   async create(userId: string, dto: CreateOrganizationDto) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, role: true },
+    });
     if (!user) {
       throw new UnauthorizedException('Session is no longer valid. Please sign in again.');
+    }
+
+    if (user.role !== 'MANAGER') {
+      throw new ForbiddenException('Only managers can create workspaces');
     }
 
     const slugTaken = await this.prisma.organization.findUnique({ where: { slug: dto.slug } });
@@ -275,6 +284,127 @@ export class OrganizationsService {
     );
 
     return updated;
+  }
+
+  async transferOwnership(orgId: string, requestingUserId: string, targetUserId: string) {
+    if (requestingUserId === targetUserId) {
+      throw new ForbiddenException('You already own this workspace');
+    }
+
+    try {
+      const transferResult = await this.prisma.$transaction(async (tx) => {
+        const organization = await tx.organization.findUnique({
+          where: { id: orgId },
+          select: { name: true },
+        });
+        if (!organization) {
+          throw new NotFoundException('Organization not found');
+        }
+
+        const requester = await tx.organizationMember.findUnique({
+          where: { organizationId_userId: { organizationId: orgId, userId: requestingUserId } },
+          include: { user: { select: { id: true, name: true, email: true } } },
+        });
+        if (!requester || requester.role !== 'OWNER') {
+          throw new ForbiddenException('Only OWNER can transfer ownership');
+        }
+
+        const target = await tx.organizationMember.findUnique({
+          where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+          include: { user: { select: { id: true, name: true, email: true } } },
+        });
+        if (!target) {
+          throw new NotFoundException('Target member not found');
+        }
+        if (target.role === 'OWNER') {
+          throw new ConflictException('Target member is already the owner');
+        }
+
+        const downgradeResult = await tx.organizationMember.updateMany({
+          where: {
+            organizationId: orgId,
+            userId: requestingUserId,
+            role: 'OWNER',
+          },
+          data: { role: 'ADMIN' },
+        });
+
+        if (downgradeResult.count !== 1) {
+          throw new ConflictException('Ownership changed before the transfer completed. Refresh and try again.');
+        }
+
+        const downgradedRequester = await tx.organizationMember.findUnique({
+          where: { organizationId_userId: { organizationId: orgId, userId: requestingUserId } },
+          include: { user: { select: { id: true, name: true, email: true } } },
+        });
+
+        const promotedTarget = await tx.organizationMember.update({
+          where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
+          data: { role: 'OWNER' },
+          include: { user: { select: { id: true, name: true, email: true } } },
+        });
+
+        return {
+          previousOwner: downgradedRequester,
+          newOwner: promotedTarget,
+          workspaceName: organization.name,
+          actorName: requester.user?.name ?? requester.user?.email ?? 'Unknown',
+        };
+      }, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+
+      await this.activity.log(
+        orgId,
+        requestingUserId,
+        transferResult.actorName,
+        ActivityAction.MEMBER_ROLE_CHANGED,
+        'member',
+        targetUserId,
+        {
+          type: 'ownership_transfer',
+          previousOwnerId: requestingUserId,
+          previousOwnerName: transferResult.previousOwner?.user.name ?? transferResult.previousOwner?.user.email,
+          newOwnerId: targetUserId,
+          newOwnerName: transferResult.newOwner.user.name ?? transferResult.newOwner.user.email,
+        },
+      );
+
+      const previousOwnerDisplay = transferResult.previousOwner?.user.name ?? transferResult.previousOwner?.user.email ?? 'Previous owner';
+      const newOwnerDisplay = transferResult.newOwner.user.name ?? transferResult.newOwner.user.email;
+
+      await Promise.allSettled([
+        this.mail.sendOwnershipTransferEmail({
+          to: transferResult.newOwner.user.email,
+          recipientName: transferResult.newOwner.user.name ?? undefined,
+          workspaceName: transferResult.workspaceName,
+          previousOwnerName: previousOwnerDisplay,
+          newOwnerName: newOwnerDisplay,
+        }),
+        transferResult.previousOwner?.user.email
+          ? this.mail.sendOwnershipTransferEmail({
+              to: transferResult.previousOwner.user.email,
+              recipientName: transferResult.previousOwner.user.name ?? undefined,
+              workspaceName: transferResult.workspaceName,
+              previousOwnerName: previousOwnerDisplay,
+              newOwnerName: newOwnerDisplay,
+            })
+          : Promise.resolve(),
+      ]);
+
+      return {
+        previousOwner: transferResult.previousOwner,
+        newOwner: transferResult.newOwner,
+      };
+    } catch (err: unknown) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError
+        && (err.code === 'P2002' || err.code === 'P2034')
+      ) {
+        throw new ConflictException('Ownership transfer conflicted with another update. Refresh and try again.');
+      }
+      throw err;
+    }
   }
 
   private async getMembershipOrThrow(orgId: string, userId: string) {

@@ -1,7 +1,7 @@
 import { Controller, Post, Get, Body, Param, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
 import { InvitationsService } from './invitations.service';
-import { CreateInvitationDto } from './dto/invitation.dto';
+import { CreateInvitationDto, CreateJoinCodeDto, RedeemJoinCodeDto } from './dto/invitation.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -41,6 +41,42 @@ export class InvitationsController {
     @CurrentUser() user: { id: string },
   ) {
     return this.service.findByOrg(orgId, user.id);
+  }
+
+  @Post('join-codes')
+  @ApiOperation({ summary: 'Create a one-time join code for an org (OWNER/ADMIN only)' })
+  createJoinCode(
+    @CurrentUser() user: { id: string },
+    @Body() dto: CreateJoinCodeDto,
+  ) {
+    return this.service.createJoinCode(user.id, dto);
+  }
+
+  @Get('join-codes/org/:orgId')
+  @ApiOperation({ summary: 'List active one-time join codes for an org (OWNER/ADMIN only)' })
+  listJoinCodesByOrg(
+    @Param('orgId') orgId: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.service.listJoinCodesByOrg(orgId, user.id);
+  }
+
+  @Post('join-codes/redeem')
+  @ApiOperation({ summary: 'Redeem a one-time join code for the current user' })
+  redeemJoinCode(
+    @CurrentUser() user: { id: string },
+    @Body() dto: RedeemJoinCodeDto,
+  ) {
+    return this.service.redeemJoinCode(user.id, dto);
+  }
+
+  @Post('join-codes/:joinId/revoke')
+  @ApiOperation({ summary: 'Revoke a one-time join code (OWNER/ADMIN only)' })
+  revokeJoinCode(
+    @Param('joinId') joinId: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.service.revokeJoinCode(joinId, user.id);
   }
 
   @Get(':token')

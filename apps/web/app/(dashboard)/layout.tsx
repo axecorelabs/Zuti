@@ -65,7 +65,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         const list = res.data as { id: string; role: string }[];
 
         if (active && list.length === 0) {
-          router.replace('/onboarding');
+          router.replace(user.role === 'MANAGER' ? '/onboarding' : '/join-workspace');
           return;
         }
 

@@ -30,6 +30,7 @@ import { extractWhatsAppConfig, sendWhatsAppText } from '../../common/utils/what
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
+import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -724,7 +725,19 @@ export class WhatsAppProcessor {
       data: { metadata: mergedMetadataPatch as Prisma.InputJsonValue },
     }).catch(() => null);
 
-    const promptTokens = estimateTokens({ userText, history: aiContext.history, customerContext: aiContext.customerContext });
+    const commerceGrounding = await buildCommerceGroundingContextBlock({
+      prisma: this.prisma,
+      organizationId,
+      aiConfig,
+      userText,
+    });
+    const effectiveCustomerContext = [
+      aiContext.customerContext,
+      commerceGrounding,
+      await this.cannedResponses.buildPromptBlock(organizationId),
+    ].filter(Boolean).join('\n\n') || null;
+
+    const promptTokens = estimateTokens({ userText, history: aiContext.history, customerContext: effectiveCustomerContext });
     await this.billing.assertMinimumCredits(organizationId, estimateUsageCredits(promptTokens, 1));
 
     try {
@@ -738,7 +751,7 @@ export class WhatsAppProcessor {
           bot_name: bot.name,
           org_name: org?.name ?? null,
           system_prompt: effectiveSystemPrompt,
-          customer_context: [aiContext.customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
+          customer_context: effectiveCustomerContext,
           forwarding_status: forwardingResult.status,
           forwarding_reason: forwardingResult.reason,
           action_task_id: forwardingResult.actionTaskId ?? null,

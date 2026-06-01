@@ -15,13 +15,15 @@ import { PrismaService } from '../prisma/prisma.service';
 
 type SocketUser = { id: string; email?: string };
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 const configuredWsOrigins = (process.env.WS_ALLOWED_ORIGINS ?? '')
   .split(',')
   .map((origin) => origin.trim())
   .filter(Boolean);
 const allowedWsOrigins = new Set<string>([
   'https://zuti.bords.app',
-  'http://localhost:3000',
+  ...(isProduction ? ['https://zuti-admin.vercel.app'] : ['http://localhost:3000']),
   ...configuredWsOrigins,
 ]);
 

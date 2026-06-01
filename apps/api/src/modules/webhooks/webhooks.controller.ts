@@ -14,6 +14,7 @@ import { TelegramMessageJob } from '../queue/telegram.processor';
 import { EmailMessageJob } from '../queue/email.processor';
 import { WhatsAppMessageJob } from '../queue/whatsapp.processor';
 import { BillingService } from '../billing/billing.service';
+import { CommerceService } from '../commerce/commerce.service';
 import { ConfigService } from '@nestjs/config';
 import { extractWhatsAppConfig, verifyMetaWebhookSignature, verifyTwilioWebhookSignature } from '../../common/utils/whatsapp';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
@@ -112,6 +113,7 @@ export class WebhooksController {
     @InjectQueue(EMAIL_QUEUE) private readonly emailQueue: Queue,
     @InjectQueue(WHATSAPP_QUEUE) private readonly whatsappQueue: Queue,
     private readonly billing: BillingService,
+    private readonly commerce: CommerceService,
     private readonly config: ConfigService,
   ) {}
 
@@ -537,6 +539,9 @@ export class WebhooksController {
     @Body() payload: any,
   ) {
     const rawBody = req?.rawBody as Buffer | undefined;
-    return this.billing.handlePaystackWebhook(signature, rawBody ?? Buffer.from(''), payload);
+    const body = rawBody ?? Buffer.from('');
+    await this.billing.handlePaystackWebhook(signature, body, payload);
+    await this.commerce.handlePaystackWebhook(signature, body, payload);
+    return { ok: true };
   }
 }

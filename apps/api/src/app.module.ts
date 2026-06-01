@@ -22,6 +22,8 @@ import { PricingModule } from './modules/pricing/pricing.module';
 import { BillingModule } from './modules/billing/billing.module';
 import { ActionForwardingModule } from './modules/action-forwarding/action-forwarding.module';
 import { HealthModule } from './modules/health/health.module';
+import { CommerceModule } from './modules/commerce/commerce.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 
@@ -54,6 +56,8 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     PricingModule,
     BillingModule,
     ActionForwardingModule,
+    CommerceModule,
+    AdminModule,
     HealthModule,
   ],
   providers: [

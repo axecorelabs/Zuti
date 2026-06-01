@@ -32,6 +32,7 @@ import {
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
+import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -501,6 +502,7 @@ export class EmailProcessor {
     await this.callAiAndRespond(
       conversation, botId, toAddress, fromEmail, organizationId,
       userText, bot.name, systemPrompt,
+      aiConfig,
       buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
@@ -519,6 +521,7 @@ export class EmailProcessor {
     userText: string,
     botName: string,
     systemPrompt: string | null,
+    aiConfig: Record<string, unknown>,
     skillBehaviorPrompt: string | null,
     orgName: string | null,
     orgSlug: string | null,
@@ -705,7 +708,19 @@ export class EmailProcessor {
       },
     }).catch(() => null);
 
-    const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
+    const commerceGrounding = await buildCommerceGroundingContextBlock({
+      prisma: this.prisma,
+      organizationId,
+      aiConfig,
+      userText,
+    });
+    const effectiveCustomerContext = [
+      customerContext,
+      commerceGrounding,
+      await this.cannedResponses.buildPromptBlock(organizationId),
+    ].filter(Boolean).join('\n\n') || null;
+
+    const preflightPromptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
@@ -737,7 +752,7 @@ export class EmailProcessor {
           bot_name: botName,
           org_name: orgName,
           system_prompt: effectiveSystemPrompt,
-          customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
+          customer_context: effectiveCustomerContext,
           forwarding_status: forwardingResult.status,
           forwarding_reason: forwardingResult.reason,
           action_task_id: forwardingResult.actionTaskId ?? null,
@@ -752,7 +767,7 @@ export class EmailProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
-      const promptTokens = estimateTokens({ userText, history, customerContext });
+      const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
       const completionTokens = estimateTokens(aiText);
 
       await this.billing.debitUsageCredits({

@@ -15,6 +15,10 @@ export interface SupabaseUploadResult {
   publicUrl?: string;
 }
 
+type SupabaseStorageConfigOptions = {
+  bucketEnvKey?: string;
+};
+
 function normalizeUrl(value: string): string {
   return value.replace(/\/+$/, '');
 }
@@ -24,10 +28,18 @@ function sanitizeFileName(value: string): string {
   return cleaned.length > 0 ? cleaned : 'file';
 }
 
-export function resolveSupabaseStorageConfig(config: ConfigService): SupabaseStorageConfig | null {
+export function resolveSupabaseStorageConfig(
+  config: ConfigService,
+  options?: SupabaseStorageConfigOptions,
+): SupabaseStorageConfig | null {
   const url = (config.get<string>('SUPABASE_URL') ?? '').trim();
   const serviceRoleKey = (config.get<string>('SUPABASE_SERVICE_ROLE_KEY') ?? '').trim();
-  const bucket = (config.get<string>('SUPABASE_STORAGE_BUCKET') ?? 'media').trim();
+  const bucketEnvKey = options?.bucketEnvKey?.trim();
+  const bucket = (
+    (bucketEnvKey ? config.get<string>(bucketEnvKey) : undefined)
+    ?? config.get<string>('SUPABASE_STORAGE_BUCKET')
+    ?? 'media'
+  ).trim();
   if (!url || !serviceRoleKey || !bucket) return null;
 
   const publicBucketRaw = (config.get<string>('SUPABASE_STORAGE_PUBLIC') ?? 'false').trim().toLowerCase();

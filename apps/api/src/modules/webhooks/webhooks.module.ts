@@ -12,6 +12,7 @@ import { CannedResponsesModule } from '../canned-responses/canned-responses.modu
 import { TeamChatModule } from '../team-chat/team-chat.module';
 import { AiUsageModule } from '../ai-usage/ai-usage.module';
 import { BillingModule } from '../billing/billing.module';
+import { CommerceModule } from '../commerce/commerce.module';
 import { ActivityModule } from '../activity/activity.module';
 import { ActionForwardingModule } from '../action-forwarding/action-forwarding.module';
 
@@ -27,6 +28,7 @@ import { ActionForwardingModule } from '../action-forwarding/action-forwarding.m
     TeamChatModule,
     AiUsageModule,
     BillingModule,
+    CommerceModule,
     ActivityModule,
     ActionForwardingModule,
   ],

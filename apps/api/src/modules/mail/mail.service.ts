@@ -6,6 +6,9 @@ import { render } from '@react-email/render';
 import { createVerificationEmail } from './templates/VerificationEmail';
 import { createInvitationEmail } from './templates/InvitationEmail';
 import { createPasswordResetEmail } from './templates/PasswordResetEmail';
+import { createPasswordChangedEmail } from './templates/PasswordChangedEmail';
+import { createOwnershipTransferEmail } from './templates/OwnershipTransferEmail';
+import { createInvitationStatusEmail } from './templates/InvitationStatusEmail';
 
 @Injectable()
 export class MailService {
@@ -191,6 +194,181 @@ export class MailService {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to send password reset email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendPasswordChangedEmail(opts: {
+    to: string;
+    name?: string;
+    securityUrl?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
+
+    if (!apiKey) {
+      this.logger.warn(
+        `[MailService] ZEPTOMAIL_API_KEY not set — password changed email for: ${opts.to}`,
+      );
+      return;
+    }
+
+    try {
+      const html = await this.renderEmailTemplate(
+        createPasswordChangedEmail({
+          name: opts.name,
+          securityUrl: opts.securityUrl ?? `${appUrl}/dashboard/settings`,
+          appName: brand.appName,
+          brandTagline: brand.appTagline,
+          brandFooter: brand.appFooter,
+          primaryHex: brand.primaryHex,
+          fromName: brand.fromName,
+        }),
+      );
+
+      await firstValueFrom(
+        this.http.post(
+          'https://api.zeptomail.com/v1.1/email',
+          {
+            from: { address: brand.fromAddress, name: brand.fromName },
+            to: [{ email_address: { address: opts.to } }],
+            subject: `Your ${brand.appName} password was changed`,
+            htmlbody: html,
+          },
+          {
+            headers: {
+              Authorization: `Zoho-enczapikey ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+      this.logger.log(`Password changed email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send password changed email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendOwnershipTransferEmail(opts: {
+    to: string;
+    recipientName?: string;
+    workspaceName: string;
+    previousOwnerName: string;
+    newOwnerName: string;
+    dashboardUrl?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
+
+    if (!apiKey) {
+      this.logger.warn(
+        `[MailService] ZEPTOMAIL_API_KEY not set — ownership transfer email for: ${opts.to}`,
+      );
+      return;
+    }
+
+    try {
+      const html = await this.renderEmailTemplate(
+        createOwnershipTransferEmail({
+          recipientName: opts.recipientName,
+          workspaceName: opts.workspaceName,
+          previousOwnerName: opts.previousOwnerName,
+          newOwnerName: opts.newOwnerName,
+          dashboardUrl: opts.dashboardUrl ?? `${appUrl}/dashboard/team`,
+          appName: brand.appName,
+          brandTagline: brand.appTagline,
+          brandFooter: brand.appFooter,
+          primaryHex: brand.primaryHex,
+          fromName: brand.fromName,
+        }),
+      );
+
+      await firstValueFrom(
+        this.http.post(
+          'https://api.zeptomail.com/v1.1/email',
+          {
+            from: { address: brand.fromAddress, name: brand.fromName },
+            to: [{ email_address: { address: opts.to } }],
+            subject: `Ownership updated for ${opts.workspaceName}`,
+            htmlbody: html,
+          },
+          {
+            headers: {
+              Authorization: `Zoho-enczapikey ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+      this.logger.log(`Ownership transfer email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send ownership transfer email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendInvitationStatusEmail(opts: {
+    to: string;
+    recipientName?: string;
+    inviteeNameOrEmail: string;
+    workspaceName: string;
+    status: 'ACCEPTED' | 'DECLINED';
+    manageUrl?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
+
+    if (!apiKey) {
+      this.logger.warn(
+        `[MailService] ZEPTOMAIL_API_KEY not set — invitation status email for: ${opts.to}`,
+      );
+      return;
+    }
+
+    try {
+      const html = await this.renderEmailTemplate(
+        createInvitationStatusEmail({
+          recipientName: opts.recipientName,
+          inviteeNameOrEmail: opts.inviteeNameOrEmail,
+          workspaceName: opts.workspaceName,
+          status: opts.status,
+          manageUrl: opts.manageUrl ?? `${appUrl}/dashboard/team`,
+          appName: brand.appName,
+          brandTagline: brand.appTagline,
+          brandFooter: brand.appFooter,
+          primaryHex: brand.primaryHex,
+          fromName: brand.fromName,
+        }),
+      );
+
+      const subjectPrefix = opts.status === 'ACCEPTED' ? 'Invitation accepted' : 'Invitation declined';
+      await firstValueFrom(
+        this.http.post(
+          'https://api.zeptomail.com/v1.1/email',
+          {
+            from: { address: brand.fromAddress, name: brand.fromName },
+            to: [{ email_address: { address: opts.to } }],
+            subject: `${subjectPrefix}: ${opts.workspaceName}`,
+            htmlbody: html,
+          },
+          {
+            headers: {
+              Authorization: `Zoho-enczapikey ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+      this.logger.log(`Invitation status email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send invitation status email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
       throw err;
     }
   }

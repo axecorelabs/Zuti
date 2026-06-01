@@ -1,9 +1,11 @@
 import { create } from 'zustand';
+import { authApi } from '@/lib/api';
 
 interface User {
   id: string;
   name: string;
   email: string;
+  role: 'USER' | 'MANAGER';
 }
 
 interface AuthState {
@@ -66,10 +68,37 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         }
         set({
           accessToken: token,
-          user: { id: payload.sub, name: payload.name ?? '', email: payload.email ?? '' },
+          user: {
+            id: payload.sub,
+            name: payload.name ?? '',
+            email: payload.email ?? '',
+            role: payload.role === 'MANAGER' ? 'MANAGER' : 'USER',
+          },
           activeOrgId: activeOrgId ?? null,
           isLoading: false,
         });
+
+        // Refresh role/profile from the server in case JWT payload is stale.
+        authApi.me()
+          .then((res) => {
+            const serverUser = res.data?.user as { id: string; name?: string; email?: string; role?: 'USER' | 'MANAGER' } | undefined;
+            if (!serverUser?.id) return;
+            set((state) => {
+              if (!state.user) return state;
+              return {
+                ...state,
+                user: {
+                  id: serverUser.id,
+                  name: serverUser.name ?? state.user.name,
+                  email: serverUser.email ?? state.user.email,
+                  role: serverUser.role === 'MANAGER' ? 'MANAGER' : 'USER',
+                },
+              };
+            });
+          })
+          .catch(() => {
+            // Keep token-derived payload as fallback when profile fetch fails.
+          });
       } catch {
         set({ isLoading: false, activeOrgId: activeOrgId ?? null });
       }

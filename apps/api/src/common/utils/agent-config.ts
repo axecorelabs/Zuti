@@ -1,5 +1,6 @@
 type RawConfig = Record<string, unknown> | null | undefined;
 type SkillOverrideKey = 'SALES' | 'BOOKING' | 'TECHNICAL' | 'FORWARDING';
+type SpecialistSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 
 const DEFAULT_SKILL_BEHAVIOR_BLOCKS: Record<SkillOverrideKey, string> = {
   SALES: [
@@ -83,6 +84,26 @@ function asBoundedNumber(value: unknown): number | null {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function parseSpecialistProfile(config: RawConfig): { mode: 'GENERALIST' | 'SPECIALIST'; skill: SpecialistSkill; strictScope: boolean } | null {
+  const profile = config?.specialistProfile;
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return null;
+
+  const mode = (profile as Record<string, unknown>).mode;
+  const skill = (profile as Record<string, unknown>).skill;
+  const strictScope = (profile as Record<string, unknown>).strictScope;
+  const allowedSkills: SpecialistSkill[] = ['SALES', 'BOOKING', 'SUPPORT', 'TECHNICAL', 'FORWARDING'];
+
+  if ((mode !== 'GENERALIST' && mode !== 'SPECIALIST') || !allowedSkills.includes(skill as SpecialistSkill)) {
+    return null;
+  }
+
+  return {
+    mode,
+    skill: skill as SpecialistSkill,
+    strictScope: strictScope !== false,
+  };
+}
+
 export function buildAgentSystemPrompt(config: RawConfig, botName: string): string | null {
   const mission = asNonEmptyString(config?.mission);
   const agentAlias = asNonEmptyString(config?.agentAlias);
@@ -94,6 +115,7 @@ export function buildAgentSystemPrompt(config: RawConfig, botName: string): stri
   const prohibitedTopics = splitList(config?.prohibitedTopics);
   const creativity = asBoundedNumber(config?.creativity);
   const verbosity = asBoundedNumber(config?.verbosity);
+  const specialistProfile = parseSpecialistProfile(config);
 
   const hasGuidedConfig = Boolean(
     mission ||
@@ -105,7 +127,8 @@ export function buildAgentSystemPrompt(config: RawConfig, botName: string): stri
     extraDetails ||
     prohibitedTopics.length ||
     creativity !== null ||
-    verbosity !== null,
+    verbosity !== null ||
+    specialistProfile,
   );
   if (!hasGuidedConfig) return null;
 
@@ -135,6 +158,19 @@ export function buildAgentSystemPrompt(config: RawConfig, botName: string): stri
     lines.push('- If any prohibited topic appears, ask clarifying questions only if needed and escalate to a human.');
   }
   if (extraDetails) lines.push(`- Additional instructions: ${extraDetails}`);
+
+  if (specialistProfile?.mode === 'SPECIALIST') {
+    lines.push(`- Specialist mode: enabled (${specialistProfile.skill}). Optimize for this skill as the primary objective.`);
+    if (specialistProfile.strictScope) {
+      lines.push('- Strict specialist scope: if a request is outside this specialist domain, do not pretend to complete it; offer a concise handoff or redirect.');
+    }
+
+    if (specialistProfile.skill === 'SALES') {
+      lines.push('- Sales specialist requirements: answer product questions with grounded catalog facts only; do not invent availability, prices, discounts, delivery dates, or policy terms.');
+      lines.push('- For image-based product questions (for example, "do you have something like this?"), provide best-match guidance with confidence language; if confidence is low, say so and ask a clarifying question.');
+      lines.push('- Encourage conversion with truthful alternatives and next steps, but never use fabricated claims or fake urgency.');
+    }
+  }
 
   lines.push('- Never fabricate facts, policies, prices, timelines, or account details.');
   lines.push('- If information is uncertain or missing, say what is unknown, ask a clarifying question when useful, and escalate when appropriate.');

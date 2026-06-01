@@ -75,6 +75,10 @@ const ACTION_CATEGORY: Record<string, ActivityCategory> = {
   CONVERSATION_RESOLVED: 'CONVERSATIONS',
   CSAT_RECORDED_POSITIVE: 'CONVERSATIONS',
   CSAT_RECORDED_NEGATIVE: 'CONVERSATIONS',
+  COMMERCE_PRODUCT_CREATED: 'OTHER',
+  COMMERCE_PRODUCT_UPDATED: 'OTHER',
+  COMMERCE_VARIANT_CREATED: 'OTHER',
+  COMMERCE_INVENTORY_UPDATED: 'OTHER',
   MEMBER_JOINED: 'ACCESS',
   MEMBER_REMOVED: 'ACCESS',
   MEMBER_ROLE_CHANGED: 'ACCESS',
@@ -158,6 +162,14 @@ function customerEventText(log: ActivityLog) {
       return `${log.actorName} joined the workspace.`;
     case 'INVITATION_SENT':
       return `${log.actorName} invited a teammate to the workspace.`;
+    case 'COMMERCE_PRODUCT_CREATED':
+      return `${log.actorName} created a new product${shortTarget ? ` (${shortTarget})` : ''}.`;
+    case 'COMMERCE_PRODUCT_UPDATED':
+      return `${log.actorName} updated a product${shortTarget ? ` (${shortTarget})` : ''}.`;
+    case 'COMMERCE_VARIANT_CREATED':
+      return `${log.actorName} created a variant${shortTarget ? ` (${shortTarget})` : ''}.`;
+    case 'COMMERCE_INVENTORY_UPDATED':
+      return `${log.actorName} updated inventory${shortTarget ? ` (${shortTarget})` : ''}.`;
     default:
       return `${log.actorName} ${log.action.toLowerCase().replace(/_/g, ' ')}.`;
   }

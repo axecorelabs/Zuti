@@ -12,6 +12,11 @@ class UpdateMemberRoleDto {
   declare role: string;
 }
 
+class TransferOwnershipDto {
+  @IsString()
+  declare targetUserId: string;
+}
+
 class UpdateAgentProfileDto {
   @IsOptional()
   @IsArray()
@@ -209,6 +214,16 @@ export class OrganizationsController {
     @Body() dto: UpdateMemberRoleDto,
   ) {
     return this.organizationsService.updateMemberRole(orgId, user.id, targetUserId, dto.role);
+  }
+
+  @Post(':id/transfer-owner')
+  @ApiOperation({ summary: 'Transfer workspace ownership to another member (OWNER only)' })
+  transferOwner(
+    @Param('id') orgId: string,
+    @CurrentUser() user: { id: string },
+    @Body() dto: TransferOwnershipDto,
+  ) {
+    return this.organizationsService.transferOwnership(orgId, user.id, dto.targetUserId);
   }
 
   @Delete(':id/members/:userId')

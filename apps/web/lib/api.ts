@@ -138,6 +138,7 @@ export const authApi = {
     api.post('/auth/register', { name, email, password }),
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }),
+  me: () => api.get('/auth/me'),
   refresh: (refreshToken: string) =>
     api.post('/auth/refresh', { refreshToken }),
   verifyEmail: (token: string) =>
@@ -172,6 +173,11 @@ export const orgsApi = {
   listMembers: (orgId: string) => api.get(`/organizations/${orgId}/members`),
   updateMemberRole: (orgId: string, userId: string, role: string) =>
     api.patch(`/organizations/${orgId}/members/${userId}/role`, { role }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
+  transferOwnership: (orgId: string, targetUserId: string) =>
+    api.post(`/organizations/${orgId}/transfer-owner`, { targetUserId }).then((res) => {
       clearOrgsCache();
       return res;
     }),
@@ -260,6 +266,12 @@ export const invitationsApi = {
     api.post('/invitations', { orgId, email, role }),
   listMine: () => api.get('/invitations/mine'),
   listByOrg: (orgId: string) => api.get(`/invitations/org/${orgId}`),
+  createJoinCode: (orgId: string, role: 'AGENT' | 'ADMIN' = 'AGENT', expiresInHours = 72) =>
+    api.post('/invitations/join-codes', { orgId, role, expiresInHours }),
+  listJoinCodesByOrg: (orgId: string) => api.get(`/invitations/join-codes/org/${orgId}`),
+  redeemJoinCode: (joinId: string, code: string) =>
+    api.post('/invitations/join-codes/redeem', { joinId, code }),
+  revokeJoinCode: (joinId: string) => api.post(`/invitations/join-codes/${joinId}/revoke`),
   getByToken: (token: string) => api.get(`/invitations/${token}`),
   accept: (token: string) => api.post(`/invitations/${token}/accept`),
   decline: (token: string) => api.post(`/invitations/${token}/decline`),

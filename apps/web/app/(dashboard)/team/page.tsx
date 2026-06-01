@@ -13,6 +13,8 @@ import {
   X,
   Send,
   Settings,
+  KeyRound,
+  Copy,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { orgsApi, invitationsApi } from '@/lib/api';
@@ -34,6 +36,16 @@ interface PendingInvite {
   createdAt: string;
   token: string;
 }
+
+interface ActiveJoinCode {
+  id: string;
+  joinId: string;
+  role: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+type TeamJoinMode = 'EMAIL_INVITE' | 'ONE_TIME_CODE';
 
 const ROLE_LABELS: Record<string, string> = { OWNER: 'Owner', ADMIN: 'Admin', AGENT: 'Agent' };
 
@@ -57,57 +69,84 @@ const RoleBadge = ({ role }: { role: string }) => {
 };
 
 export default function TeamPage() {
-  const { user, getRoleForOrg, activeOrgId } = useAuthStore();
+  const { user, getRoleForOrg, activeOrgId, setOrgRoles } = useAuthStore();
 
   const [orgId, setOrgId] = useState<string | null>(null);
+  const [orgName, setOrgName] = useState('');
   const [myRole, setMyRole] = useState<string | null>(null);
+  const canManageWorkspaceAccess = user?.role === 'MANAGER' || myRole === 'OWNER' || myRole === 'ADMIN';
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<PendingInvite[]>([]);
+  const [joinCodes, setJoinCodes] = useState<ActiveJoinCode[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Invite form
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState<'ADMIN' | 'AGENT'>('AGENT');
   const [inviting, setInviting] = useState(false);
+  const [joinRole, setJoinRole] = useState<'ADMIN' | 'AGENT'>('AGENT');
+  const [creatingJoinCode, setCreatingJoinCode] = useState(false);
+  const [generatedJoinCode, setGeneratedJoinCode] = useState<{ joinId: string; code: string; role: string } | null>(null);
+  const [teamJoinMode, setTeamJoinMode] = useState<TeamJoinMode>('EMAIL_INVITE');
 
   // Role change dropdown
   const [changingRole, setChangingRole] = useState<string | null>(null);
+  const [ownershipTransferTarget, setOwnershipTransferTarget] = useState<Member | null>(null);
+  const [ownershipTransferInput, setOwnershipTransferInput] = useState('');
 
   // Remove
   const [removing, setRemoving] = useState<string | null>(null);
 
   // Agent profile editing
-  const [editingProfile, setEditingProfile] = useState<string | null>(null); // userId being edited
+  const [activeMemberPanelId, setActiveMemberPanelId] = useState<string | null>(null);
   const [profileSpecInput, setProfileSpecInput] = useState(''); // comma-separated tags input
   const [profileMaxInput, setProfileMaxInput] = useState(10);
 
   const loadData = useCallback(async (oid: string, role: string | null) => {
     try {
-      const membersRes = await orgsApi.listMembers(oid);
-      setMembers(membersRes.data);
+      const membersPromise = orgsApi.listMembers(oid);
 
-      if (role === 'AGENT') {
+      if (role === 'AGENT' && user?.role !== 'MANAGER') {
+        const membersRes = await membersPromise;
+        setMembers(membersRes.data);
         setInvites([]);
+        setJoinCodes([]);
         return;
       }
 
-      const invitesRes = await invitationsApi.listByOrg(oid);
+      const [membersRes, invitesRes, joinCodesRes] = await Promise.all([
+        membersPromise,
+        invitationsApi.listByOrg(oid),
+        invitationsApi.listJoinCodesByOrg(oid),
+      ]);
+      setMembers(membersRes.data);
       setInvites(invitesRes.data);
+      setJoinCodes(joinCodesRes.data);
     } catch {
       toast.error('Failed to load team data');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user?.role]);
 
   useEffect(() => {
     orgsApi.list().then((res) => {
-      const list = res.data as { id: string; slug: string; members?: { role: string }[] }[];
-      if (!list.length) return;
+      const list = res.data as { id: string; name: string; slug: string; members?: { role: string }[] }[];
+      if (!list.length) {
+        setOrgId(null);
+        setOrgName('');
+        setMyRole(null);
+        setMembers([]);
+        setInvites([]);
+        setJoinCodes([]);
+        setLoading(false);
+        return;
+      }
       const preferred = activeOrgId
         ? (list.find((org) => org.id === activeOrgId) ?? list[0])
         : list[0];
       setOrgId(preferred.id);
+      setOrgName(preferred.name ?? '');
       const role = preferred.members?.[0]?.role ?? getRoleForOrg(preferred.id) ?? null;
       setMyRole(role ?? null);
       loadData(preferred.id, role);
@@ -173,6 +212,44 @@ export default function TeamPage() {
     }
   };
 
+  const handleCreateJoinCode = async () => {
+    if (!orgId) return;
+    setCreatingJoinCode(true);
+    try {
+      const res = await invitationsApi.createJoinCode(orgId, joinRole);
+      const payload = res.data as { joinId: string; code: string; role: string };
+      setGeneratedJoinCode(payload);
+      toast.success('One-time join code created');
+      await loadData(orgId, myRole);
+    } catch {
+      toast.error('Failed to create one-time join code');
+    } finally {
+      setCreatingJoinCode(false);
+    }
+  };
+
+  const copyGeneratedJoinText = async () => {
+    if (!generatedJoinCode) return;
+    const text = `Join ID: ${generatedJoinCode.joinId}\nCode: ${generatedJoinCode.code}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Join credentials copied');
+    } catch {
+      toast.error('Failed to copy credentials');
+    }
+  };
+
+  const handleRevokeJoinCode = async (joinId: string) => {
+    if (!confirm(`Revoke one-time join code ${joinId}?`)) return;
+    try {
+      await invitationsApi.revokeJoinCode(joinId);
+      setJoinCodes((prev) => prev.filter((code) => code.joinId !== joinId));
+      toast.success('Join code revoked');
+    } catch {
+      toast.error('Failed to revoke join code');
+    }
+  };
+
   const handleAvailabilityToggle = async (member: Member) => {
     if (!orgId) return;
     const next = !(member.isAvailable ?? true);
@@ -186,8 +263,8 @@ export default function TeamPage() {
     }
   };
 
-  const openProfileEdit = (member: Member) => {
-    setEditingProfile(member.userId);
+  const openMemberPanel = (member: Member) => {
+    setActiveMemberPanelId(member.userId);
     setProfileSpecInput((member.specializations ?? []).join(', '));
     setProfileMaxInput(member.maxConcurrentConversations ?? 10);
   };
@@ -209,42 +286,124 @@ export default function TeamPage() {
           ? { ...m, specializations: updated.specializations, maxConcurrentConversations: updated.maxConcurrentConversations }
           : m
       ));
-      setEditingProfile(null);
+      setActiveMemberPanelId(null);
       toast.success('Profile saved');
     } catch {
       toast.error('Failed to save profile');
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex-1 flex items-center justify-center min-h-screen bg-zinc-950">
-        <div className="w-5 h-5 border-2 border-zinc-700 border-t-blue-500 rounded-full animate-spin" />
-      </div>
-    );
-  }
+  const refreshOrgRoleContext = useCallback(async (preferredOrgId: string) => {
+    const res = await orgsApi.list({ forceRefresh: true });
+    const list = res.data as { id: string; members?: { role: string }[] }[];
+    const roles: Record<string, string> = {};
+    list.forEach((org) => {
+      if (org.members?.[0]?.role) roles[org.id] = org.members[0].role;
+    });
+    setOrgRoles(roles);
+    const current = list.find((org) => org.id === preferredOrgId);
+    if (current?.members?.[0]?.role) {
+      setMyRole(current.members[0].role);
+    }
+  }, [setOrgRoles]);
 
-  return (
-    <div className="flex-1 min-h-screen bg-zinc-950 p-6 md:p-8">
-      <div className="max-w-3xl mx-auto space-y-8">
+  const handleTransferOwnership = async (member: Member) => {
+    if (!orgId) return;
 
-        {/* Header */}
-        <div>
-          <h1 className="text-xl font-semibold text-white">Team</h1>
-          <p className="text-sm text-zinc-500 font-light mt-1">
-            {myRole === 'AGENT'
-              ? 'Browse your workspace roster and maintain your own agent profile.'
-              : 'Manage members and invitations for this workspace.'}
-          </p>
-        </div>
+    setChangingRole(member.userId);
+    try {
+      await orgsApi.transferOwnership(orgId, member.userId);
+      setMembers((prev) => prev.map((entry) => {
+        if (entry.userId === member.userId) return { ...entry, role: 'OWNER' };
+        if (entry.userId === user?.id) return { ...entry, role: 'ADMIN' };
+        return entry;
+      }));
+      setActiveMemberPanelId(null);
+      setMyRole('ADMIN');
+      await refreshOrgRoleContext(orgId);
+      toast.success('Ownership transferred');
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message ?? 'Failed to transfer ownership';
+      toast.error(Array.isArray(msg) ? msg[0] : msg);
+    } finally {
+      setChangingRole(null);
+      setOwnershipTransferTarget(null);
+      setOwnershipTransferInput('');
+    }
+  };
 
-        {/* Invite form */}
-        {myRole !== 'AGENT' && (
-        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5">
-          <div className="flex items-center gap-2 mb-4">
-            <UserPlus className="w-4 h-4 text-blue-400" />
-            <span className="text-sm font-medium text-white">Invite member</span>
+  const renderTeamJoinMode = () => {
+    switch (teamJoinMode) {
+      case 'ONE_TIME_CODE':
+        return (
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <select
+                value={joinRole}
+                onChange={(e) => setJoinRole(e.target.value as 'ADMIN' | 'AGENT')}
+                className="bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 focus:outline-none focus:border-blue-500 transition-colors"
+              >
+                <option value="AGENT">Agent</option>
+                <option value="ADMIN">Admin</option>
+              </select>
+              <button
+                onClick={handleCreateJoinCode}
+                disabled={creatingJoinCode}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+              >
+                {creatingJoinCode ? 'Generating…' : 'Generate ID + code'}
+              </button>
+            </div>
+
+            {generatedJoinCode && (
+              <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-1">
+                    <p className="text-zinc-200">Join ID: <span className="font-mono text-white">{generatedJoinCode.joinId}</span></p>
+                    <p className="text-zinc-200">Code: <span className="font-mono text-white">{generatedJoinCode.code}</span></p>
+                    <p className="text-[11px] text-zinc-400">This code is one-time use. Share it securely.</p>
+                  </div>
+                  <button
+                    onClick={copyGeneratedJoinText}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border border-zinc-700 text-zinc-200 hover:bg-zinc-800 transition-colors"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    Copy
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-xl border border-zinc-800 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-zinc-800 text-xs text-zinc-500">Active one-time joins ({joinCodes.length})</div>
+              {joinCodes.length === 0 ? (
+                <div className="px-4 py-6 text-xs text-zinc-600">No active one-time join credentials</div>
+              ) : (
+                <div className="divide-y divide-zinc-800">
+                  {joinCodes.map((entry) => (
+                    <div key={entry.id} className="px-4 py-3 flex items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm text-white font-mono">{entry.joinId}</p>
+                        <p className="text-xs text-zinc-600">Expires {new Date(entry.expiresAt).toLocaleString()}</p>
+                      </div>
+                      <RoleBadge role={entry.role} />
+                      <button
+                        onClick={() => handleRevokeJoinCode(entry.joinId)}
+                        className="text-zinc-700 hover:text-red-400 transition-colors"
+                        title="Revoke one-time join code"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
+        );
+      case 'EMAIL_INVITE':
+      default:
+        return (
           <div className="flex gap-2">
             <input
               type="email"
@@ -271,6 +430,67 @@ export default function TeamPage() {
               {inviting ? 'Sending…' : 'Invite'}
             </button>
           </div>
+        );
+    }
+  };
+
+  const activePanelMember = activeMemberPanelId
+    ? members.find((member) => member.userId === activeMemberPanelId) ?? null
+    : null;
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center min-h-screen bg-zinc-950">
+        <div className="w-5 h-5 border-2 border-zinc-700 border-t-blue-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 min-h-screen bg-zinc-950 p-6 md:p-8">
+      <div className="max-w-3xl mx-auto space-y-8">
+
+        {/* Header */}
+        <div>
+          <h1 className="text-xl font-semibold text-white">Team</h1>
+          <p className="text-sm text-zinc-500 font-light mt-1">
+            {myRole === 'AGENT'
+              ? 'Browse your workspace roster and maintain your own agent profile.'
+              : 'Manage members and invitations for this workspace.'}
+          </p>
+        </div>
+
+        {/* Add member */}
+        {canManageWorkspaceAccess && (
+        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <UserPlus className="w-4 h-4 text-blue-400" />
+              <span className="text-sm font-medium text-white">Add member</span>
+            </div>
+            <div className="inline-flex rounded-lg border border-zinc-700 bg-zinc-800/80 p-1">
+              <button
+                type="button"
+                onClick={() => setTeamJoinMode('EMAIL_INVITE')}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                  teamJoinMode === 'EMAIL_INVITE' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Email invite
+              </button>
+              <button
+                type="button"
+                onClick={() => setTeamJoinMode('ONE_TIME_CODE')}
+                className={`px-2.5 py-1 text-xs rounded-md transition-colors ${
+                  teamJoinMode === 'ONE_TIME_CODE' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Join ID + code
+              </button>
+            </div>
+          </div>
+
+          {renderTeamJoinMode()}
         </div>
         )}
 
@@ -289,7 +509,11 @@ export default function TeamPage() {
                 const isMe = m.userId === user?.id;
                 const isOwner = m.role === 'OWNER';
                 const busy = changingRole === m.userId || removing === m.userId;
-                const isEditing = editingProfile === m.userId;
+                const canEditAgentProfile = m.role === 'AGENT' && (myRole === 'OWNER' || myRole === 'ADMIN' || isMe);
+                const canTransferOwnership = myRole === 'OWNER' && !isOwner && !isMe;
+                const canChangeMemberRole = myRole === 'OWNER' && !isOwner && !isMe;
+                const canRemoveMember = !isOwner && !isMe && (myRole === 'OWNER' || myRole === 'ADMIN');
+                const canOpenMemberPanel = canEditAgentProfile || canTransferOwnership || canChangeMemberRole || canRemoveMember;
                 return (
                   <div key={m.userId} className="px-5 py-3">
                     <div className="flex items-center gap-3">
@@ -328,87 +552,16 @@ export default function TeamPage() {
                           {(m.isAvailable ?? true) ? 'Online' : 'Offline'}
                         </button>
                       )}
-                      {/* Edit profile (AGENT only, OWNER/ADMIN or self) */}
-                      {m.role === 'AGENT' && (myRole === 'OWNER' || myRole === 'ADMIN' || isMe) && (
+                      {canOpenMemberPanel && (
                         <button
-                          onClick={() => isEditing ? setEditingProfile(null) : openProfileEdit(m)}
-                          title="Edit agent profile"
+                          onClick={() => openMemberPanel(m)}
+                          title="Open member panel"
                           className="text-zinc-600 hover:text-zinc-300 transition-colors"
                         >
                           <Settings className="w-3.5 h-3.5" />
                         </button>
                       )}
-                      {/* Role change — OWNER only */}
-                      {myRole === 'OWNER' && !isOwner && !isMe && (
-                        <div className="relative">
-                          <select
-                            value={m.role}
-                            disabled={busy}
-                            onChange={(e) => handleRoleChange(m.userId, e.target.value)}
-                            className="bg-zinc-800 border border-zinc-700 rounded-lg pl-2 pr-6 py-1 text-xs text-zinc-400 focus:outline-none focus:border-blue-500 transition-colors appearance-none disabled:opacity-50"
-                          >
-                            <option value="ADMIN">Admin</option>
-                            <option value="AGENT">Agent</option>
-                          </select>
-                          <ChevronDown className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-600 pointer-events-none" />
-                        </div>
-                      )}
-                      {/* Remove */}
-                      {!isOwner && !isMe && (myRole === 'OWNER' || myRole === 'ADMIN') && (
-                        <button
-                          onClick={() => handleRemove(m.userId, m.user.name)}
-                          disabled={busy}
-                          title="Remove member"
-                          className="text-zinc-700 hover:text-red-400 transition-colors disabled:opacity-50"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
                     </div>
-                    {/* Inline agent profile editor */}
-                    {isEditing && (
-                      <div className="mt-3 ml-11 p-3 bg-zinc-800 border border-zinc-700 rounded-xl space-y-3">
-                        <div>
-                          <label className="text-[11px] text-zinc-500 font-medium block mb-1">
-                            Specializations <span className="font-light">(comma-separated)</span>
-                          </label>
-                          <input
-                            type="text"
-                            value={profileSpecInput}
-                            onChange={(e) => setProfileSpecInput(e.target.value)}
-                            placeholder="e.g. billing, technical, returns"
-                            className="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white placeholder-zinc-600 focus:outline-none focus:border-blue-500 transition-colors"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[11px] text-zinc-500 font-medium block mb-1">
-                            Max concurrent conversations
-                          </label>
-                          <input
-                            type="number"
-                            min={1}
-                            max={50}
-                            value={profileMaxInput}
-                            onChange={(e) => setProfileMaxInput(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
-                            className="w-24 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500 transition-colors"
-                          />
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => handleSaveProfile(m.userId)}
-                            className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors"
-                          >
-                            Save
-                          </button>
-                          <button
-                            onClick={() => setEditingProfile(null)}
-                            className="px-3 py-1 text-xs bg-zinc-700 hover:bg-zinc-600 text-zinc-300 font-medium rounded-lg transition-colors"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                 );
               })}
@@ -417,7 +570,7 @@ export default function TeamPage() {
         </div>
 
         {/* Pending invitations */}
-        {myRole !== 'AGENT' && (
+        {canManageWorkspaceAccess && (
         <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden">
           <div className="px-5 py-4 border-b border-zinc-800 flex items-center gap-2">
             <Mail className="w-4 h-4 text-zinc-400" />
@@ -455,6 +608,216 @@ export default function TeamPage() {
         )}
 
       </div>
+
+      {activePanelMember && (
+        <>
+          <button
+            type="button"
+            aria-label="Close member panel overlay"
+            onClick={() => setActiveMemberPanelId(null)}
+            className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[1px]"
+          />
+          <aside
+            className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-zinc-800 bg-zinc-950 shadow-2xl transition-transform duration-200 ease-out ${
+              activePanelMember ? 'translate-x-0' : 'translate-x-full'
+            }`}
+          >
+            <div className="flex items-start justify-between border-b border-zinc-800 px-5 py-4">
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-600">Member panel</p>
+                <h2 className="mt-1 truncate text-lg font-semibold text-white">{activePanelMember.user.name}</h2>
+                <p className="mt-1 truncate text-sm text-zinc-500">{activePanelMember.user.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveMemberPanelId(null)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5">
+              {activePanelMember.role === 'AGENT' && (myRole === 'OWNER' || myRole === 'ADMIN' || activePanelMember.userId === user?.id) && (
+                <section className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Agent profile</p>
+                    <p className="mt-1 text-xs text-zinc-600">Update routing specialties and concurrency for this agent.</p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-zinc-500">
+                      Specializations <span className="font-light">(comma-separated)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={profileSpecInput}
+                      onChange={(e) => setProfileSpecInput(e.target.value)}
+                      placeholder="e.g. billing, technical, returns"
+                      className="w-full rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white placeholder-zinc-600 transition-colors focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-[11px] font-medium text-zinc-500">
+                      Max concurrent conversations
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={50}
+                      value={profileMaxInput}
+                      onChange={(e) => setProfileMaxInput(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                      className="w-28 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm text-white transition-colors focus:border-blue-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleSaveProfile(activePanelMember.userId)}
+                      className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500"
+                    >
+                      Save profile
+                    </button>
+                    <button
+                      onClick={() => setActiveMemberPanelId(null)}
+                      className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-900"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </section>
+              )}
+
+              {((myRole === 'OWNER' && activePanelMember.role !== 'OWNER' && activePanelMember.userId !== user?.id)
+                || (!['OWNER'].includes(activePanelMember.role) && activePanelMember.userId !== user?.id && (myRole === 'OWNER' || myRole === 'ADMIN'))) && (
+                <section className="space-y-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-4">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-[0.18em] text-zinc-500">Action items</p>
+                    <p className="mt-1 text-xs text-zinc-600">Apply membership changes for this person from one place.</p>
+                  </div>
+
+                  {myRole === 'OWNER' && activePanelMember.role !== 'OWNER' && activePanelMember.userId !== user?.id && (
+                    <button
+                      onClick={() => {
+                        setOwnershipTransferTarget(activePanelMember);
+                        setOwnershipTransferInput('');
+                      }}
+                      disabled={changingRole === activePanelMember.userId || removing === activePanelMember.userId}
+                      className="w-full rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-left transition-colors hover:bg-amber-500/15 disabled:opacity-50"
+                    >
+                      <span className="block text-sm font-medium text-amber-300">Make owner</span>
+                      <span className="mt-1 block text-xs text-amber-100/70">Transfer workspace ownership to this member.</span>
+                    </button>
+                  )}
+
+                  {myRole === 'OWNER' && activePanelMember.role !== 'OWNER' && activePanelMember.userId !== user?.id && (
+                    <div>
+                      <label className="mb-1 block text-[11px] font-medium text-zinc-500">Workspace role</label>
+                      <div className="relative">
+                        <select
+                          value={activePanelMember.role}
+                          disabled={changingRole === activePanelMember.userId || removing === activePanelMember.userId}
+                          onChange={(e) => handleRoleChange(activePanelMember.userId, e.target.value)}
+                          className="w-full appearance-none rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-2 pr-8 text-sm text-zinc-300 transition-colors focus:border-blue-500 focus:outline-none disabled:opacity-50"
+                        >
+                          <option value="ADMIN">Admin</option>
+                          <option value="AGENT">Agent</option>
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-600" />
+                      </div>
+                    </div>
+                  )}
+
+                  {activePanelMember.role !== 'OWNER' && activePanelMember.userId !== user?.id && (myRole === 'OWNER' || myRole === 'ADMIN') && (
+                    <button
+                      onClick={() => handleRemove(activePanelMember.userId, activePanelMember.user.name)}
+                      disabled={changingRole === activePanelMember.userId || removing === activePanelMember.userId}
+                      className="inline-flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-sm text-red-300 transition-colors hover:bg-red-500/15 disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Remove member
+                    </button>
+                  )}
+                </section>
+              )}
+            </div>
+          </aside>
+        </>
+      )}
+
+      {ownershipTransferTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+          <button
+            type="button"
+            aria-label="Close ownership transfer modal"
+            onClick={() => setOwnershipTransferTarget(null)}
+            className="absolute inset-0 bg-black/70"
+          />
+          <div className="relative z-10 w-full max-w-md rounded-2xl border border-zinc-800 bg-zinc-950 p-6 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-600">Ownership transfer</p>
+                <h2 className="mt-1 text-lg font-semibold text-white">Transfer workspace ownership?</h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setOwnershipTransferTarget(null)}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 transition-colors hover:bg-zinc-900 hover:text-zinc-200"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-4 text-sm text-zinc-300">
+              <p>
+                You are about to transfer ownership of this workspace to <span className="font-medium text-white">{ownershipTransferTarget.user.name || ownershipTransferTarget.user.email}</span>.
+              </p>
+                <p>
+                  Workspace: <span className="font-medium text-white">{orgName}</span>
+                </p>
+              <p>
+                After transfer:
+              </p>
+              <ul className="list-disc pl-5 text-zinc-400">
+                <li>The selected member becomes the new owner.</li>
+                <li>You will be downgraded to admin.</li>
+                <li>Only the new owner will be able to transfer ownership again.</li>
+              </ul>
+              <div className="space-y-2 pt-2">
+                <label className="block text-[11px] uppercase tracking-[0.16em] text-zinc-500">
+                  Type the workspace name to confirm
+                </label>
+                <input
+                  type="text"
+                  value={ownershipTransferInput}
+                  onChange={(event) => setOwnershipTransferInput(event.target.value)}
+                  placeholder={orgName || 'Workspace name'}
+                  className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setOwnershipTransferTarget(null);
+                  setOwnershipTransferInput('');
+                }}
+                className="rounded-lg border border-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-900"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleTransferOwnership(ownershipTransferTarget)}
+                disabled={changingRole === ownershipTransferTarget.userId || ownershipTransferInput.trim() !== orgName}
+                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-amber-400 disabled:opacity-50"
+              >
+                {changingRole === ownershipTransferTarget.userId ? 'Transferring…' : 'Transfer ownership'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

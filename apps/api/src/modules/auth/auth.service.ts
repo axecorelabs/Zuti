@@ -36,7 +36,7 @@ export class AuthService {
         emailVerificationTokenHash: verificationTokenHash,
         emailVerificationSentAt: new Date(),
       },
-      select: { id: true, email: true, name: true },
+      select: { id: true, email: true, name: true, role: true },
     });
 
     const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
@@ -73,9 +73,9 @@ export class AuthService {
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!valid) throw new UnauthorizedException('Incorrect password');
 
-    const tokens = await this.signTokens(user.id, user.email);
+    const tokens = await this.signTokens(user.id, user.email, user.role);
     return {
-      user: { id: user.id, email: user.email, name: user.name },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
       ...tokens,
     };
   }
@@ -237,6 +237,16 @@ export class AuthService {
       },
     });
 
+    try {
+      await this.mail.sendPasswordChangedEmail({
+        to: user.email,
+        name: user.name ?? undefined,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`Failed to send password changed email to ${user.email}: ${msg}`);
+    }
+
     const memberships = await this.prisma.organizationMember.findMany({
       where: { userId: user.id },
       select: { organizationId: true },
@@ -260,10 +270,23 @@ export class AuthService {
     return { message: 'Password updated successfully.' };
   }
 
+  async getMe(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, name: true, role: true },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    return { user };
+  }
+
   async refreshToken(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException();
-    return this.signTokens(user.id, user.email);
+    return this.signTokens(user.id, user.email, user.role);
   }
 
   async refreshFromToken(refreshToken: string) {
@@ -284,15 +307,15 @@ export class AuthService {
       throw new UnauthorizedException('User is not eligible for refresh');
     }
 
-    const tokens = await this.signTokens(user.id, user.email);
+    const tokens = await this.signTokens(user.id, user.email, user.role);
     return {
-      user: { id: user.id, email: user.email, name: user.name },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
       ...tokens,
     };
   }
 
-  private async signTokens(userId: string, email: string) {
-    const payload = { sub: userId, email };
+  private async signTokens(userId: string, email: string, role: string) {
+    const payload = { sub: userId, email, role };
     const refreshSecret = this.config.get<string>('JWT_REFRESH_SECRET');
     if (!refreshSecret) {
       throw new UnauthorizedException('Refresh token secret is not configured');

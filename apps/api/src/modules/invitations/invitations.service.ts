@@ -9,8 +9,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { ConfigService } from '@nestjs/config';
-import { randomBytes } from 'crypto';
-import { CreateInvitationDto } from './dto/invitation.dto';
+import { createHash, randomBytes, timingSafeEqual } from 'crypto';
+import { CreateInvitationDto, CreateJoinCodeDto, RedeemJoinCodeDto } from './dto/invitation.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
 
@@ -179,6 +179,169 @@ export class InvitationsService {
     });
   }
 
+  async createJoinCode(requestingUserId: string, dto: CreateJoinCodeDto) {
+    await this.assertWorkspaceAccessManager(dto.orgId, requestingUserId);
+
+    const user = await this.prisma.user.findUnique({ where: { id: requestingUserId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const org = await this.prisma.organization.findUnique({ where: { id: dto.orgId } });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const joinId = this.generateJoinId();
+    const code = this.generateJoinCode();
+    const expiresInHours = dto.expiresInHours ?? 72;
+    const expiresAt = new Date(Date.now() + expiresInHours * 60 * 60 * 1000);
+
+    const created = await this.prisma.workspaceJoinCode.create({
+      data: {
+        organizationId: dto.orgId,
+        joinId,
+        codeHash: this.hashJoinCode(code),
+        role: (dto.role as any) ?? 'AGENT',
+        createdById: requestingUserId,
+        expiresAt,
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        joinId: true,
+        role: true,
+        createdAt: true,
+        expiresAt: true,
+      },
+    });
+
+    await this.activity.log(
+      dto.orgId,
+      requestingUserId,
+      user.name ?? user.email,
+      ActivityAction.INVITATION_SENT,
+      'workspace_join_code',
+      created.id,
+      { joinId: created.joinId, role: created.role, expiresAt: created.expiresAt },
+    );
+
+    return {
+      ...created,
+      code,
+    };
+  }
+
+  async listJoinCodesByOrg(orgId: string, requestingUserId: string) {
+    await this.assertWorkspaceAccessManager(orgId, requestingUserId);
+
+    const now = new Date();
+    return this.prisma.workspaceJoinCode.findMany({
+      where: {
+        organizationId: orgId,
+        consumedAt: null,
+        expiresAt: { gt: now },
+      },
+      select: {
+        id: true,
+        joinId: true,
+        role: true,
+        createdAt: true,
+        expiresAt: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async redeemJoinCode(userId: string, dto: RedeemJoinCodeDto) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const joinId = dto.joinId.trim().toUpperCase();
+    const code = dto.code.trim();
+    const invite = await this.prisma.workspaceJoinCode.findUnique({ where: { joinId } });
+    if (!invite) throw new NotFoundException('Join ID or code is invalid');
+
+    if (invite.consumedAt) {
+      throw new BadRequestException('This join code has already been used');
+    }
+
+    if (invite.expiresAt < new Date()) {
+      throw new BadRequestException('This join code has expired');
+    }
+
+    if (!this.matchesJoinCode(code, invite.codeHash)) {
+      throw new BadRequestException('Join ID or code is invalid');
+    }
+
+    const alreadyMember = await this.prisma.organizationMember.findUnique({
+      where: { organizationId_userId: { organizationId: invite.organizationId, userId } },
+    });
+    if (alreadyMember) {
+      throw new ConflictException('You are already a member of this workspace');
+    }
+
+    await this.prisma.organizationMember.create({
+      data: {
+        organizationId: invite.organizationId,
+        userId,
+        role: invite.role,
+      },
+    });
+
+    await this.prisma.workspaceJoinCode.update({
+      where: { id: invite.id },
+      data: {
+        consumedAt: new Date(),
+        consumedById: userId,
+      },
+    });
+
+    await this.notifications.createOrgNotification(
+      invite.organizationId,
+      'member_joined',
+      `${user.name ?? user.email} joined the workspace`,
+      `${user.name ?? user.email} joined via one-time code as ${invite.role}.`,
+      { userId: user.id, role: invite.role, joinId: invite.joinId },
+    );
+
+    await this.activity.log(
+      invite.organizationId,
+      user.id,
+      user.name ?? user.email,
+      ActivityAction.MEMBER_JOINED,
+      'member',
+      user.id,
+      { role: invite.role, joinId: invite.joinId, source: 'one_time_code' },
+    );
+
+    const org = await this.prisma.organization.findUnique({
+      where: { id: invite.organizationId },
+      select: { id: true, slug: true, name: true },
+    });
+
+    return {
+      message: 'Workspace joined successfully',
+      organization: org,
+      role: invite.role,
+    };
+  }
+
+  async revokeJoinCode(joinIdParam: string, requestingUserId: string) {
+    const joinId = joinIdParam.trim().toUpperCase();
+    const invite = await this.prisma.workspaceJoinCode.findUnique({ where: { joinId } });
+    if (!invite) throw new NotFoundException('Join code not found');
+
+    await this.assertWorkspaceAccessManager(invite.organizationId, requestingUserId);
+
+    if (invite.consumedAt) {
+      throw new BadRequestException('Join code has already been used');
+    }
+
+    await this.prisma.workspaceJoinCode.update({
+      where: { id: invite.id },
+      data: { expiresAt: new Date() },
+    });
+
+    return { message: 'Join code revoked' };
+  }
+
   async findByToken(token: string) {
     const invite = await this.prisma.invitation.findUnique({
       where: { token },
@@ -195,7 +358,13 @@ export class InvitationsService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
-    const invite = await this.prisma.invitation.findUnique({ where: { token } });
+    const invite = await this.prisma.invitation.findUnique({
+      where: { token },
+      include: {
+        organization: { select: { id: true, name: true } },
+        invitedBy: { select: { id: true, name: true, email: true } },
+      },
+    });
     if (!invite) throw new NotFoundException('Invitation not found');
 
     if (invite.email.toLowerCase() !== (user.email ?? '').toLowerCase())
@@ -237,6 +406,43 @@ export class InvitationsService {
       { role: invite.role },
     );
 
+    try {
+      const managers = await this.prisma.organizationMember.findMany({
+        where: {
+          organizationId: invite.organizationId,
+          role: { in: ['OWNER', 'ADMIN'] },
+        },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+        },
+      });
+
+      const recipients = new Map<string, { name?: string | null }>();
+      if (invite.invitedBy?.email) {
+        recipients.set(invite.invitedBy.email, { name: invite.invitedBy.name });
+      }
+      managers.forEach((member) => {
+        if (member.user?.email) {
+          recipients.set(member.user.email, { name: member.user.name });
+        }
+      });
+
+      await Promise.allSettled(
+        Array.from(recipients.entries()).map(([email, meta]) =>
+          this.mail.sendInvitationStatusEmail({
+            to: email,
+            recipientName: meta.name ?? undefined,
+            inviteeNameOrEmail: user.name ?? user.email,
+            workspaceName: invite.organization.name,
+            status: 'ACCEPTED',
+          }),
+        ),
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Failed to send invitation accepted status emails: ${msg}`);
+    }
+
     return { message: 'Invitation accepted' };
   }
 
@@ -244,7 +450,13 @@ export class InvitationsService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new NotFoundException('User not found');
 
-    const invite = await this.prisma.invitation.findUnique({ where: { token } });
+    const invite = await this.prisma.invitation.findUnique({
+      where: { token },
+      include: {
+        organization: { select: { id: true, name: true } },
+        invitedBy: { select: { id: true, name: true, email: true } },
+      },
+    });
     if (!invite) throw new NotFoundException('Invitation not found');
 
     if (invite.email.toLowerCase() !== (user.email ?? '').toLowerCase())
@@ -254,6 +466,44 @@ export class InvitationsService {
       throw new BadRequestException(`Invitation is already ${invite.status.toLowerCase()}`);
 
     await this.prisma.invitation.update({ where: { token }, data: { status: 'DECLINED' } });
+
+    try {
+      const managers = await this.prisma.organizationMember.findMany({
+        where: {
+          organizationId: invite.organizationId,
+          role: { in: ['OWNER', 'ADMIN'] },
+        },
+        include: {
+          user: { select: { id: true, name: true, email: true } },
+        },
+      });
+
+      const recipients = new Map<string, { name?: string | null }>();
+      if (invite.invitedBy?.email) {
+        recipients.set(invite.invitedBy.email, { name: invite.invitedBy.name });
+      }
+      managers.forEach((member) => {
+        if (member.user?.email) {
+          recipients.set(member.user.email, { name: member.user.name });
+        }
+      });
+
+      await Promise.allSettled(
+        Array.from(recipients.entries()).map(([email, meta]) =>
+          this.mail.sendInvitationStatusEmail({
+            to: email,
+            recipientName: meta.name ?? undefined,
+            inviteeNameOrEmail: user.name ?? user.email,
+            workspaceName: invite.organization.name,
+            status: 'DECLINED',
+          }),
+        ),
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Failed to send invitation declined status emails: ${msg}`);
+    }
+
     return { message: 'Invitation declined' };
   }
 
@@ -279,5 +529,51 @@ export class InvitationsService {
     if (!member || !roles.includes(member.role)) {
       throw new ForbiddenException('Insufficient permissions');
     }
+  }
+
+  private async assertWorkspaceAccessManager(orgId: string, userId: string) {
+    const member = await this.prisma.organizationMember.findUnique({
+      where: { organizationId_userId: { organizationId: orgId, userId } },
+      select: { role: true },
+    });
+
+    if (!member) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+
+    if (member.role === 'OWNER' || member.role === 'ADMIN') {
+      return;
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    if (user?.role === 'MANAGER') {
+      return;
+    }
+
+    throw new ForbiddenException('Insufficient permissions');
+  }
+
+  private generateJoinId() {
+    return randomBytes(4).toString('hex').toUpperCase();
+  }
+
+  private generateJoinCode() {
+    const numeric = Number.parseInt(randomBytes(4).toString('hex').slice(0, 8), 16);
+    return String((numeric % 900000) + 100000);
+  }
+
+  private hashJoinCode(code: string) {
+    return createHash('sha256').update(code).digest('hex');
+  }
+
+  private matchesJoinCode(code: string, expectedHash: string) {
+    const actual = Buffer.from(this.hashJoinCode(code), 'hex');
+    const expected = Buffer.from(expectedHash, 'hex');
+    if (actual.length !== expected.length) return false;
+    return timingSafeEqual(actual, expected);
   }
 }

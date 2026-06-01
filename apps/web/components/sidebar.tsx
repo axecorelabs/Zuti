@@ -104,10 +104,12 @@ export default function Sidebar({
   const [notifView, setNotifView] = useState<'unread' | 'all'>('unread');
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [actingToken, setActingToken] = useState<string | null>(null);
+  const [orgsLoaded, setOrgsLoaded] = useState(false);
 
   const activeOrgRole = activeOrg ? getRoleForOrg(activeOrg.id) : undefined;
   const isAgent = activeOrgRole === 'AGENT';
-  const roleResolved = !activeOrg || activeOrgRole !== undefined;
+  const canCreateWorkspace = user?.role === 'MANAGER';
+  const roleResolved = orgsLoaded && (!activeOrg || activeOrgRole !== undefined);
   const canViewOrgWideNotifications = activeOrgRole === 'OWNER' || activeOrgRole === 'ADMIN';
   const isOrgWideAllView = notifView === 'all' && canViewOrgWideNotifications;
 
@@ -135,8 +137,11 @@ export default function Sidebar({
           if (org.members?.[0]?.role) roles[org.id] = org.members[0].role;
         });
         setOrgRoles(roles);
+        setOrgsLoaded(true);
       })
-      .catch(() => {});
+      .catch(() => {
+        setOrgsLoaded(true);
+      });
   }, [activeOrgId, setActiveOrgId, setOrgRoles]);
 
   const fetchNotifications = useCallback(() => {
@@ -266,6 +271,11 @@ export default function Sidebar({
   const visibleNotifications = notifView === 'all'
     ? notifications
     : notifications.filter((n) => n.type === 'invitation' || n.isRead !== true);
+
+  const visibleNavItems = navItems.filter((item) => {
+    if (!orgsLoaded) return item.agentVisible;
+    return item.agentVisible || !isAgent;
+  });
 
   return (
     <>
@@ -462,21 +472,22 @@ export default function Sidebar({
                   {org.name}
                 </button>
               ))}
-              <Link
-                href="/onboarding"
-                className={`flex items-center gap-1.5 px-3 py-2 text-sm border-t transition-colors font-light ${isLight ? 'text-slate-500 hover:text-slate-800 border-slate-200' : 'text-zinc-600 hover:text-zinc-300 border-zinc-800'}`}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                New workspace
-              </Link>
+              {canCreateWorkspace && (
+                <Link
+                  href="/onboarding"
+                  className={`flex items-center gap-1.5 px-3 py-2 text-sm border-t transition-colors font-light ${isLight ? 'text-slate-500 hover:text-slate-800 border-slate-200' : 'text-zinc-600 hover:text-zinc-300 border-zinc-800'}`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  New workspace
+                </Link>
+              )}
             </div>
           )}
         </div>
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-          {navItems
-            .filter((item) => item.agentVisible || (roleResolved && !isAgent))
+          {visibleNavItems
             .map(({ label, href, icon: Icon }) => {
             const isActive =
               pathname === href || (href !== '/dashboard' && pathname.startsWith(`${href}/`));

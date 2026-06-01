@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { Eye, EyeOff, Leaf } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -28,11 +28,26 @@ function LoginPageContent() {
     loadFromStorage();
   }, [loadFromStorage]);
 
+  const resolvePostAuthDestination = useCallback(async (nextUser: { role?: 'USER' | 'MANAGER' }) => {
+    try {
+      const orgsRes = await (await import('@/lib/api')).orgsApi.list();
+      const orgs = orgsRes.data as { id: string }[];
+      if (orgs.length === 0) {
+        return nextUser.role === 'MANAGER' ? '/onboarding' : '/join-workspace';
+      }
+      return '/dashboard';
+    } catch {
+      return nextUser.role === 'MANAGER' ? '/onboarding' : '/join-workspace';
+    }
+  }, []);
+
   useEffect(() => {
     if (!isLoading && user) {
-      router.replace('/dashboard');
+      resolvePostAuthDestination(user).then((destination) => {
+        router.replace(destination);
+      });
     }
-  }, [isLoading, user, router]);
+  }, [isLoading, user, router, resolvePostAuthDestination]);
 
   useEffect(() => {
     if (searchParams.get('verify') === 'sent') {
@@ -49,14 +64,8 @@ function LoginPageContent() {
       const { user, accessToken, refreshToken } = res.data;
       setAuth(user, accessToken, refreshToken);
 
-      // If the user has no workspace yet, send them to onboarding
-      try {
-        const orgsRes = await (await import('@/lib/api')).orgsApi.list();
-        const orgs = orgsRes.data as { id: string }[];
-        router.push(orgs.length === 0 ? '/onboarding' : '/dashboard');
-      } catch {
-        router.push('/dashboard');
-      }
+      const destination = await resolvePostAuthDestination(user);
+      router.replace(destination);
 
       setShowResendVerification(false);
     } catch (err: unknown) {

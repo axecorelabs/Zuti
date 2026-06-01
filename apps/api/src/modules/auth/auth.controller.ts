@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
@@ -91,5 +91,11 @@ export class AuthController {
     @Body() dto: ChangePasswordDto,
   ) {
     return this.authService.changePassword(user.id, dto.currentPassword, dto.newPassword);
+  }
+
+  @Get('me')
+  @ApiOperation({ summary: 'Get the current authenticated user profile' })
+  me(@CurrentUser() user: { id: string }) {
+    return this.authService.getMe(user.id);
   }
 }

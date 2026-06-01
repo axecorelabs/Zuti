@@ -30,6 +30,7 @@ import { ActionForwardingService, ActionForwardingResult } from '../action-forwa
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
+import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -733,7 +734,7 @@ export class TelegramProcessor {
 
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, resolvedUserText,
-        bot?.name ?? 'Assistant', systemPrompt, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
+        bot?.name ?? 'Assistant', systemPrompt, aiConfig, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
       );
     }
   }
@@ -747,6 +748,7 @@ export class TelegramProcessor {
     userText: string,
     botName: string = 'Assistant',
     systemPrompt: string | null = null,
+    aiConfig: Record<string, unknown>,
     skillBehaviorPrompt: string | null = null,
     orgName: string | null = null,
     forwardingResult: ActionForwardingResult,
@@ -950,7 +952,19 @@ export class TelegramProcessor {
       ),
     ].filter(Boolean).join('\n\n');
 
-    const preflightPromptTokens = estimateTokens({ userText, history, customerContext });
+    const commerceGrounding = await buildCommerceGroundingContextBlock({
+      prisma: this.prisma,
+      organizationId,
+      aiConfig,
+      userText,
+    });
+    const effectiveCustomerContext = [
+      customerContext,
+      commerceGrounding,
+      await this.cannedResponses.buildPromptBlock(organizationId),
+    ].filter(Boolean).join('\n\n') || null;
+
+    const preflightPromptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
@@ -965,7 +979,7 @@ export class TelegramProcessor {
           bot_name: botName,
           org_name: orgName,
           system_prompt: effectiveSystemPrompt,
-          customer_context: [customerContext, await this.cannedResponses.buildPromptBlock(organizationId)].filter(Boolean).join('\n\n') || null,
+          customer_context: effectiveCustomerContext,
           forwarding_status: forwardingResult.status,
           forwarding_reason: forwardingResult.reason,
           action_task_id: forwardingResult.actionTaskId ?? null,
@@ -980,7 +994,7 @@ export class TelegramProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
-      const promptTokens = estimateTokens({ userText, history, customerContext });
+      const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
       const completionTokens = estimateTokens(aiText);
 
       await this.billing.debitUsageCredits({

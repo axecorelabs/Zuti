@@ -14,6 +14,7 @@ model User {
   id            String   @id @default(cuid())
   email         String   @unique
   passwordHash  String
+  role          UserRole @default(USER)
   emailVerifiedAt DateTime?
   emailVerificationTokenHash String?
   emailVerificationSentAt DateTime?
@@ -34,6 +35,11 @@ model User {
   billingTransactions BillingTransaction[]
 }
 
+enum UserRole {
+  USER
+  MANAGER
+}
+
 // ─── Organizations ────────────────────────────────────────────────────────────
 
 model Organization {
@@ -51,6 +57,7 @@ model Organization {
   integrations   Integration[]
   billing        Billing?
   invitations    Invitation[]
+  workspaceJoinCodes WorkspaceJoinCode[]
   notifications  Notification[]
   activityLogs   ActivityLog[]
   cannedResponses CannedResponse[]
@@ -69,6 +76,9 @@ model Organization {
   bookings Booking[]
   salesOrders SalesOrder[]
   technicalIssues TechnicalIssue[]
+  commerceStores CommerceStore[]
+  commerceOrders CommerceOrder[]
+  commercePayments CommercePayment[]
 }
 
 model OrganizationMember {
@@ -124,6 +134,24 @@ enum InvitationStatus {
   ACCEPTED
   DECLINED
   EXPIRED
+}
+
+model WorkspaceJoinCode {
+  id             String     @id @default(cuid())
+  organizationId String
+  joinId         String     @unique
+  codeHash       String
+  role           MemberRole @default(AGENT)
+  createdById    String
+  consumedById   String?
+  consumedAt     DateTime?
+  expiresAt      DateTime
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, consumedAt, expiresAt])
 }
 
 // ─── Bots ─────────────────────────────────────────────────────────────────────
@@ -700,6 +728,200 @@ model Integration {
   createdAt      DateTime @default(now())
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
+
+// ─── Commerce ───────────────────────────────────────────────────────────────
+
+model CommerceStore {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  currency       CommerceCurrency @default(NGN)
+  isActive       Boolean  @default(true)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  locations      CommerceLocation[]
+  products       CommerceProduct[]
+  orders         CommerceOrder[]
+
+  @@index([organizationId, isActive])
+}
+
+model CommerceLocation {
+  id             String   @id @default(cuid())
+  storeId        String
+  name           String
+  code           String
+  address        Json     @default("{}")
+  isActive       Boolean  @default(true)
+  priority       Int      @default(100)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  store          CommerceStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  inventoryLevels CommerceInventoryLevel[]
+  orderItems     CommerceOrderItem[]
+
+  @@unique([storeId, code])
+  @@index([storeId, isActive, priority])
+}
+
+model CommerceProduct {
+  id             String   @id @default(cuid())
+  storeId        String
+  title          String
+  slug           String
+  description    String?
+  category       String?
+  imageUrl       String?
+  tags           String[] @default([])
+  isActive       Boolean  @default(true)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  store          CommerceStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  variants       CommerceVariant[]
+
+  @@unique([storeId, slug])
+  @@index([storeId, isActive, createdAt(sort: Desc)])
+}
+
+model CommerceVariant {
+  id             String   @id @default(cuid())
+  productId      String
+  sku            String
+  title          String?
+  attributes     Json     @default("{}")
+  priceMinor     Int
+  currency       CommerceCurrency
+  isActive       Boolean  @default(true)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  product        CommerceProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  inventoryLevels CommerceInventoryLevel[]
+  orderItems     CommerceOrderItem[]
+
+  @@unique([productId, sku])
+  @@index([productId, isActive])
+}
+
+model CommerceInventoryLevel {
+  id             String   @id @default(cuid())
+  variantId      String
+  locationId     String
+  onHand         Int      @default(0)
+  reserved       Int      @default(0)
+  reorderPoint   Int      @default(0)
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  variant        CommerceVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  location       CommerceLocation @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, locationId])
+  @@index([locationId])
+}
+
+enum CommerceCurrency {
+  NGN
+  USD
+}
+
+model CommerceOrder {
+  id              String   @id @default(cuid())
+  organizationId  String
+  storeId         String
+  customerName    String?
+  customerEmail   String?
+  customerPhone   String?
+  deliveryAddress String?
+  notes           String?
+  currency        CommerceCurrency
+  subtotalMinor   Int      @default(0)
+  totalMinor      Int      @default(0)
+  status          CommerceOrderStatus @default(DRAFT)
+  paymentStatus   CommercePaymentStatus @default(PENDING)
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  store           CommerceStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  items           CommerceOrderItem[]
+  payments        CommercePayment[]
+
+  @@index([organizationId, status, createdAt(sort: Desc)])
+  @@index([storeId, status, createdAt(sort: Desc)])
+}
+
+model CommerceOrderItem {
+  id             String   @id @default(cuid())
+  orderId        String
+  variantId      String
+  locationId     String?
+  quantity       Int      @default(1)
+  unitPriceMinor Int
+  lineTotalMinor Int
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  order          CommerceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant        CommerceVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  location       CommerceLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([variantId])
+  @@index([locationId])
+}
+
+model CommercePayment {
+  id             String   @id @default(cuid())
+  organizationId String
+  orderId        String
+  provider       CommercePaymentProvider @default(PAYSTACK)
+  reference      String   @unique
+  amountMinor    Int
+  currency       CommerceCurrency
+  status         CommercePaymentStatus @default(PENDING)
+  authorizationUrl String?
+  paidAt         DateTime?
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  order          CommerceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, status, createdAt(sort: Desc)])
+  @@index([orderId, status, createdAt(sort: Desc)])
+}
+
+enum CommerceOrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  PAID
+  CANCELLED
+  FAILED
+}
+
+enum CommercePaymentProvider {
+  PAYSTACK
+}
+
+enum CommercePaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  ABANDONED
 }
 
 // ─── Billing ──────────────────────────────────────────────────────────────────
