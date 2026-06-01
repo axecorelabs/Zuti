@@ -735,18 +735,24 @@ export class AdminService {
 
   async listActivity(query: AdminListActivityQueryDto) {
     const limit = this.clampLimit(query.limit, 50);
+    const page = Math.max(1, Math.trunc(Number(query.page ?? 1)) || 1);
+    const skip = (page - 1) * limit;
 
-    const items = await this.prisma.activityLog.findMany({
-      orderBy: { createdAt: 'desc' },
-      take: limit,
-      include: {
-        organization: {
-          select: { id: true, name: true, slug: true },
+    const [total, items] = await Promise.all([
+      this.prisma.activityLog.count(),
+      this.prisma.activityLog.findMany({
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          organization: {
+            select: { id: true, name: true, slug: true },
+          },
         },
-      },
-    });
+      }),
+    ]);
 
-    return { total: items.length, items };
+    return { total, page, limit, items };
   }
 
   async getOperations(query: AdminOperationsQueryDto) {

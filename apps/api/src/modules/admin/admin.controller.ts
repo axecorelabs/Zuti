@@ -80,6 +80,7 @@ export class AdminController {
   @Get('activity')
   @ApiOperation({ summary: 'List recent platform-wide activity logs for super admin review' })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'page', required: false })
   listActivity(@Query() query: AdminListActivityQueryDto) {
     return this.admin.listActivity(query);
   }

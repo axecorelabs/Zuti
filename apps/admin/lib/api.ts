@@ -98,7 +98,7 @@ export const adminApi = {
   getWorkspace: (workspaceId: string) => api.get(`/admin/workspaces/${workspaceId}`),
   getCashflow: (params?: { limit?: number }) =>
     api.get('/admin/cashflow', { params }),
-  listActivity: (params?: { limit?: number }) =>
+  listActivity: (params?: { limit?: number; page?: number }) =>
     api.get('/admin/activity', { params }),
   getOperations: (params?: { limit?: number }) =>
     api.get('/admin/operations', { params }),

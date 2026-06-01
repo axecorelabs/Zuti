@@ -59,6 +59,13 @@ export class AdminListActivityQueryDto {
   @Min(1)
   @Max(500)
   limit?: number;
+
+  @ApiPropertyOptional({ description: 'Page number for activity results', default: 1, minimum: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
 }
 
 export class AdminCashflowQueryDto {
