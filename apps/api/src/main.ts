@@ -17,11 +17,12 @@ async function bootstrap() {
     .filter(Boolean);
   const allowedOrigins = new Set<string>([
     'https://zuti.bords.app',
-    ...(isProduction ? ['https://zuti-admin.vercel.app'] : [
+    'https://zuti-admin.vercel.app',
+    ...(!isProduction ? [
       'http://localhost:3000',
       'http://localhost:3002',
       'http://localhost:3003',
-    ]),
+    ] : []),
     ...configuredOrigins,
   ]);
 

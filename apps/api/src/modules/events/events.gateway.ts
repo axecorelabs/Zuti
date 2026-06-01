@@ -23,7 +23,8 @@ const configuredWsOrigins = (process.env.WS_ALLOWED_ORIGINS ?? '')
   .filter(Boolean);
 const allowedWsOrigins = new Set<string>([
   'https://zuti.bords.app',
-  ...(isProduction ? ['https://zuti-admin.vercel.app'] : ['http://localhost:3000']),
+  'https://zuti-admin.vercel.app',
+  ...(!isProduction ? ['http://localhost:3000'] : []),
   ...configuredWsOrigins,
 ]);
 
