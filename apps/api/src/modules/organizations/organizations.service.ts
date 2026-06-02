@@ -4,8 +4,15 @@ import {
   ConflictException,
   ForbiddenException,
   UnauthorizedException,
+  BadRequestException,
+  Logger,
 } from '@nestjs/common';
-import { CreditLedgerType, Prisma } from '@prisma/client';
+import { createHash } from 'crypto';
+import {
+  CreditLedgerType,
+  Prisma,
+  WorkspaceSetupRequestStatus,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
@@ -14,23 +21,67 @@ import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class OrganizationsService {
+  private readonly logger = new Logger(OrganizationsService.name);
+  private static readonly setupWorkspaceNamePrefix = 'Workspace name:';
+
   constructor(
     private prisma: PrismaService,
     private activity: ActivityService,
     private mail: MailService,
   ) {}
 
+  private parseWorkspaceNameFromNote(note: string | null | undefined) {
+    if (!note) return null;
+    const line = note
+      .split('\n')
+      .map((entry) => entry.trim())
+      .find((entry) => entry.toLowerCase().startsWith(OrganizationsService.setupWorkspaceNamePrefix.toLowerCase()));
+
+    if (!line) return null;
+    const name = line.slice(OrganizationsService.setupWorkspaceNamePrefix.length).trim();
+    return name.length > 0 ? name : null;
+  }
+
+  private toSlugBase(input: string) {
+    const normalized = input
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    return normalized.slice(0, 45) || `workspace-${Date.now().toString(36)}`;
+  }
+
+  private async getUniqueSlug(tx: Prisma.TransactionClient, base: string) {
+    const safeBase = base.slice(0, 45);
+    let candidate = safeBase;
+    let counter = 1;
+
+    for (;;) {
+      const exists = await tx.organization.findUnique({
+        where: { slug: candidate },
+        select: { id: true },
+      });
+      if (!exists) return candidate;
+
+      counter += 1;
+      const suffix = `-${counter}`;
+      candidate = `${safeBase.slice(0, Math.max(2, 50 - suffix.length))}${suffix}`;
+    }
+  }
+
   async create(userId: string, dto: CreateOrganizationDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, role: true },
+      select: { id: true, canCreateWorkspace: true },
     });
     if (!user) {
       throw new UnauthorizedException('Session is no longer valid. Please sign in again.');
     }
 
-    if (user.role !== 'MANAGER') {
-      throw new ForbiddenException('Only managers can create workspaces');
+    if (!user.canCreateWorkspace) {
+      throw new ForbiddenException('You are not allowed to create workspaces at this time');
     }
 
     const slugTaken = await this.prisma.organization.findUnique({ where: { slug: dto.slug } });
@@ -128,6 +179,899 @@ export class OrganizationsService {
     return org;
   }
 
+  async listVerifiedManagers() {
+    const managers = await this.prisma.managerProfile.findMany({
+      where: {
+        status: 'VERIFIED',
+        user: { role: 'MANAGER' },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        displayName: true,
+        bio: true,
+        specialties: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return managers.map((manager) => ({
+      id: manager.user.id,
+      displayName: manager.displayName ?? manager.user.name ?? manager.user.email,
+      bio: manager.bio,
+      specialties: manager.specialties,
+      contactEmail: manager.user.email,
+    }));
+  }
+
+  async autoAssignVerifiedManager(requesterId: string) {
+    const managers = await this.prisma.managerProfile.findMany({
+      where: {
+        status: 'VERIFIED',
+        user: { role: 'MANAGER' },
+      },
+      select: {
+        id: true,
+        displayName: true,
+        bio: true,
+        specialties: true,
+        updatedAt: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (managers.length === 0) {
+      throw new NotFoundException('No verified managers are currently available');
+    }
+
+    const managerUserIds = managers.map((manager) => manager.user.id);
+
+    const activeStatuses: WorkspaceSetupRequestStatus[] = ['PENDING', 'CONTACTED'];
+    const activeRequests = await this.prisma.workspaceSetupRequest.findMany({
+      where: {
+        managerId: { in: managerUserIds },
+        status: { in: activeStatuses },
+      },
+      select: {
+        managerId: true,
+      },
+    });
+
+    const activeCountByManager = new Map<string, number>();
+    for (const item of activeRequests) {
+      activeCountByManager.set(item.managerId, (activeCountByManager.get(item.managerId) ?? 0) + 1);
+    }
+
+    const last24Hours = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const recentAssignments = await this.prisma.workspaceSetupRequest.findMany({
+      where: {
+        managerId: { in: managerUserIds },
+        createdAt: { gte: last24Hours },
+      },
+      select: {
+        managerId: true,
+      },
+    });
+
+    const recentCountByManager = new Map<string, number>();
+    for (const item of recentAssignments) {
+      recentCountByManager.set(item.managerId, (recentCountByManager.get(item.managerId) ?? 0) + 1);
+    }
+
+    const requesterActive = await this.prisma.workspaceSetupRequest.findMany({
+      where: {
+        requesterId,
+        managerId: { in: managerUserIds },
+        status: { in: activeStatuses },
+      },
+      select: {
+        managerId: true,
+      },
+    });
+
+    const blockedManagers = new Set(requesterActive.map((item) => item.managerId));
+    const candidates = managers.filter((manager) => !blockedManagers.has(manager.user.id));
+
+    if (candidates.length === 0) {
+      throw new ConflictException('You already have active setup requests with available managers');
+    }
+
+    const scoreForManager = (managerId: string) => {
+      const openRequests = activeCountByManager.get(managerId) ?? 0;
+      const assignedLast24h = recentCountByManager.get(managerId) ?? 0;
+      return openRequests * 5 + assignedLast24h * 2;
+    };
+
+    const hashTieBreaker = (managerId: string) =>
+      createHash('sha256').update(`${requesterId}:${managerId}`).digest('hex');
+
+    const selected = candidates
+      .map((manager) => ({
+        manager,
+        score: scoreForManager(manager.user.id),
+        tie: hashTieBreaker(manager.user.id),
+      }))
+      .sort((a, b) => {
+        if (a.score !== b.score) return a.score - b.score;
+        return a.tie.localeCompare(b.tie);
+      })[0]?.manager;
+
+    if (!selected) {
+      throw new NotFoundException('No verified managers are currently available');
+    }
+
+    return {
+      item: {
+        id: selected.user.id,
+        displayName: selected.displayName ?? selected.user.name ?? selected.user.email,
+        bio: selected.bio,
+        specialties: selected.specialties,
+        contactEmail: selected.user.email,
+      },
+    };
+  }
+
+  async requestWorkspaceSetup(
+    requesterId: string,
+    dto: {
+      managerId: string;
+      preferredContactMode: 'EMAIL' | 'PHONE' | 'WHATSAPP' | 'TELEGRAM';
+      contactDetail: string;
+      workspaceName: string;
+      note: string;
+    },
+  ) {
+    if (requesterId === dto.managerId) {
+      throw new ConflictException('You cannot request setup assistance from your own account');
+    }
+
+    const manager = await this.prisma.user.findUnique({
+      where: { id: dto.managerId },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        managerProfile: { select: { status: true, displayName: true } },
+      },
+    });
+
+    if (!manager || manager.role !== 'MANAGER' || manager.managerProfile?.status !== 'VERIFIED') {
+      throw new NotFoundException('Verified manager not found');
+    }
+
+    const businessNature = dto.note?.trim();
+    if (!businessNature) {
+      throw new BadRequestException('Please specify the nature of your business');
+    }
+    if (businessNature.length < 20) {
+      throw new BadRequestException('Nature of business must be at least 20 characters');
+    }
+
+    const workspaceName = dto.workspaceName?.trim();
+    const contactDetail = dto.contactDetail?.trim();
+    if (!workspaceName) {
+      throw new BadRequestException('Please provide the organization/workspace name');
+    }
+    if (!contactDetail) {
+      throw new BadRequestException('Please provide your contact details');
+    }
+
+    const preferredContactMode = dto.preferredContactMode;
+    const requestNote = [
+      `Workspace name: ${workspaceName}`,
+      `Preferred contact mode: ${preferredContactMode}`,
+      `Contact detail: ${contactDetail}`,
+      `Business description: ${businessNature}`,
+    ].join('\n');
+
+    try {
+      const created = await this.prisma.workspaceSetupRequest.create({
+        data: {
+          requesterId,
+          managerId: dto.managerId,
+          status: 'PENDING',
+          note: requestNote,
+        },
+      });
+
+      const requester = await this.prisma.user.findUnique({
+        where: { id: requesterId },
+        select: { id: true, name: true, email: true },
+      });
+
+      const requesterNameOrEmail = requester?.name ?? requester?.email ?? 'Requester';
+      const managerNameOrEmail = manager.managerProfile?.displayName ?? manager.name ?? manager.email;
+
+      if (manager.email) {
+        this.mail.sendWorkspaceSetupRequestCreatedEmail({
+          to: manager.email,
+          recipientRole: 'MANAGER',
+          recipientName: manager.name ?? undefined,
+          requesterNameOrEmail,
+          managerNameOrEmail,
+          requestNote: created.note,
+        }).catch((err) => {
+          this.logger.warn(`Failed to send manager setup request email: ${String(err)}`);
+        });
+      }
+
+      if (requester?.email) {
+        this.mail.sendWorkspaceSetupRequestCreatedEmail({
+          to: requester.email,
+          recipientRole: 'REQUESTER',
+          recipientName: requester.name ?? undefined,
+          requesterNameOrEmail,
+          managerNameOrEmail,
+          requestNote: created.note,
+        }).catch((err) => {
+          this.logger.warn(`Failed to send requester setup request email: ${String(err)}`);
+        });
+      }
+
+      return { item: created };
+    } catch (err: unknown) {
+      if (
+        err instanceof Prisma.PrismaClientKnownRequestError
+        && err.code === 'P2002'
+      ) {
+        throw new ConflictException('A pending setup request to this manager already exists');
+      }
+      throw err;
+    }
+  }
+
+  async listSetupRequestsForRequester(
+    requesterId: string,
+    status?: WorkspaceSetupRequestStatus,
+  ) {
+    const items = await this.prisma.workspaceSetupRequest.findMany({
+      where: {
+        requesterId,
+        ...(status ? { status } : {}),
+      },
+      include: {
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            managerProfile: {
+              select: {
+                status: true,
+                displayName: true,
+              },
+            },
+          },
+        },
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { total: items.length, items };
+  }
+
+  async listSetupRequestsAssignedToManager(
+    managerId: string,
+    status?: WorkspaceSetupRequestStatus,
+  ) {
+    const manager = await this.prisma.user.findUnique({
+      where: { id: managerId },
+      select: {
+        id: true,
+        role: true,
+        managerProfile: { select: { status: true } },
+      },
+    });
+
+    if (!manager || manager.role !== 'MANAGER' || manager.managerProfile?.status !== 'VERIFIED') {
+      throw new ForbiddenException('Only verified managers can view assigned setup requests');
+    }
+
+    const items = await this.prisma.workspaceSetupRequest.findMany({
+      where: {
+        managerId,
+        ...(status ? { status } : {}),
+      },
+      include: {
+        requester: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { total: items.length, items };
+  }
+
+  async updateSetupRequestStatus(
+    actorId: string,
+    requestId: string,
+    status: WorkspaceSetupRequestStatus,
+  ) {
+    const request = await this.prisma.workspaceSetupRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: { select: { id: true, name: true, email: true } },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Setup request not found');
+    }
+
+    const isManager = request.managerId === actorId;
+    const isRequester = request.requesterId === actorId;
+
+    if (!isManager && !isRequester) {
+      throw new ForbiddenException('You cannot update this setup request');
+    }
+
+    if (
+      request.status === 'COMPLETED'
+      || request.status === 'REQUESTER_ADDED'
+      || request.status === 'DECLINED'
+      || request.status === 'CANCELED'
+    ) {
+      throw new ConflictException('This setup request is already closed');
+    }
+
+    if (isManager && status === 'CANCELED') {
+      throw new ForbiddenException('Managers cannot cancel setup requests');
+    }
+
+    if (isRequester && status !== 'CANCELED') {
+      throw new ForbiddenException('Requesters can only cancel setup requests');
+    }
+
+    if (isRequester && status === 'CANCELED' && !['PENDING', 'CONTACTED'].includes(request.status)) {
+      throw new ConflictException('You can only cancel setup requests while they are pending or contacted');
+    }
+
+    if (isManager && (status === 'COMPLETED' || status === 'ORG_CREATED' || status === 'REQUESTER_ADDED') && !request.organizationId) {
+      throw new ConflictException('Use create organization action to complete setup requests');
+    }
+
+    if (request.status === status) {
+      return { item: request };
+    }
+
+    const updated = await this.prisma.workspaceSetupRequest.update({
+      where: { id: requestId },
+      data: { status },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: { select: { id: true, name: true, email: true } },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    const requesterNameOrEmail = updated.requester.name ?? updated.requester.email;
+    const managerNameOrEmail = updated.manager.name ?? updated.manager.email;
+
+    if (updated.manager.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.manager.email,
+        recipientRole: 'MANAGER',
+        recipientName: updated.manager.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status,
+      }).catch((err) => {
+        this.logger.warn(`Failed to send manager setup status email: ${String(err)}`);
+      });
+    }
+
+    if (updated.requester.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.requester.email,
+        recipientRole: 'REQUESTER',
+        recipientName: updated.requester.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status,
+      }).catch((err) => {
+        this.logger.warn(`Failed to send requester setup status email: ${String(err)}`);
+      });
+    }
+
+    return { item: updated };
+  }
+
+  async createOrganizationFromSetupRequest(managerId: string, requestId: string) {
+    const request = await this.prisma.workspaceSetupRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            managerProfile: { select: { status: true } },
+          },
+        },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Setup request not found');
+    }
+
+    if (request.managerId !== managerId) {
+      throw new ForbiddenException('You cannot create organizations for this setup request');
+    }
+
+    if (request.manager.role !== 'MANAGER' || request.manager.managerProfile?.status !== 'VERIFIED') {
+      throw new ForbiddenException('Only verified managers can create organizations from setup requests');
+    }
+
+    if (request.organizationId && request.organization) {
+      return { item: request, organization: request.organization };
+    }
+
+    if (!['PENDING', 'CONTACTED'].includes(request.status)) {
+      throw new ConflictException('Only pending or contacted setup requests can create organizations');
+    }
+
+    const requestedWorkspaceName = this.parseWorkspaceNameFromNote(request.note)
+      ?? request.requester.name
+      ?? request.requester.email.split('@')[0]
+      ?? 'Workspace';
+
+    const existingMembershipCount = await this.prisma.organizationMember.count({
+      where: { userId: request.requesterId },
+    });
+    const starterCreditGrant = existingMembershipCount === 0 ? 100 : 0;
+    const starterCreditUnits = starterCreditGrant * CREDIT_UNITS_PER_CREDIT;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const latest = await tx.workspaceSetupRequest.findUnique({
+        where: { id: requestId },
+        select: {
+          id: true,
+          status: true,
+          organizationId: true,
+          managerId: true,
+          requesterId: true,
+        },
+      });
+
+      if (!latest) {
+        throw new NotFoundException('Setup request not found');
+      }
+
+      if (latest.managerId !== managerId) {
+        throw new ForbiddenException('You cannot create organizations for this setup request');
+      }
+
+      if (latest.organizationId) {
+        const existingOrg = await tx.organization.findUnique({
+          where: { id: latest.organizationId },
+          select: { id: true, name: true, slug: true },
+        });
+        return {
+          createdOrg: existingOrg,
+          organizationAlreadyLinked: true,
+        };
+      }
+
+      if (!['PENDING', 'CONTACTED'].includes(latest.status)) {
+        throw new ConflictException('Only pending or contacted setup requests can create organizations');
+      }
+
+      const slugBase = this.toSlugBase(requestedWorkspaceName);
+      const slug = await this.getUniqueSlug(tx, slugBase);
+
+      const createdOrg = await tx.organization.create({
+        data: {
+          name: requestedWorkspaceName,
+          slug,
+          members: {
+            create: [
+              { userId: managerId, role: 'OWNER' },
+              { userId: request.requesterId, role: 'ADMIN' },
+            ],
+          },
+          billing: {
+            create: {
+              plan: 'STARTER',
+              messageCount: 0,
+              messageLimit: starterCreditGrant,
+              creditBalanceUnits: starterCreditUnits,
+              committedMonthlyCreditsUnits: 0,
+            },
+          },
+        },
+        include: {
+          billing: { select: { id: true } },
+        },
+      });
+
+      if (starterCreditGrant > 0 && createdOrg.billing) {
+        await tx.creditLedger.create({
+          data: {
+            organizationId: createdOrg.id,
+            billingId: createdOrg.billing.id,
+            type: CreditLedgerType.GRANT,
+            creditsDeltaUnits: starterCreditUnits,
+            balanceAfterUnits: starterCreditUnits,
+            description: `Starter credit grant on organization creation (${starterCreditGrant} credits)`,
+            idempotencyKey: `org:${createdOrg.id}:starter-credit-grant`,
+            metadata: {
+              source: 'workspace_setup_request_create_org',
+              creditsGranted: starterCreditGrant,
+              creditsGrantedUnits: starterCreditUnits,
+              setupRequestId: requestId,
+            },
+          },
+        });
+
+        await tx.activityLog.create({
+          data: {
+            orgId: createdOrg.id,
+            actorId: managerId,
+            actorName: request.manager.name ?? request.manager.email ?? 'Manager',
+            action: 'BILLING_CREDIT_GRANTED',
+            targetType: 'billing',
+            targetId: createdOrg.billing.id,
+            metadata: {
+              source: 'workspace_setup_request_create_org',
+              creditsGranted: starterCreditGrant,
+              creditsGrantedUnits: starterCreditUnits,
+              balanceAfterCredits: starterCreditGrant,
+              balanceAfterUnits: starterCreditUnits,
+              setupRequestId: requestId,
+            },
+          },
+        });
+
+        await tx.notification.create({
+          data: {
+            orgId: createdOrg.id,
+            type: 'billing_credit_granted',
+            title: 'Starter credits granted',
+            body: `${starterCreditGrant} starter credits were allocated to this organization.`,
+            metadata: {
+              source: 'workspace_setup_request_create_org',
+              creditsGranted: starterCreditGrant,
+              creditsGrantedUnits: starterCreditUnits,
+              setupRequestId: requestId,
+            },
+            targetUserId: null,
+          },
+        });
+      }
+
+      await tx.workspaceSetupRequest.update({
+        where: { id: requestId },
+        data: {
+          status: 'REQUESTER_ADDED',
+          organizationId: createdOrg.id,
+        },
+      });
+
+      return {
+        createdOrg: {
+          id: createdOrg.id,
+          name: createdOrg.name,
+          slug: createdOrg.slug,
+        },
+        organizationAlreadyLinked: false,
+      };
+    }, {
+      timeout: 20_000,
+    });
+
+    const updatedRequest = await this.prisma.workspaceSetupRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: { select: { id: true, name: true, email: true } },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    if (!updatedRequest) {
+      throw new NotFoundException('Setup request not found after creating organization');
+    }
+
+    if (result.organizationAlreadyLinked) {
+      return {
+        item: updatedRequest,
+        organization: result.createdOrg,
+      };
+    }
+
+    const requesterNameOrEmail = updatedRequest.requester.name ?? updatedRequest.requester.email;
+    const managerNameOrEmail = updatedRequest.manager.name ?? updatedRequest.manager.email;
+
+    if (updatedRequest.manager.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updatedRequest.manager.email,
+        recipientRole: 'MANAGER',
+        recipientName: updatedRequest.manager.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'REQUESTER_ADDED',
+      }).catch((err) => {
+        this.logger.warn(`Failed to send manager setup status email: ${String(err)}`);
+      });
+    }
+
+    if (updatedRequest.requester.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updatedRequest.requester.email,
+        recipientRole: 'REQUESTER',
+        recipientName: updatedRequest.requester.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'REQUESTER_ADDED',
+      }).catch((err) => {
+        this.logger.warn(`Failed to send requester setup status email: ${String(err)}`);
+      });
+    }
+
+    return {
+      item: updatedRequest,
+      organization: result.createdOrg,
+    };
+  }
+
+  async retryRequesterAddFromSetupRequest(managerId: string, requestId: string) {
+    const request = await this.prisma.workspaceSetupRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            managerProfile: { select: { status: true } },
+          },
+        },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Setup request not found');
+    }
+
+    if (request.managerId !== managerId) {
+      throw new ForbiddenException('You cannot retry requester add for this setup request');
+    }
+
+    if (request.manager.role !== 'MANAGER' || request.manager.managerProfile?.status !== 'VERIFIED') {
+      throw new ForbiddenException('Only verified managers can retry requester membership for setup requests');
+    }
+
+    if (!request.organizationId || !request.organization) {
+      throw new ConflictException('No organization is linked to this setup request yet');
+    }
+
+    if (request.status === 'REQUESTER_ADDED' || request.status === 'COMPLETED') {
+      return { item: request, organization: request.organization };
+    }
+
+    if (request.status !== 'ORG_CREATED') {
+      throw new ConflictException('Retry requester add is only available when request status is ORG_CREATED');
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.organizationMember.upsert({
+        where: {
+          organizationId_userId: {
+            organizationId: request.organizationId!,
+            userId: request.requesterId,
+          },
+        },
+        update: {},
+        create: {
+          organizationId: request.organizationId!,
+          userId: request.requesterId,
+          role: 'ADMIN',
+        },
+      });
+
+      return tx.workspaceSetupRequest.update({
+        where: { id: requestId },
+        data: { status: 'REQUESTER_ADDED' },
+        include: {
+          requester: { select: { id: true, name: true, email: true } },
+          manager: { select: { id: true, name: true, email: true } },
+          organization: { select: { id: true, name: true, slug: true } },
+        },
+      });
+    });
+
+    const requesterNameOrEmail = updated.requester.name ?? updated.requester.email;
+    const managerNameOrEmail = updated.manager.name ?? updated.manager.email;
+
+    if (updated.manager.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.manager.email,
+        recipientRole: 'MANAGER',
+        recipientName: updated.manager.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'REQUESTER_ADDED',
+      }).catch((err) => {
+        this.logger.warn(`Failed to send manager setup status email: ${String(err)}`);
+      });
+    }
+
+    if (updated.requester.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.requester.email,
+        recipientRole: 'REQUESTER',
+        recipientName: updated.requester.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'REQUESTER_ADDED',
+      }).catch((err) => {
+        this.logger.warn(`Failed to send requester setup status email: ${String(err)}`);
+      });
+    }
+
+    return {
+      item: updated,
+      organization: updated.organization,
+    };
+  }
+
+  async finalizeSetupHandover(managerId: string, requestId: string) {
+    const request = await this.prisma.workspaceSetupRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            managerProfile: { select: { status: true } },
+          },
+        },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    if (!request) {
+      throw new NotFoundException('Setup request not found');
+    }
+
+    if (request.managerId !== managerId) {
+      throw new ForbiddenException('You cannot finalize handover for this setup request');
+    }
+
+    if (request.manager.role !== 'MANAGER' || request.manager.managerProfile?.status !== 'VERIFIED') {
+      throw new ForbiddenException('Only verified managers can finalize setup handover');
+    }
+
+    if (!request.organizationId || !request.organization) {
+      throw new ConflictException('No organization is linked to this setup request yet');
+    }
+
+    if (request.status === 'COMPLETED') {
+      return { item: request, organization: request.organization };
+    }
+
+    if (request.status !== 'REQUESTER_ADDED') {
+      throw new ConflictException('Handover can only be finalized after requester has been added');
+    }
+
+    const [managerMembership, requesterMembership] = await Promise.all([
+      this.prisma.organizationMember.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: request.organizationId,
+            userId: request.managerId,
+          },
+        },
+        select: { role: true },
+      }),
+      this.prisma.organizationMember.findUnique({
+        where: {
+          organizationId_userId: {
+            organizationId: request.organizationId,
+            userId: request.requesterId,
+          },
+        },
+        select: { role: true },
+      }),
+    ]);
+
+    if (!managerMembership || !requesterMembership) {
+      throw new ConflictException('Manager and requester must both be organization members before handover');
+    }
+
+    if (!(managerMembership.role !== 'OWNER' && requesterMembership.role === 'OWNER')) {
+      await this.transferOwnership(request.organizationId, request.managerId, request.requesterId);
+    }
+
+    const updated = await this.prisma.workspaceSetupRequest.update({
+      where: { id: requestId },
+      data: { status: 'COMPLETED' },
+      include: {
+        requester: { select: { id: true, name: true, email: true } },
+        manager: { select: { id: true, name: true, email: true } },
+        organization: { select: { id: true, name: true, slug: true } },
+      },
+    });
+
+    const requesterNameOrEmail = updated.requester.name ?? updated.requester.email;
+    const managerNameOrEmail = updated.manager.name ?? updated.manager.email;
+
+    if (updated.manager.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.manager.email,
+        recipientRole: 'MANAGER',
+        recipientName: updated.manager.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'COMPLETED',
+      }).catch((err) => {
+        this.logger.warn(`Failed to send manager setup status email: ${String(err)}`);
+      });
+    }
+
+    if (updated.requester.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.requester.email,
+        recipientRole: 'REQUESTER',
+        recipientName: updated.requester.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'COMPLETED',
+      }).catch((err) => {
+        this.logger.warn(`Failed to send requester setup status email: ${String(err)}`);
+      });
+    }
+
+    return {
+      item: updated,
+      organization: updated.organization,
+    };
+  }
+
   async findAllForUser(userId: string) {
     const orgs = await this.prisma.organization.findMany({
       where: { members: { some: { userId } } },
@@ -185,6 +1129,34 @@ export class OrganizationsService {
       orderBy: { createdAt: 'asc' },
     });
 
+    const orgIds = memberships.map((membership) => membership.organization.id);
+    const activeSetupRequests = await this.prisma.workspaceSetupRequest.findMany({
+      where: {
+        managerId: userId,
+        status: { in: ['PENDING', 'CONTACTED'] },
+      },
+      select: { requesterId: true },
+    });
+
+    const requesterIds = Array.from(new Set(activeSetupRequests.map((item) => item.requesterId)));
+    const setupMemberLinks = requesterIds.length === 0 || orgIds.length === 0
+      ? []
+      : await this.prisma.organizationMember.findMany({
+          where: {
+            organizationId: { in: orgIds },
+            userId: { in: requesterIds },
+          },
+          select: {
+            organizationId: true,
+            userId: true,
+          },
+        });
+
+    const setupCountByOrg = new Map<string, number>();
+    for (const link of setupMemberLinks) {
+      setupCountByOrg.set(link.organizationId, (setupCountByOrg.get(link.organizationId) ?? 0) + 1);
+    }
+
     return memberships.map((membership) => ({
       id: membership.organization.id,
       name: membership.organization.name,
@@ -192,7 +1164,232 @@ export class OrganizationsService {
       role: membership.role,
       memberCount: membership.organization._count.members,
       botCount: membership.organization._count.bots,
+      managerSetupActiveCount: setupCountByOrg.get(membership.organization.id) ?? 0,
+      managerSetupInProgress: (setupCountByOrg.get(membership.organization.id) ?? 0) > 0,
     }));
+  }
+
+  async findOverviewForUser(userId: string) {
+    const memberships = await this.prisma.organizationMember.findMany({
+      where: { userId },
+      select: {
+        role: true,
+        organization: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+            _count: {
+              select: {
+                members: true,
+                bots: true,
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const privilegedOrgIds = memberships
+      .filter((membership) => membership.role !== 'AGENT')
+      .map((membership) => membership.organization.id);
+    const agentOrgIds = memberships
+      .filter((membership) => membership.role === 'AGENT')
+      .map((membership) => membership.organization.id);
+
+    const [privilegedGrouped, agentGrouped] = await Promise.all([
+      privilegedOrgIds.length > 0
+        ? this.prisma.conversation.groupBy({
+            by: ['organizationId', 'status'],
+            where: {
+              organizationId: { in: privilegedOrgIds },
+            },
+            _count: { status: true },
+          })
+        : Promise.resolve([]),
+      agentOrgIds.length > 0
+        ? this.prisma.conversation.groupBy({
+            by: ['organizationId', 'status'],
+            where: {
+              organizationId: { in: agentOrgIds },
+              OR: [
+                { assignedAgentId: userId },
+                { assignedAgentId: null },
+              ],
+            },
+            _count: { status: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const countByOrg = new Map<string, {
+      total: number;
+      open: number;
+      resolved: number;
+      escalated: number;
+      pending: number;
+    }>();
+
+    const registerStatusCount = (orgId: string, status: string, count: number) => {
+      const current = countByOrg.get(orgId) ?? {
+        total: 0,
+        open: 0,
+        resolved: 0,
+        escalated: 0,
+        pending: 0,
+      };
+      current.total += count;
+      if (status === 'OPEN') current.open += count;
+      if (status === 'RESOLVED') current.resolved += count;
+      if (status === 'ESCALATED') current.escalated += count;
+      if (status === 'PENDING') current.pending += count;
+      countByOrg.set(orgId, current);
+    };
+
+    for (const row of [...privilegedGrouped, ...agentGrouped]) {
+      registerStatusCount(row.organizationId, row.status, row._count.status);
+    }
+
+    const organizations = memberships.map((membership) => {
+      const conversationTotals = countByOrg.get(membership.organization.id) ?? {
+        total: 0,
+        open: 0,
+        resolved: 0,
+        escalated: 0,
+        pending: 0,
+      };
+
+      return {
+        id: membership.organization.id,
+        name: membership.organization.name,
+        slug: membership.organization.slug,
+        role: membership.role,
+        memberCount: membership.role === 'AGENT' ? null : membership.organization._count.members,
+        botCount: membership.role === 'AGENT' ? null : membership.organization._count.bots,
+        conversationTotals,
+      };
+    });
+
+    const totals = organizations.reduce((acc, org) => {
+      acc.organizationCount += 1;
+      acc.conversations.total += org.conversationTotals.total;
+      acc.conversations.open += org.conversationTotals.open;
+      acc.conversations.resolved += org.conversationTotals.resolved;
+      acc.conversations.escalated += org.conversationTotals.escalated;
+      acc.conversations.pending += org.conversationTotals.pending;
+      if (typeof org.memberCount === 'number') acc.visibleMemberCount += org.memberCount;
+      if (typeof org.botCount === 'number') acc.visibleBotCount += org.botCount;
+      return acc;
+    }, {
+      organizationCount: 0,
+      visibleMemberCount: 0,
+      visibleBotCount: 0,
+      conversations: {
+        total: 0,
+        open: 0,
+        resolved: 0,
+        escalated: 0,
+        pending: 0,
+      },
+    });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    let setupRequests: {
+      totals: {
+        total: number;
+        pending: number;
+        contacted: number;
+        orgCreated: number;
+        requesterAdded: number;
+        completed: number;
+        declined: number;
+        canceled: number;
+      };
+      recent: Array<{
+        id: string;
+        status: WorkspaceSetupRequestStatus;
+        createdAt: Date;
+        updatedAt: Date;
+        organization: {
+          id: string;
+          name: string;
+          slug: string;
+        } | null;
+        requester: {
+          id: string;
+          name: string | null;
+          email: string;
+        };
+        note: string | null;
+      }>;
+    } | null = null;
+
+    if (user?.role === 'MANAGER') {
+      const [groupedByStatus, recent] = await Promise.all([
+        this.prisma.workspaceSetupRequest.groupBy({
+          by: ['status'],
+          where: { managerId: userId },
+          _count: { status: true },
+        }),
+        this.prisma.workspaceSetupRequest.findMany({
+          where: { managerId: userId },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          take: 10,
+          select: {
+            id: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+            note: true,
+            organization: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
+            },
+            requester: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+              },
+            },
+          },
+        }),
+      ]);
+
+      const setupCountsByStatus = groupedByStatus.reduce<Record<string, number>>((acc, item) => {
+        acc[item.status] = item._count.status;
+        return acc;
+      }, {});
+
+      setupRequests = {
+        totals: {
+          total: groupedByStatus.reduce((sum, row) => sum + row._count.status, 0),
+          pending: setupCountsByStatus.PENDING ?? 0,
+          contacted: setupCountsByStatus.CONTACTED ?? 0,
+          orgCreated: setupCountsByStatus.ORG_CREATED ?? 0,
+          requesterAdded: setupCountsByStatus.REQUESTER_ADDED ?? 0,
+          completed: setupCountsByStatus.COMPLETED ?? 0,
+          declined: setupCountsByStatus.DECLINED ?? 0,
+          canceled: setupCountsByStatus.CANCELED ?? 0,
+        },
+        recent,
+      };
+    }
+
+    return {
+      totals,
+      organizations,
+      setupRequests,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   async findOne(slug: string, userId: string) {

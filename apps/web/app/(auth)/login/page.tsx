@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { authApi } from '@/lib/api';
+import { resolveNoWorkspaceRoute } from '@/lib/no-workspace-flow';
 import { useAuthStore } from '@/lib/store';
 
 function LoginPageContent() {
@@ -28,16 +29,16 @@ function LoginPageContent() {
     loadFromStorage();
   }, [loadFromStorage]);
 
-  const resolvePostAuthDestination = useCallback(async (nextUser: { role?: 'USER' | 'MANAGER' }) => {
+  const resolvePostAuthDestination = useCallback(async (_nextUser: { role?: 'USER' | 'MANAGER' }) => {
     try {
       const orgsRes = await (await import('@/lib/api')).orgsApi.list();
       const orgs = orgsRes.data as { id: string }[];
       if (orgs.length === 0) {
-        return nextUser.role === 'MANAGER' ? '/onboarding' : '/join-workspace';
+        return resolveNoWorkspaceRoute();
       }
       return '/dashboard';
     } catch {
-      return nextUser.role === 'MANAGER' ? '/onboarding' : '/join-workspace';
+      return resolveNoWorkspaceRoute();
     }
   }, []);
 

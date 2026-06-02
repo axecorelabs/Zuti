@@ -68,6 +68,7 @@ export default function DashboardPage() {
   const [myRole, setMyRole] = useState<MemberRole | null>(null);
   const [stats, setStats] = useState({ total: 0, open: 0, escalated: 0, resolved: 0, bots: 0, members: 0 });
   const [loading, setLoading] = useState(true);
+  const withOrg = (path: string) => (activeOrgId ? `${path}?org=${activeOrgId}` : path);
 
   useEffect(() => {
     orgsApi.listSummary().then(async (res) => {
@@ -125,19 +126,18 @@ export default function DashboardPage() {
 
   const quickActions = myRole === 'AGENT'
     ? [
-        { href: '/inbox', icon: MessageSquare, label: 'Open inbox', sub: 'Handle visible conversations' },
-        { href: '/team', icon: Users, label: 'View team', sub: 'See your workspace roster' },
-        { href: '/activity', icon: AlertCircle, label: 'Your activity', sub: 'Review your recent actions' },
+        { href: withOrg('/inbox'), icon: MessageSquare, label: 'Open inbox', sub: 'Handle visible conversations' },
+        { href: withOrg('/team'), icon: Users, label: 'View team', sub: 'See your workspace roster' },
+        { href: withOrg('/activity'), icon: AlertCircle, label: 'Your activity', sub: 'Review your recent actions' },
       ]
     : [
-        { href: '/bots', icon: Bot, label: 'Add AI agent', sub: 'Connect Telegram' },
-        { href: '/inbox', icon: MessageSquare, label: 'Open inbox', sub: 'View messages' },
-        { href: '/knowledge', icon: BookOpen, label: 'Add knowledge', sub: 'Train your AI' },
+        { href: withOrg('/bots'), icon: Bot, label: 'Add AI agent', sub: 'Connect Telegram' },
+        { href: withOrg('/inbox'), icon: MessageSquare, label: 'Open inbox', sub: 'View messages' },
+        { href: withOrg('/knowledge'), icon: BookOpen, label: 'Add knowledge', sub: 'Train your AI' },
       ];
 
   return (
     <div className="overview-page p-4 md:p-8">
-      {/* Header */}
       <div className="mb-8">
         <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">
           {loading
@@ -151,7 +151,6 @@ export default function DashboardPage() {
         </p>
       </div>
 
-      {/* Stat cards */}
       <div className="overview-stat-grid grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
         {statCards.map(({ label, value, icon: Icon, accent }) => (
           <div key={label} className="overview-stat-card card p-5">
@@ -168,9 +167,7 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Charts row */}
       <div className="grid lg:grid-cols-3 gap-4 mb-6">
-        {/* Volume bar chart */}
         <div className="card p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-6">
             <div>
@@ -206,7 +203,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Status donut */}
         <div className="card p-6">
           <div className="mb-6">
             <h2 className="text-sm font-normal text-white">Status breakdown</h2>
@@ -254,15 +250,13 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Bottom row */}
       <div className="grid lg:grid-cols-3 gap-4">
-        {/* Recent conversations */}
         <div className="card p-6 lg:col-span-2">
           <div className="flex items-center justify-between mb-5">
             <h2 className="text-sm font-normal text-white">
               {myRole === 'AGENT' ? 'Your recent conversations' : 'Recent conversations'}
             </h2>
-              <a href="/inbox" className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 transition-colors">
+            <a href={withOrg('/inbox')} className="flex items-center gap-1 text-xs text-blue-500 hover:text-blue-400 transition-colors">
               View all <ArrowRight className="w-3 h-3" />
             </a>
           </div>
@@ -279,7 +273,7 @@ export default function DashboardPage() {
               {recent.map((c) => (
                 <a
                   key={c.id}
-                  href="/inbox"
+                  href={withOrg('/inbox')}
                   className="flex items-center justify-between py-2.5 px-1 rounded-lg hover:bg-zinc-900/50 transition-colors group"
                 >
                   <div className="flex items-center gap-3">
@@ -307,7 +301,6 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Quick actions */}
         <div className="card p-6">
           <h2 className="text-sm font-normal text-white mb-5">Quick actions</h2>
           <div className="space-y-2">

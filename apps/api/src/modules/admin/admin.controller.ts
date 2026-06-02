@@ -44,7 +44,11 @@ export class AdminController {
   @Patch('users/:userId/role')
   @ApiOperation({ summary: 'Update a Zuti user global platform role' })
   updateUserRole(@Param('userId') userId: string, @Body() dto: UpdateAdminUserRoleDto) {
-    return this.admin.updateUserRole(userId, dto.role);
+    return this.admin.updateUserRole(userId, {
+      role: dto.role,
+      canCreateWorkspace: dto.canCreateWorkspace,
+      managerVerificationStatus: dto.managerVerificationStatus,
+    });
   }
 
   @Get('workspaces')

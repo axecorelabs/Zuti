@@ -9,6 +9,7 @@ import { createPasswordResetEmail } from './templates/PasswordResetEmail';
 import { createPasswordChangedEmail } from './templates/PasswordChangedEmail';
 import { createOwnershipTransferEmail } from './templates/OwnershipTransferEmail';
 import { createInvitationStatusEmail } from './templates/InvitationStatusEmail';
+import { createWorkspaceSetupRequestEmail } from './templates/WorkspaceSetupRequestEmail';
 
 @Injectable()
 export class MailService {
@@ -369,6 +370,169 @@ export class MailService {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to send invitation status email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendWorkspaceSetupRequestCreatedEmail(opts: {
+    to: string;
+    recipientRole: 'MANAGER' | 'REQUESTER';
+    recipientName?: string;
+    requesterNameOrEmail: string;
+    managerNameOrEmail: string;
+    requestNote?: string | null;
+    dashboardUrl?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
+
+    if (!apiKey) {
+      this.logger.warn(
+        `[MailService] ZEPTOMAIL_API_KEY not set — setup request created email for: ${opts.to}`,
+      );
+      return;
+    }
+
+    const dashboardUrl = opts.dashboardUrl ?? `${appUrl}/dashboard/setup-requests`;
+    const isManagerRecipient = opts.recipientRole === 'MANAGER';
+    const title = isManagerRecipient
+      ? 'New workspace setup request'
+      : 'Your setup request was sent';
+
+    const intro = isManagerRecipient
+      ? `Hi ${opts.recipientName ?? 'there'}, ${opts.requesterNameOrEmail} requested your help setting up a workspace.`
+      : `Hi ${opts.recipientName ?? 'there'}, your request was sent to ${opts.managerNameOrEmail}. You can track updates in your dashboard.`;
+
+    const note = opts.requestNote && opts.requestNote.trim().length > 0
+      ? `Requester note: ${opts.requestNote.trim()}`
+      : isManagerRecipient
+        ? 'No additional note was included with this request.'
+        : 'You can add additional context later if needed.';
+
+    try {
+      const html = await this.renderEmailTemplate(
+        createWorkspaceSetupRequestEmail({
+          title,
+          intro,
+          ctaLabel: 'Open setup requests',
+          ctaUrl: dashboardUrl,
+          note,
+          appName: brand.appName,
+          brandTagline: brand.appTagline,
+          brandFooter: brand.appFooter,
+          primaryHex: brand.primaryHex,
+          fromName: brand.fromName,
+        }),
+      );
+
+      await firstValueFrom(
+        this.http.post(
+          'https://api.zeptomail.com/v1.1/email',
+          {
+            from: { address: brand.fromAddress, name: brand.fromName },
+            to: [{ email_address: { address: opts.to } }],
+            subject: title,
+            htmlbody: html,
+          },
+          {
+            headers: {
+              Authorization: `Zoho-enczapikey ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+      this.logger.log(`Setup request created email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send setup request created email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendWorkspaceSetupRequestStatusEmail(opts: {
+    to: string;
+    recipientRole: 'MANAGER' | 'REQUESTER';
+    recipientName?: string;
+    requesterNameOrEmail: string;
+    managerNameOrEmail: string;
+    status: 'PENDING' | 'CONTACTED' | 'ORG_CREATED' | 'REQUESTER_ADDED' | 'COMPLETED' | 'DECLINED' | 'CANCELED';
+    dashboardUrl?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    const appUrl = this.config.get<string>('APP_URL') ?? 'http://localhost:3000';
+
+    if (!apiKey) {
+      this.logger.warn(
+        `[MailService] ZEPTOMAIL_API_KEY not set — setup request status email for: ${opts.to}`,
+      );
+      return;
+    }
+
+    const dashboardUrl = opts.dashboardUrl ?? `${appUrl}/dashboard/setup-requests`;
+    const statusLabelMap: Record<string, string> = {
+      PENDING: 'Pending',
+      CONTACTED: 'Contacted',
+      ORG_CREATED: 'Organization Created',
+      REQUESTER_ADDED: 'Requester Added',
+      COMPLETED: 'Completed',
+      DECLINED: 'Declined',
+      CANCELED: 'Canceled',
+    };
+    const statusLabel = statusLabelMap[opts.status] ?? opts.status;
+
+    const intro = opts.recipientRole === 'MANAGER'
+      ? `Hi ${opts.recipientName ?? 'there'}, the setup request from ${opts.requesterNameOrEmail} is now ${statusLabel}.`
+      : `Hi ${opts.recipientName ?? 'there'}, your setup request with ${opts.managerNameOrEmail} is now ${statusLabel}.`;
+
+    let note = 'Open your dashboard to continue the setup handoff.';
+    if (opts.status === 'COMPLETED') note = 'This setup request is now complete.';
+    if (opts.status === 'ORG_CREATED') note = 'Organization has been created and requester onboarding is in progress.';
+    if (opts.status === 'REQUESTER_ADDED') note = 'Requester has been added to the newly created workspace.';
+    if (opts.status === 'DECLINED') note = 'This manager declined the setup request.';
+    if (opts.status === 'CANCELED') note = 'This setup request was canceled by the requester.';
+
+    const title = `Setup request update: ${statusLabel}`;
+
+    try {
+      const html = await this.renderEmailTemplate(
+        createWorkspaceSetupRequestEmail({
+          title,
+          intro,
+          ctaLabel: 'View setup requests',
+          ctaUrl: dashboardUrl,
+          note,
+          appName: brand.appName,
+          brandTagline: brand.appTagline,
+          brandFooter: brand.appFooter,
+          primaryHex: brand.primaryHex,
+          fromName: brand.fromName,
+        }),
+      );
+
+      await firstValueFrom(
+        this.http.post(
+          'https://api.zeptomail.com/v1.1/email',
+          {
+            from: { address: brand.fromAddress, name: brand.fromName },
+            to: [{ email_address: { address: opts.to } }],
+            subject: title,
+            htmlbody: html,
+          },
+          {
+            headers: {
+              Authorization: `Zoho-enczapikey ${apiKey}`,
+              'Content-Type': 'application/json',
+            },
+          },
+        ),
+      );
+      this.logger.log(`Setup request status email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send setup request status email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
       throw err;
     }
   }

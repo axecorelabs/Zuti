@@ -2,12 +2,10 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
   LayoutDashboard,
-  AlertTriangle,
   MessageSquare,
-  MessagesSquare,
   Bot,
   CreditCard,
   BookOpen,
@@ -29,6 +27,7 @@ import {
   Briefcase,
   Sun,
   Moon,
+  Globe2,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
@@ -70,7 +69,7 @@ export interface AppNotification {
   serverId?: string;
 }
 
-const navItems = [
+const orgNavItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
   { label: 'AI Agents', href: '/bots', icon: Bot, agentVisible: false },
@@ -81,6 +80,12 @@ const navItems = [
   { label: 'Billing & Usage', href: '/billing-usage', icon: CreditCard, agentVisible: false },
   { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },
   { label: 'Settings', href: '/settings', icon: Settings, agentVisible: true },
+];
+
+const globalNavItems = [
+  { label: 'Organizations', href: '/global-overview?tab=organizations', icon: Building2 },
+  { label: 'Statistics', href: '/global-overview?tab=statistics', icon: BarChart2 },
+  { label: 'Setup Requests', href: '/global-overview?tab=setup-requests', icon: UserRound, managerOnly: true },
 ];
 
 export default function Sidebar({
@@ -95,6 +100,7 @@ export default function Sidebar({
   onToggleTheme?: () => void;
 }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const { user, clearAuth, setOrgRoles, getRoleForOrg, activeOrgId, setActiveOrgId } = useAuthStore();
   const [orgs, setOrgs] = useState<Org[]>([]);
@@ -105,10 +111,15 @@ export default function Sidebar({
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [actingToken, setActingToken] = useState<string | null>(null);
   const [orgsLoaded, setOrgsLoaded] = useState(false);
+  const [setupRequestCount, setSetupRequestCount] = useState(0);
 
+  const isGlobalOverviewRoute = pathname === '/global-overview';
+  const orgIdFromUrl = searchParams.get('org');
+  const globalTab = searchParams.get('tab') ?? 'organizations';
   const activeOrgRole = activeOrg ? getRoleForOrg(activeOrg.id) : undefined;
   const isAgent = activeOrgRole === 'AGENT';
-  const canCreateWorkspace = user?.role === 'MANAGER';
+  const isManagerUser = user?.role === 'MANAGER';
+  const canCreateWorkspace = user?.canCreateWorkspace !== false;
   const roleResolved = orgsLoaded && (!activeOrg || activeOrgRole !== undefined);
   const canViewOrgWideNotifications = activeOrgRole === 'OWNER' || activeOrgRole === 'ADMIN';
   const isOrgWideAllView = notifView === 'all' && canViewOrgWideNotifications;
@@ -119,12 +130,19 @@ export default function Sidebar({
       .then((res) => {
         const list: (Org & { members?: { role: string }[] })[] = res.data;
         setOrgs(list);
-        if (list.length > 0) {
-          const preferred = activeOrgId
-            ? (list.find((org) => org.id === activeOrgId) ?? list[0])
-            : list[0];
+        if (isGlobalOverviewRoute) {
+          setActiveOrg(null);
+          if (activeOrgId) setActiveOrgId(null);
+        } else if (list.length > 0) {
+          const selectedFromUrl = orgIdFromUrl
+            ? (list.find((org) => org.id === orgIdFromUrl) ?? null)
+            : null;
+          const preferred = selectedFromUrl
+            ?? (activeOrgId ? (list.find((org) => org.id === activeOrgId) ?? null) : null)
+            ?? null;
+
           setActiveOrg(preferred);
-          if (preferred.id !== activeOrgId) {
+          if (preferred?.id && preferred.id !== activeOrgId) {
             setActiveOrgId(preferred.id);
           }
         } else {
@@ -142,7 +160,23 @@ export default function Sidebar({
       .catch(() => {
         setOrgsLoaded(true);
       });
-  }, [activeOrgId, setActiveOrgId, setOrgRoles]);
+  }, [activeOrgId, isGlobalOverviewRoute, orgIdFromUrl, setActiveOrgId, setOrgRoles]);
+
+  const fetchSetupRequestCount = useCallback(() => {
+    if (!isManagerUser) {
+      setSetupRequestCount(0);
+      return;
+    }
+
+    orgsApi.globalOverview()
+      .then((res) => {
+        const count = Number(res.data?.setupRequests?.totals?.total ?? 0);
+        setSetupRequestCount(Number.isFinite(count) ? count : 0);
+      })
+      .catch(() => {
+        setSetupRequestCount(0);
+      });
+  }, [isManagerUser]);
 
   const fetchNotifications = useCallback(() => {
     // Invitations (personal, no org required)
@@ -193,6 +227,12 @@ export default function Sidebar({
     const interval = setInterval(fetchNotifications, 60_000);
     return () => clearInterval(interval);
   }, [fetchOrgs, fetchNotifications]);
+
+  useEffect(() => {
+    fetchSetupRequestCount();
+    const interval = setInterval(fetchSetupRequestCount, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchSetupRequestCount]);
 
   useEffect(() => {
     fetchServerNotifications();
@@ -272,10 +312,13 @@ export default function Sidebar({
     ? notifications
     : notifications.filter((n) => n.type === 'invitation' || n.isRead !== true);
 
-  const visibleNavItems = navItems.filter((item) => {
-    if (!orgsLoaded) return item.agentVisible;
-    return item.agentVisible || !isAgent;
-  });
+  const visibleNavItems = !orgsLoaded
+    ? []
+    : (isGlobalOverviewRoute ? globalNavItems : orgNavItems).filter((item) => {
+        if ((item as { managerOnly?: boolean }).managerOnly && !isManagerUser) return false;
+        if (isGlobalOverviewRoute) return true;
+        return (item as { agentVisible?: boolean }).agentVisible || !isAgent;
+      });
 
   return (
     <>
@@ -452,13 +495,26 @@ export default function Sidebar({
               <Building2 className={`w-3.5 h-3.5 ${isLight ? 'text-slate-600' : 'text-zinc-300'}`} />
             </div>
             <span className={`text-sm font-light truncate flex-1 text-left ${isLight ? 'text-slate-700' : 'text-zinc-300'}`}>
-              {activeOrg?.name ?? 'No workspace'}
+              {isGlobalOverviewRoute ? 'Global overview' : (activeOrg?.name ?? 'No workspace')}
             </span>
             <ChevronDown className={`w-3.5 h-3.5 shrink-0 ${isLight ? 'text-slate-500' : 'text-zinc-600'}`} />
           </button>
 
-          {orgOpen && orgs.length > 0 && (
+          {orgOpen && (
             <div className={`mt-1 rounded-lg overflow-hidden ${isLight ? 'bg-white border border-slate-200' : 'bg-zinc-900 border border-zinc-800'}`}>
+              <Link
+                href="/global-overview"
+                onClick={() => {
+                  setOrgOpen(false);
+                  setActiveOrg(null);
+                  setActiveOrgId(null);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-2 text-sm border-b transition-colors font-light ${isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100 border-slate-200' : 'text-zinc-300 hover:text-white hover:bg-zinc-800 border-zinc-800'}`}
+              >
+                <Globe2 className="h-3.5 w-3.5 text-blue-400" />
+                Overview
+              </Link>
+
               {orgs.map((org) => (
                 <button
                   key={org.id}
@@ -466,15 +522,16 @@ export default function Sidebar({
                     setActiveOrg(org);
                     setActiveOrgId(org.id);
                     setOrgOpen(false);
+                    router.push(`/dashboard?org=${org.id}`);
                   }}
-                  className={`w-full text-left px-3 py-2 text-sm transition-colors font-light ${isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'}`}
+                  className={`w-full text-left px-3 py-2 text-sm transition-colors font-light ${isLight ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100' : 'text-zinc-400 hover:text-white hover:bg-zinc-800'} ${!isGlobalOverviewRoute && activeOrg?.id === org.id ? (isLight ? 'bg-slate-100 text-slate-900' : 'bg-zinc-800 text-white') : ''}`}
                 >
                   {org.name}
                 </button>
               ))}
               {canCreateWorkspace && (
                 <Link
-                  href="/onboarding"
+                  href="/setup-workspace"
                   className={`flex items-center gap-1.5 px-3 py-2 text-sm border-t transition-colors font-light ${isLight ? 'text-slate-500 hover:text-slate-800 border-slate-200' : 'text-zinc-600 hover:text-zinc-300 border-zinc-800'}`}
                 >
                   <Plus className="w-3.5 h-3.5" />
@@ -487,15 +544,31 @@ export default function Sidebar({
 
         {/* Nav */}
         <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-          {visibleNavItems
-            .map(({ label, href, icon: Icon }) => {
-            const isActive =
-              pathname === href || (href !== '/dashboard' && pathname.startsWith(`${href}/`));
+          {!orgsLoaded ? (
+            <div className="space-y-2 px-1">
+              {[...Array(6)].map((_, idx) => (
+                <div key={idx} className={`h-8 animate-pulse rounded-md ${isLight ? 'bg-slate-100' : 'bg-zinc-900'}`} />
+              ))}
+            </div>
+          ) : (
+            visibleNavItems.map(({ label, href, icon: Icon }) => {
+            const hasQuery = href.includes('?');
+            const hrefPath = hasQuery ? href.split('?')[0] : href;
+            const hrefTab = hasQuery ? new URLSearchParams(href.split('?')[1]).get('tab') : null;
+            const finalHref = isGlobalOverviewRoute || hasQuery
+              ? href
+              : `${href}${activeOrg?.id ? `?org=${activeOrg.id}` : ''}`;
+
+            const isActive = isGlobalOverviewRoute
+              ? pathname === '/global-overview' && (hrefTab ? globalTab === hrefTab : false)
+              : pathname === hrefPath || (hrefPath !== '/dashboard' && pathname.startsWith(`${hrefPath}/`));
+
+            const showBadge = isGlobalOverviewRoute && label === 'Setup Requests' && isManagerUser;
 
             return (
               <Link
-                key={href}
-                href={href}
+                key={label}
+                href={finalHref}
                 onClick={onClose}
                 className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all relative ${
                   isActive
@@ -507,10 +580,16 @@ export default function Sidebar({
                   <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-blue-500 rounded-r-full" />
                 )}
                 <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-500' : isLight ? 'text-slate-400' : 'text-zinc-600'}`} />
-                {label}
+                <span className="flex-1">{label}</span>
+                {showBadge ? (
+                  <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                    {setupRequestCount}
+                  </span>
+                ) : null}
               </Link>
             );
-          })}
+          })
+          )}
         </nav>
 
         {/* User footer */}

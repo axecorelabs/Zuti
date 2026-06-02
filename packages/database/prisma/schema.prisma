@@ -15,6 +15,7 @@ model User {
   email         String   @unique
   passwordHash  String
   role          UserRole @default(USER)
+  canCreateWorkspace Boolean @default(true)
   emailVerifiedAt DateTime?
   emailVerificationTokenHash String?
   emailVerificationSentAt DateTime?
@@ -33,11 +34,65 @@ model User {
   escalationThreadReplies EscalationThreadReply[]
   reviewedKnowledgeSuggestions KnowledgeSuggestion[] @relation("ReviewedKnowledgeSuggestions")
   billingTransactions BillingTransaction[]
+  managerProfile ManagerProfile?
+  setupRequestsAsRequester WorkspaceSetupRequest[] @relation("WorkspaceSetupRequester")
+  setupRequestsAsManager WorkspaceSetupRequest[] @relation("WorkspaceSetupManager")
 }
 
 enum UserRole {
   USER
   MANAGER
+}
+
+enum ManagerVerificationStatus {
+  PENDING
+  VERIFIED
+  ARCHIVED
+}
+
+enum WorkspaceSetupRequestStatus {
+  PENDING
+  CONTACTED
+  ORG_CREATED
+  REQUESTER_ADDED
+  COMPLETED
+  DECLINED
+  CANCELED
+}
+
+model ManagerProfile {
+  id        String                    @id @default(cuid())
+  userId    String                    @unique
+  displayName String?
+  bio       String?
+  specialties String[]                @default([])
+  status    ManagerVerificationStatus @default(PENDING)
+  createdAt DateTime                  @default(now())
+  updatedAt DateTime                  @updatedAt
+
+  user      User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+}
+
+model WorkspaceSetupRequest {
+  id          String                      @id @default(cuid())
+  requesterId String
+  managerId   String
+  organizationId String?
+  status      WorkspaceSetupRequestStatus @default(PENDING)
+  note        String?
+  createdAt   DateTime                    @default(now())
+  updatedAt   DateTime                    @updatedAt
+
+  requester   User                        @relation("WorkspaceSetupRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  manager     User                        @relation("WorkspaceSetupManager", fields: [managerId], references: [id], onDelete: Cascade)
+  organization Organization?              @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([requesterId, status, createdAt])
+  @@index([managerId, status, createdAt])
+  @@index([organizationId])
+  @@unique([requesterId, managerId, status])
 }
 
 // ─── Organizations ────────────────────────────────────────────────────────────
@@ -78,6 +133,7 @@ model Organization {
   technicalIssues TechnicalIssue[]
   commerceStores CommerceStore[]
   commerceOrders CommerceOrder[]
+  setupRequests WorkspaceSetupRequest[]
   commercePayments CommercePayment[]
 }
 

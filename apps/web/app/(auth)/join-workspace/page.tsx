@@ -4,7 +4,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { Leaf, KeyRound, Check, X, Loader2 } from 'lucide-react';
-import { invitationsApi } from '@/lib/api';
+import { invitationsApi, orgsApi } from '@/lib/api';
+import { setNoWorkspaceFlowChoice } from '@/lib/no-workspace-flow';
 import { useAuthStore } from '@/lib/store';
 
 type PendingInvite = {
@@ -70,6 +71,7 @@ export default function JoinWorkspacePage() {
     if (!joinId.trim() || !code.trim()) return;
 
     setJoining(true);
+    setNoWorkspaceFlowChoice('JOIN_WORKSPACE');
     try {
       await invitationsApi.redeemJoinCode(joinId.trim().toUpperCase(), code.trim());
       toast.success('Workspace joined successfully');
@@ -84,6 +86,7 @@ export default function JoinWorkspacePage() {
 
   const handleAcceptInvite = async (token: string) => {
     setActingToken(token);
+    setNoWorkspaceFlowChoice('JOIN_WORKSPACE');
     try {
       await invitationsApi.accept(token);
       toast.success('Invitation accepted');
@@ -158,7 +161,6 @@ export default function JoinWorkspacePage() {
           </div>
         );
       case 'JOIN_CODE':
-      default:
         return (
           <form onSubmit={handleJoinByCode} className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
             <div className="flex items-start gap-3">
@@ -189,12 +191,13 @@ export default function JoinWorkspacePage() {
             </button>
           </form>
         );
+      default:
+        return null;
     }
   };
 
-  const handleBackToLogin = () => {
-    clearAuth();
-    router.replace('/login');
+  const handleGoToDashboard = () => {
+    router.replace('/global-overview');
   };
 
   return (
@@ -212,36 +215,54 @@ export default function JoinWorkspacePage() {
             <h1 className="font-brand font-semibold text-xl tracking-tight text-white">Join a workspace</h1>
           </div>
 
-          <div className="inline-flex rounded-lg border border-zinc-700 bg-zinc-900/60 p-1">
-            <button
-              type="button"
-              onClick={() => setJoinMode('JOIN_CODE')}
-              className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                joinMode === 'JOIN_CODE' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              Join ID + code
-            </button>
-            <button
-              type="button"
-              onClick={() => setJoinMode('PENDING_INVITES')}
-              className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                joinMode === 'PENDING_INVITES' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
-              }`}
-            >
-              Pending invites ({loadingInvites ? '...' : pendingInvites.length})
-            </button>
+          <div className="flex justify-center">
+            <div className="inline-flex rounded-lg border border-zinc-700 bg-zinc-900/60 p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setNoWorkspaceFlowChoice('JOIN_WORKSPACE');
+                  setJoinMode('JOIN_CODE');
+                }}
+                className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                  joinMode === 'JOIN_CODE' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Manual
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNoWorkspaceFlowChoice('JOIN_WORKSPACE');
+                  setJoinMode('PENDING_INVITES');
+                }}
+                className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                  joinMode === 'PENDING_INVITES' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                Pending invites ({loadingInvites ? '...' : pendingInvites.length})
+              </button>
+            </div>
           </div>
 
           {renderJoinMode()}
 
-          <div className="flex">
+          <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              onClick={handleBackToLogin}
-              className="inline-flex items-center justify-center rounded-lg border border-zinc-800 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-900 transition-colors"
+              onClick={handleGoToDashboard}
+              className="inline-flex w-full items-center justify-center rounded-lg border border-zinc-800 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-900 transition-colors"
             >
-              Back to login
+              Go to dashboard
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setNoWorkspaceFlowChoice('SETUP_WORKSPACE');
+                router.push('/setup-workspace?from=join-workspace');
+              }}
+              className="inline-flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2.5 text-sm text-white hover:bg-blue-500 transition-colors"
+            >
+              Set up my own workspace
             </button>
           </div>
         </div>

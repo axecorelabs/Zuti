@@ -74,7 +74,7 @@ export default function TeamPage() {
   const [orgId, setOrgId] = useState<string | null>(null);
   const [orgName, setOrgName] = useState('');
   const [myRole, setMyRole] = useState<string | null>(null);
-  const canManageWorkspaceAccess = user?.role === 'MANAGER' || myRole === 'OWNER' || myRole === 'ADMIN';
+  const canManageWorkspaceAccess = user?.canCreateWorkspace !== false || myRole === 'OWNER' || myRole === 'ADMIN';
   const [members, setMembers] = useState<Member[]>([]);
   const [invites, setInvites] = useState<PendingInvite[]>([]);
   const [joinCodes, setJoinCodes] = useState<ActiveJoinCode[]>([]);
@@ -106,7 +106,7 @@ export default function TeamPage() {
     try {
       const membersPromise = orgsApi.listMembers(oid);
 
-      if (role === 'AGENT' && user?.role !== 'MANAGER') {
+      if (role === 'AGENT' && user?.canCreateWorkspace === false) {
         const membersRes = await membersPromise;
         setMembers(membersRes.data);
         setInvites([]);

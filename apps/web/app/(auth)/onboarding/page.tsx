@@ -25,7 +25,7 @@ export default function OnboardingPage() {
   const [slug, setSlug] = useState('');
   const [slugTouched, setSlugTouched] = useState(false);
   const [loading, setLoading] = useState(false);
-  const isManager = user?.role === 'MANAGER';
+  const canCreateWorkspace = user?.canCreateWorkspace !== false;
 
   useEffect(() => {
     loadFromStorage();
@@ -43,8 +43,8 @@ export default function OnboardingPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isManager) {
-      toast.error('Only managers can create workspaces.');
+    if (!canCreateWorkspace) {
+      toast.error('Your account is not currently allowed to create workspaces.');
       return;
     }
     if (!name.trim() || !slug.trim()) return;
@@ -81,7 +81,7 @@ export default function OnboardingPage() {
               <div className="h-11 rounded-lg bg-zinc-900 animate-pulse" />
               <div className="h-11 rounded-lg bg-zinc-900 animate-pulse" />
             </div>
-          ) : isManager ? (
+          ) : canCreateWorkspace ? (
             <>
               <h1 className="font-brand font-semibold text-xl tracking-tight text-white">
                 Create your workspace
@@ -136,16 +136,16 @@ export default function OnboardingPage() {
           ) : (
             <div className="space-y-4">
               <h1 className="font-brand font-semibold text-xl tracking-tight text-white">
-                You can join a workspace
+                Workspace creation unavailable
               </h1>
               <p className="text-sm text-zinc-500 leading-relaxed">
-                Workspace creation is reserved for managers. If a manager invited you, open the invitation link from your email to join.
+                Your account does not have workspace creation access yet. You can still join an existing workspace or request help from a verified manager.
               </p>
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-300">
-                No workspace yet? Ask your manager for an invitation, or check your email for a Zuti invite link.
+                If you are setting up for a business, open setup options and choose assisted setup with a verified manager.
               </div>
-              <Link href="/join-workspace" className="inline-flex items-center justify-center rounded-lg border border-zinc-800 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-900 transition-colors">
-                Learn how to join
+              <Link href="/setup-workspace" className="inline-flex items-center justify-center rounded-lg border border-zinc-800 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-900 transition-colors">
+                Open setup options
               </Link>
             </div>
           )}

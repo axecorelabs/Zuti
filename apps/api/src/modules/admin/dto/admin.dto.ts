@@ -102,4 +102,14 @@ export class UpdateAdminUserRoleDto {
   @ApiPropertyOptional({ description: 'Global platform role for the user', enum: ['USER', 'MANAGER'] })
   @IsIn(['USER', 'MANAGER'])
   role!: 'USER' | 'MANAGER';
+
+  @ApiPropertyOptional({ description: 'Whether this user can create workspaces directly' })
+  @IsOptional()
+  @Type(() => Boolean)
+  canCreateWorkspace?: boolean;
+
+  @ApiPropertyOptional({ description: 'Manager marketplace verification status', enum: ['PENDING', 'VERIFIED', 'ARCHIVED'] })
+  @IsOptional()
+  @IsIn(['PENDING', 'VERIFIED', 'ARCHIVED'])
+  managerVerificationStatus?: 'PENDING' | 'VERIFIED' | 'ARCHIVED';
 }

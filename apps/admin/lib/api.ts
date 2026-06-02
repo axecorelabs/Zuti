@@ -85,7 +85,14 @@ export const adminApi = {
   listUsers: (params?: { limit?: number; role?: 'OWNER' | 'ADMIN' | 'AGENT' }) =>
     api.get('/admin/users', { params }),
   getUser: (userId: string) => api.get(`/admin/users/${userId}`),
-  updateUserRole: (userId: string, role: 'USER' | 'MANAGER') => api.patch(`/admin/users/${userId}/role`, { role }),
+  updateUserRole: (
+    userId: string,
+    payload: {
+      role: 'USER' | 'MANAGER';
+      canCreateWorkspace?: boolean;
+      managerVerificationStatus?: 'PENDING' | 'VERIFIED' | 'ARCHIVED';
+    },
+  ) => api.patch(`/admin/users/${userId}/role`, payload),
   listWorkspaces: (params?: { limit?: number }) =>
     api.get('/admin/workspaces', { params }),
   listBots: (params?: {

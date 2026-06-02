@@ -11,6 +11,10 @@ type UserItem = {
   email: string;
   avatarUrl: string | null;
   role: 'USER' | 'MANAGER';
+  canCreateWorkspace: boolean;
+  managerProfile?: {
+    status: 'PENDING' | 'VERIFIED' | 'ARCHIVED';
+  } | null;
   createdAt: string;
   memberships: Array<{
     id: string;
@@ -51,6 +55,18 @@ function formatGlobalRoleLabel(role: 'USER' | 'MANAGER') {
 function globalRolePillClass(role: 'USER' | 'MANAGER') {
   if (role === 'MANAGER') return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300';
   return 'border-zinc-800 bg-zinc-900/60 text-zinc-500';
+}
+
+function managerVerificationPillClass(status?: 'PENDING' | 'VERIFIED' | 'ARCHIVED' | null) {
+  if (status === 'VERIFIED') return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300';
+  if (status === 'ARCHIVED') return 'border-zinc-700 bg-zinc-900/60 text-zinc-500';
+  return 'border-amber-500/20 bg-amber-500/10 text-amber-300';
+}
+
+function managerVerificationLabel(status?: 'PENDING' | 'VERIFIED' | 'ARCHIVED' | null) {
+  if (status === 'VERIFIED') return 'Verified';
+  if (status === 'ARCHIVED') return 'Archived';
+  return 'Pending';
 }
 
 function rolePillClass(role: 'OWNER' | 'ADMIN' | 'AGENT') {
@@ -128,12 +144,16 @@ export default function UsersPage() {
     setDrawerOpen(true);
   };
 
-  const updateSelectedUserRole = async (nextRole: 'USER' | 'MANAGER') => {
-    if (!selectedUser || selectedUser.role === nextRole) return;
+  const updateSelectedUserAccess = async (payload: {
+    role: 'USER' | 'MANAGER';
+    canCreateWorkspace?: boolean;
+    managerVerificationStatus?: 'PENDING' | 'VERIFIED' | 'ARCHIVED';
+  }) => {
+    if (!selectedUser) return;
 
     setRoleSavingUserId(selectedUser.id);
     try {
-      const res = await adminApi.updateUserRole(selectedUser.id, nextRole);
+      const res = await adminApi.updateUserRole(selectedUser.id, payload);
       const updatedUser = res.data?.item as Partial<UserItem> | undefined;
       if (updatedUser) {
         setItems((current) => current.map((item) => {
@@ -149,6 +169,11 @@ export default function UsersPage() {
     } finally {
       setRoleSavingUserId(null);
     }
+  };
+
+  const updateSelectedUserRole = async (nextRole: 'USER' | 'MANAGER') => {
+    if (!selectedUser || selectedUser.role === nextRole) return;
+    await updateSelectedUserAccess({ role: nextRole });
   };
 
   const closeDrawer = () => setDrawerOpen(false);
@@ -213,6 +238,35 @@ export default function UsersPage() {
               </div>
             </div>
 
+            <div className="border-b border-zinc-900 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium text-zinc-200">Manager verification</p>
+                  <p className="mt-1 text-[11px] text-zinc-500">Marketplace profile visibility state.</p>
+                </div>
+                <select
+                  value={selectedUser.managerProfile?.status ?? 'PENDING'}
+                  onChange={(event) => {
+                    void updateSelectedUserAccess({
+                      role: selectedUser.role,
+                      managerVerificationStatus: event.target.value as 'PENDING' | 'VERIFIED' | 'ARCHIVED',
+                    });
+                  }}
+                  className="h-8 rounded-lg border border-zinc-800 bg-zinc-900 px-2 text-xs text-zinc-200 outline-none"
+                >
+                  <option value="PENDING">Pending</option>
+                  <option value="VERIFIED">Verified</option>
+                  <option value="ARCHIVED">Archived</option>
+                </select>
+              </div>
+
+              <div className="mt-2">
+                <span className={`inline-flex h-6 items-center justify-center rounded-full border px-2.5 text-[11px] leading-none ${managerVerificationPillClass(selectedUser.managerProfile?.status ?? 'PENDING')}`}>
+                  {managerVerificationLabel(selectedUser.managerProfile?.status ?? 'PENDING')}
+                </span>
+              </div>
+            </div>
+
             <div className="space-y-0 border-b border-zinc-900 px-4 py-2">
               <div className="flex items-center justify-between gap-3 border-b border-zinc-900/70 py-3">
                 <div className="flex items-center gap-2 text-zinc-500">
@@ -260,7 +314,7 @@ export default function UsersPage() {
             </div>
 
             <div className="mt-auto border-t border-zinc-900 px-4 py-4">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 border-b border-zinc-900/70 pb-4">
                 <div>
                   <p className="text-xs font-medium text-zinc-200">Manager access</p>
                   <p className="mt-1 text-[11px] text-zinc-500">
@@ -289,6 +343,44 @@ export default function UsersPage() {
                     className={`inline-block h-5 w-5 transform rounded-full transition-transform ${
                       selectedUser.role === 'MANAGER'
                         ? 'translate-x-6 bg-emerald-300'
+                        : 'translate-x-1 bg-zinc-300'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-medium text-zinc-200">Workspace creation capability</p>
+                  <p className="mt-1 text-[11px] text-zinc-500">
+                    {selectedUser.canCreateWorkspace
+                      ? 'User can create new workspaces.'
+                      : 'User cannot create new workspaces.'}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={selectedUser.canCreateWorkspace}
+                  aria-label="Toggle workspace creation capability"
+                  onClick={() => {
+                    void updateSelectedUserAccess({
+                      role: selectedUser.role,
+                      canCreateWorkspace: !selectedUser.canCreateWorkspace,
+                    });
+                  }}
+                  disabled={roleSavingUserId === selectedUser.id}
+                  className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full border transition-colors ${
+                    selectedUser.canCreateWorkspace
+                      ? 'border-blue-400/40 bg-blue-500/25'
+                      : 'border-zinc-700 bg-zinc-800'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full transition-transform ${
+                      selectedUser.canCreateWorkspace
+                        ? 'translate-x-6 bg-blue-200'
                         : 'translate-x-1 bg-zinc-300'
                     }`}
                   />

@@ -159,9 +159,43 @@ export const orgsApi = {
     withCachedOrgs('list', options?.forceRefresh === true),
   listSummary: (options?: { forceRefresh?: boolean }) =>
     withCachedOrgs('summary', options?.forceRefresh === true),
+  overview: () => api.get('/organizations/overview'),
+  globalOverview: () => api.get('/organizations/global-overview'),
   get: (slug: string) => api.get(`/organizations/${slug}`),
   create: (name: string, slug: string) =>
     api.post('/organizations', { name, slug }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
+  listVerifiedManagers: () => api.get('/organizations/setup/managers'),
+  autoAssignVerifiedManager: () => api.get('/organizations/setup/managers/auto-assign'),
+  requestWorkspaceSetup: (data: {
+    managerId: string;
+    preferredContactMode: 'EMAIL' | 'PHONE' | 'WHATSAPP' | 'TELEGRAM';
+    contactDetail: string;
+    workspaceName: string;
+    note: string;
+  }) => api.post('/organizations/setup/requests', data),
+  listMySetupRequests: (params?: { status?: 'PENDING' | 'CONTACTED' | 'ORG_CREATED' | 'REQUESTER_ADDED' | 'COMPLETED' | 'DECLINED' | 'CANCELED' }) =>
+    api.get('/organizations/setup/requests/mine', { params }),
+  listAssignedSetupRequests: (params?: { status?: 'PENDING' | 'CONTACTED' | 'ORG_CREATED' | 'REQUESTER_ADDED' | 'COMPLETED' | 'DECLINED' | 'CANCELED' }) =>
+    api.get('/organizations/setup/requests/assigned', { params }),
+  updateSetupRequestStatus: (
+    requestId: string,
+    status: 'PENDING' | 'CONTACTED' | 'ORG_CREATED' | 'REQUESTER_ADDED' | 'COMPLETED' | 'DECLINED' | 'CANCELED',
+  ) => api.patch(`/organizations/setup/requests/${requestId}/status`, { status }),
+  createOrganizationFromSetupRequest: (requestId: string) =>
+    api.post('/organizations/setup/requests/create-organization', { requestId }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
+  retryRequesterAddFromSetupRequest: (requestId: string) =>
+    api.post('/organizations/setup/requests/retry-requester-add', { requestId }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
+  finalizeSetupHandover: (requestId: string) =>
+    api.post('/organizations/setup/requests/finalize-handover', { requestId }).then((res) => {
       clearOrgsCache();
       return res;
     }),

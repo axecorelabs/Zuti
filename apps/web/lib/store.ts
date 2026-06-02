@@ -6,6 +6,8 @@ interface User {
   name: string;
   email: string;
   role: 'USER' | 'MANAGER';
+  canCreateWorkspace: boolean;
+  managerProfileStatus?: 'PENDING' | 'VERIFIED' | 'ARCHIVED' | null;
 }
 
 interface AuthState {
@@ -73,6 +75,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             name: payload.name ?? '',
             email: payload.email ?? '',
             role: payload.role === 'MANAGER' ? 'MANAGER' : 'USER',
+            canCreateWorkspace: payload.canCreateWorkspace !== false,
+            managerProfileStatus: payload.managerProfileStatus ?? null,
           },
           activeOrgId: activeOrgId ?? null,
           isLoading: false,
@@ -81,7 +85,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         // Refresh role/profile from the server in case JWT payload is stale.
         authApi.me()
           .then((res) => {
-            const serverUser = res.data?.user as { id: string; name?: string; email?: string; role?: 'USER' | 'MANAGER' } | undefined;
+            const serverUser = res.data?.user as {
+              id: string;
+              name?: string;
+              email?: string;
+              role?: 'USER' | 'MANAGER';
+              canCreateWorkspace?: boolean;
+              managerProfileStatus?: 'PENDING' | 'VERIFIED' | 'ARCHIVED' | null;
+            } | undefined;
             if (!serverUser?.id) return;
             set((state) => {
               if (!state.user) return state;
@@ -92,6 +103,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
                   name: serverUser.name ?? state.user.name,
                   email: serverUser.email ?? state.user.email,
                   role: serverUser.role === 'MANAGER' ? 'MANAGER' : 'USER',
+                  canCreateWorkspace: serverUser.canCreateWorkspace !== false,
+                  managerProfileStatus: serverUser.managerProfileStatus ?? null,
                 },
               };
             });

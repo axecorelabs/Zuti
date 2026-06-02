@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Menu, Leaf, Sun, Moon } from 'lucide-react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/sidebar';
 import { orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
@@ -18,10 +18,14 @@ function getInitialTheme(): 'dark' | 'light' {
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { user, isLoading, loadFromStorage, setOrgRoles, activeOrgId, setActiveOrgId } = useAuthStore();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [roleCheckLoading, setRoleCheckLoading] = useState(true);
   const [theme, setTheme] = useState<'dark' | 'light'>(getInitialTheme);
+  const [setupBanner, setSetupBanner] = useState<{ show: boolean; count: number }>({ show: false, count: 0 });
+  const isGlobalOverviewRoute = pathname === '/global-overview';
+  const orgIdFromUrl = searchParams.get('org');
 
   useEffect(() => {
     const body = document.body;
@@ -62,10 +66,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const runRoleCheck = async () => {
       try {
         const res = await orgsApi.listSummary();
-        const list = res.data as { id: string; role: string }[];
+        const list = res.data as Array<{
+          id: string;
+          role: string;
+          managerSetupInProgress?: boolean;
+          managerSetupActiveCount?: number;
+        }>;
 
         if (active && list.length === 0) {
-          router.replace(user.role === 'MANAGER' ? '/onboarding' : '/join-workspace');
+          router.replace('/global-overview');
           return;
         }
 
@@ -75,25 +84,49 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         });
 
         setOrgRoles(roles);
+        const selectedFromUrl = orgIdFromUrl
+          ? (list.find((org) => org.id === orgIdFromUrl) ?? null)
+          : null;
 
-        const preferredOrg = activeOrgId
-          ? (list.find((org) => org.id === activeOrgId) ?? list[0])
-          : list[0];
+        if (!isGlobalOverviewRoute && !selectedFromUrl) {
+          router.replace('/global-overview');
+          return;
+        }
+
+        const preferredOrg = selectedFromUrl
+          ?? (activeOrgId ? (list.find((org) => org.id === activeOrgId) ?? null) : null)
+          ?? null;
+
         if (preferredOrg?.id && preferredOrg.id !== activeOrgId) {
           setActiveOrgId(preferredOrg.id);
         }
+        if (isGlobalOverviewRoute && activeOrgId) {
+          setActiveOrgId(null);
+        }
+
         const activeRole = preferredOrg?.role;
+        const showSetupBanner =
+          !isGlobalOverviewRoute
+          &&
+          user.role === 'MANAGER'
+          && Boolean(preferredOrg?.managerSetupInProgress)
+          && (preferredOrg?.managerSetupActiveCount ?? 0) > 0;
+        setSetupBanner({
+          show: showSetupBanner,
+          count: preferredOrg?.managerSetupActiveCount ?? 0,
+        });
         const restrictedForAgent = ['/bots', '/knowledge', '/knowledge-gaps', '/billing-usage'];
         const blockedForAgent =
           activeRole === 'AGENT' &&
           restrictedForAgent.some((route) => pathname === route || pathname.startsWith(`${route}/`));
 
-        if (active && blockedForAgent) {
-          router.replace('/dashboard');
+        if (active && blockedForAgent && preferredOrg?.id) {
+          router.replace(`/dashboard?org=${preferredOrg.id}`);
           return;
         }
       } catch {
         // If role check fails, keep UX safe by allowing only non-restricted pages via API checks.
+        setSetupBanner({ show: false, count: 0 });
       } finally {
         if (active) {
           setRoleCheckLoading(false);
@@ -106,7 +139,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     return () => {
       active = false;
     };
-  }, [activeOrgId, isLoading, user, pathname, router, setActiveOrgId, setOrgRoles]);
+  }, [activeOrgId, isGlobalOverviewRoute, isLoading, orgIdFromUrl, user, pathname, router, setActiveOrgId, setOrgRoles]);
 
   useEffect(() => {
     if (!isLoading && !user) {
@@ -161,6 +194,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </button>
         </div>
         <main className="flex-1 overflow-y-auto">
+          {setupBanner.show ? (
+            <div className={`border-b px-4 py-2 text-xs md:px-6 ${theme === 'light' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'}`}>
+              You are currently setting up this organization for {setupBanner.count} requester{setupBanner.count === 1 ? '' : 's'}.
+            </div>
+          ) : null}
           {children}
         </main>
       </div>

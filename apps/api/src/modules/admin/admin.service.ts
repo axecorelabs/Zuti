@@ -379,6 +379,7 @@ export class AdminService {
         ? { memberships: { some: { role: query.role } } }
         : undefined,
       include: {
+        managerProfile: true,
         memberships: {
           include: {
             organization: {
@@ -399,6 +400,7 @@ export class AdminService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {
+        managerProfile: true,
         memberships: {
           include: {
             organization: {
@@ -417,7 +419,14 @@ export class AdminService {
     return { item: user };
   }
 
-  async updateUserRole(userId: string, role: 'USER' | 'MANAGER') {
+  async updateUserRole(
+    userId: string,
+    update: {
+      role: 'USER' | 'MANAGER';
+      canCreateWorkspace?: boolean;
+      managerVerificationStatus?: 'PENDING' | 'VERIFIED' | 'ARCHIVED';
+    },
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { id: true },
@@ -427,19 +436,63 @@ export class AdminService {
       throw new NotFoundException('User not found');
     }
 
-    const updated = await this.prisma.user.update({
-      where: { id: userId },
-      data: { role },
-      include: {
-        memberships: {
-          include: {
-            organization: {
-              select: { id: true, name: true, slug: true },
-            },
-          },
-          orderBy: { createdAt: 'asc' },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const nextUser = await tx.user.update({
+        where: { id: userId },
+        data: {
+          role: update.role,
+          ...(update.canCreateWorkspace !== undefined
+            ? { canCreateWorkspace: update.canCreateWorkspace }
+            : {}),
         },
-      },
+      });
+
+      const requestedStatus = update.managerVerificationStatus;
+
+      if (requestedStatus) {
+        await tx.managerProfile.upsert({
+          where: { userId },
+          create: {
+            userId,
+            status: requestedStatus,
+            displayName: nextUser.name ?? undefined,
+          },
+          update: {
+            status: requestedStatus,
+            ...(nextUser.name ? { displayName: nextUser.name } : {}),
+          },
+        });
+      } else if (update.role === 'MANAGER') {
+        await tx.managerProfile.upsert({
+          where: { userId },
+          create: {
+            userId,
+            status: 'VERIFIED',
+            displayName: nextUser.name ?? undefined,
+          },
+          update: {},
+        });
+      } else if (update.role === 'USER') {
+        await tx.managerProfile.updateMany({
+          where: { userId },
+          data: { status: 'ARCHIVED' },
+        });
+      }
+
+      return tx.user.findUnique({
+        where: { id: userId },
+        include: {
+          memberships: {
+            include: {
+              organization: {
+                select: { id: true, name: true, slug: true },
+              },
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+          managerProfile: true,
+        },
+      });
     });
 
     return { item: updated };

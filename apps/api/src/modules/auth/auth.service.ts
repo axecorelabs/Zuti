@@ -63,6 +63,7 @@ export class AuthService {
     const normalizedEmail = dto.email.trim().toLowerCase();
     const user = await this.prisma.user.findFirst({
       where: { email: { equals: normalizedEmail, mode: 'insensitive' } },
+      include: { managerProfile: { select: { status: true } } },
     });
     if (!user) throw new UnauthorizedException('No account found with that email address');
 
@@ -73,9 +74,21 @@ export class AuthService {
     const valid = await bcrypt.compare(dto.password, user.passwordHash);
     if (!valid) throw new UnauthorizedException('Incorrect password');
 
-    const tokens = await this.signTokens(user.id, user.email, user.role);
+    const tokens = await this.signTokens({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      canCreateWorkspace: user.canCreateWorkspace,
+    });
     return {
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        canCreateWorkspace: user.canCreateWorkspace,
+        managerProfileStatus: user.managerProfile?.status ?? null,
+      },
       ...tokens,
     };
   }
@@ -273,20 +286,35 @@ export class AuthService {
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, email: true, name: true, role: true },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        role: true,
+        canCreateWorkspace: true,
+        managerProfile: { select: { status: true } },
+      },
     });
 
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
 
-    return { user };
+    return {
+      user: {
+        ...user,
+        managerProfileStatus: user.managerProfile?.status ?? null,
+      },
+    };
   }
 
   async refreshToken(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, role: true, canCreateWorkspace: true },
+    });
     if (!user) throw new UnauthorizedException();
-    return this.signTokens(user.id, user.email, user.role);
+    return this.signTokens(user);
   }
 
   async refreshFromToken(refreshToken: string) {
@@ -302,20 +330,47 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired refresh token');
     }
 
-    const user = await this.prisma.user.findUnique({ where: { id: payload.sub } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      include: {
+        managerProfile: { select: { status: true } },
+      },
+    });
     if (!user || !user.emailVerifiedAt) {
       throw new UnauthorizedException('User is not eligible for refresh');
     }
 
-    const tokens = await this.signTokens(user.id, user.email, user.role);
+    const tokens = await this.signTokens({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      canCreateWorkspace: user.canCreateWorkspace,
+    });
     return {
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        canCreateWorkspace: user.canCreateWorkspace,
+        managerProfileStatus: user.managerProfile?.status ?? null,
+      },
       ...tokens,
     };
   }
 
-  private async signTokens(userId: string, email: string, role: string) {
-    const payload = { sub: userId, email, role };
+  private async signTokens(user: {
+    id: string;
+    email: string;
+    role: string;
+    canCreateWorkspace: boolean;
+  }) {
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      canCreateWorkspace: user.canCreateWorkspace,
+    };
     const refreshSecret = this.config.get<string>('JWT_REFRESH_SECRET');
     if (!refreshSecret) {
       throw new UnauthorizedException('Refresh token secret is not configured');

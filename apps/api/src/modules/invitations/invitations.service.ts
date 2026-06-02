@@ -311,6 +311,11 @@ export class InvitationsService {
       { role: invite.role, joinId: invite.joinId, source: 'one_time_code' },
     );
 
+    await this.markSetupRequestAsContactedOnMembership(
+      invite.createdById,
+      userId,
+    );
+
     const org = await this.prisma.organization.findUnique({
       where: { id: invite.organizationId },
       select: { id: true, slug: true, name: true },
@@ -404,6 +409,11 @@ export class InvitationsService {
       'member',
       user.id,
       { role: invite.role },
+    );
+
+    await this.markSetupRequestAsContactedOnMembership(
+      invite.invitedById,
+      userId,
     );
 
     try {
@@ -547,10 +557,10 @@ export class InvitationsService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { role: true },
+      select: { canCreateWorkspace: true },
     });
 
-    if (user?.role === 'MANAGER') {
+    if (user?.canCreateWorkspace) {
       return;
     }
 
@@ -575,5 +585,67 @@ export class InvitationsService {
     const expected = Buffer.from(expectedHash, 'hex');
     if (actual.length !== expected.length) return false;
     return timingSafeEqual(actual, expected);
+  }
+
+  private async markSetupRequestAsContactedOnMembership(
+    managerId: string | null,
+    requesterId: string,
+  ) {
+    if (!managerId || !requesterId) return;
+
+    const request = await this.prisma.workspaceSetupRequest.findFirst({
+      where: {
+        managerId,
+        requesterId,
+        status: 'PENDING',
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        requester: { select: { name: true, email: true } },
+        manager: { select: { name: true, email: true } },
+      },
+    });
+
+    if (!request) return;
+
+    const updated = await this.prisma.workspaceSetupRequest.update({
+      where: { id: request.id },
+      data: { status: 'CONTACTED' },
+      include: {
+        requester: { select: { name: true, email: true } },
+        manager: { select: { name: true, email: true } },
+      },
+    });
+
+    const requesterNameOrEmail = updated.requester.name ?? updated.requester.email;
+    const managerNameOrEmail = updated.manager.name ?? updated.manager.email;
+
+    if (updated.manager.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.manager.email,
+        recipientRole: 'MANAGER',
+        recipientName: updated.manager.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'CONTACTED',
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to send manager contacted status email: ${msg}`);
+      });
+    }
+
+    if (updated.requester.email) {
+      this.mail.sendWorkspaceSetupRequestStatusEmail({
+        to: updated.requester.email,
+        recipientRole: 'REQUESTER',
+        recipientName: updated.requester.name ?? undefined,
+        requesterNameOrEmail,
+        managerNameOrEmail,
+        status: 'CONTACTED',
+      }).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Failed to send requester contacted status email: ${msg}`);
+      });
+    }
   }
 }

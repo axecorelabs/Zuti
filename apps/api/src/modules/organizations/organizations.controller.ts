@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { IsString, IsIn, IsArray, IsOptional, IsBoolean, IsInt, Min, Max, IsObject } from 'class-validator';
+import { IsString, IsIn, IsArray, IsOptional, IsBoolean, IsInt, Min, Max, IsObject, MaxLength, IsNotEmpty, MinLength } from 'class-validator';
 import { OrganizationsService } from './organizations.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -168,12 +168,134 @@ class UpdateActionTaskStatusDto {
   declare status: 'ACKNOWLEDGED' | 'COMPLETED';
 }
 
+class CreateWorkspaceSetupRequestDto {
+  @IsString()
+  declare managerId: string;
+
+  @IsString()
+  @IsIn(['EMAIL', 'PHONE', 'WHATSAPP', 'TELEGRAM'])
+  declare preferredContactMode: 'EMAIL' | 'PHONE' | 'WHATSAPP' | 'TELEGRAM';
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(3)
+  @MaxLength(120)
+  declare contactDetail: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2)
+  @MaxLength(120)
+  declare workspaceName: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(20)
+  @MaxLength(1000)
+  declare note: string;
+}
+
+class ListWorkspaceSetupRequestsQueryDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['PENDING', 'CONTACTED', 'ORG_CREATED', 'REQUESTER_ADDED', 'COMPLETED', 'DECLINED', 'CANCELED'])
+  declare status?: 'PENDING' | 'CONTACTED' | 'ORG_CREATED' | 'REQUESTER_ADDED' | 'COMPLETED' | 'DECLINED' | 'CANCELED';
+}
+
+class UpdateWorkspaceSetupRequestStatusDto {
+  @IsString()
+  @IsIn(['PENDING', 'CONTACTED', 'ORG_CREATED', 'REQUESTER_ADDED', 'COMPLETED', 'DECLINED', 'CANCELED'])
+  declare status: 'PENDING' | 'CONTACTED' | 'ORG_CREATED' | 'REQUESTER_ADDED' | 'COMPLETED' | 'DECLINED' | 'CANCELED';
+}
+
+class CreateOrganizationFromSetupRequestDto {
+  @IsString()
+  @IsNotEmpty()
+  declare requestId: string;
+}
+
 @ApiTags('organizations')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('organizations')
 export class OrganizationsController {
   constructor(private organizationsService: OrganizationsService) {}
+
+  @Get('setup/managers')
+  @ApiOperation({ summary: 'List verified managers available for assisted workspace setup' })
+  listVerifiedManagers() {
+    return this.organizationsService.listVerifiedManagers();
+  }
+
+  @Get('setup/managers/auto-assign')
+  @ApiOperation({ summary: 'Auto-assign the best verified manager for assisted workspace setup' })
+  autoAssignVerifiedManager(@CurrentUser() user: { id: string }) {
+    return this.organizationsService.autoAssignVerifiedManager(user.id);
+  }
+
+  @Post('setup/requests')
+  @ApiOperation({ summary: 'Request assisted workspace setup from a verified manager' })
+  createWorkspaceSetupRequest(
+    @CurrentUser() user: { id: string },
+    @Body() dto: CreateWorkspaceSetupRequestDto,
+  ) {
+    return this.organizationsService.requestWorkspaceSetup(user.id, dto);
+  }
+
+  @Get('setup/requests/mine')
+  @ApiOperation({ summary: 'List setup requests created by the current user' })
+  listMyWorkspaceSetupRequests(
+    @CurrentUser() user: { id: string },
+    @Query() query: ListWorkspaceSetupRequestsQueryDto,
+  ) {
+    return this.organizationsService.listSetupRequestsForRequester(user.id, query.status);
+  }
+
+  @Get('setup/requests/assigned')
+  @ApiOperation({ summary: 'List setup requests assigned to the current manager account' })
+  listAssignedWorkspaceSetupRequests(
+    @CurrentUser() user: { id: string },
+    @Query() query: ListWorkspaceSetupRequestsQueryDto,
+  ) {
+    return this.organizationsService.listSetupRequestsAssignedToManager(user.id, query.status);
+  }
+
+  @Patch('setup/requests/:requestId/status')
+  @ApiOperation({ summary: 'Update status for a workspace setup request' })
+  updateWorkspaceSetupRequestStatus(
+    @CurrentUser() user: { id: string },
+    @Param('requestId') requestId: string,
+    @Body() dto: UpdateWorkspaceSetupRequestStatusDto,
+  ) {
+    return this.organizationsService.updateSetupRequestStatus(user.id, requestId, dto.status);
+  }
+
+  @Post('setup/requests/create-organization')
+  @ApiOperation({ summary: 'Create an organization from a setup request and add requester to it' })
+  createOrganizationFromSetupRequest(
+    @CurrentUser() user: { id: string },
+    @Body() dto: CreateOrganizationFromSetupRequestDto,
+  ) {
+    return this.organizationsService.createOrganizationFromSetupRequest(user.id, dto.requestId);
+  }
+
+  @Post('setup/requests/retry-requester-add')
+  @ApiOperation({ summary: 'Retry adding requester membership for an organization created from setup request' })
+  retryRequesterAddFromSetupRequest(
+    @CurrentUser() user: { id: string },
+    @Body() dto: CreateOrganizationFromSetupRequestDto,
+  ) {
+    return this.organizationsService.retryRequesterAddFromSetupRequest(user.id, dto.requestId);
+  }
+
+  @Post('setup/requests/finalize-handover')
+  @ApiOperation({ summary: 'Finalize setup handover by transferring ownership from manager to requester' })
+  finalizeSetupHandover(
+    @CurrentUser() user: { id: string },
+    @Body() dto: CreateOrganizationFromSetupRequestDto,
+  ) {
+    return this.organizationsService.finalizeSetupHandover(user.id, dto.requestId);
+  }
 
   @Post()
   @ApiOperation({ summary: 'Create a new organization' })
@@ -191,6 +313,18 @@ export class OrganizationsController {
   @ApiOperation({ summary: 'List lightweight organization summaries for current user' })
   findSummary(@CurrentUser() user: { id: string }) {
     return this.organizationsService.findSummaryForUser(user.id);
+  }
+
+  @Get('overview')
+  @ApiOperation({ summary: 'Get cross-organization overview for the current user (RBAC-safe)' })
+  findOverview(@CurrentUser() user: { id: string }) {
+    return this.organizationsService.findOverviewForUser(user.id);
+  }
+
+  @Get('global-overview')
+  @ApiOperation({ summary: 'Get optimized global overview for the current user' })
+  findGlobalOverview(@CurrentUser() user: { id: string }) {
+    return this.organizationsService.findOverviewForUser(user.id);
   }
 
   @Get(':slug')
