@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown, MessageCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -642,7 +642,7 @@ function Modal({ children, onClose }: { children: React.ReactNode; onClose: () =
   );
 }
 
-export default function BotsPage() {
+function BotsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { activeOrgId } = useAuthStore();
@@ -3663,5 +3663,20 @@ onBeforeUnmount(() => {
         </div>
       )}
     </div>
+  );
+}
+function BotsPageFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
+    </div>
+  );
+}
+
+export default function BotsPage() {
+  return (
+    <Suspense fallback={<BotsPageFallback />}>
+      <BotsPageContent />
+    </Suspense>
   );
 }

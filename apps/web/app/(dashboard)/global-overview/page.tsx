@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
   Building2,
@@ -195,7 +195,7 @@ const STATUS_COLORS: Record<string, string> = {
   Escalated: '#f87171',
 };
 
-export default function GlobalOverviewPage() {
+function GlobalOverviewPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuthStore();
@@ -1280,5 +1280,21 @@ export default function GlobalOverviewPage() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function GlobalOverviewPageFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <Loader2 className="h-5 w-5 animate-spin text-zinc-600" />
+    </div>
+  );
+}
+
+export default function GlobalOverviewPage() {
+  return (
+    <Suspense fallback={<GlobalOverviewPageFallback />}>
+      <GlobalOverviewPageContent />
+    </Suspense>
   );
 }

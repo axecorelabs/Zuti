@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { Menu, Leaf, Sun, Moon } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/sidebar';
@@ -15,7 +15,7 @@ function getInitialTheme(): 'dark' | 'light' {
   return stored === 'light' || stored === 'dark' ? stored : 'dark';
 }
 
-export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -203,5 +203,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </main>
       </div>
     </div>
+  );
+}
+
+function DashboardLayoutFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
+    </div>
+  );
+}
+
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense fallback={<DashboardLayoutFallback />}>
+      <DashboardLayoutContent>{children}</DashboardLayoutContent>
+    </Suspense>
   );
 }

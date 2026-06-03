@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MessageSquareText, RefreshCw } from 'lucide-react';
 import { orgsApi, teamChatApi } from '@/lib/api';
@@ -23,7 +23,7 @@ type EscalationThread = {
   }>;
 };
 
-export default function ResolutionPage() {
+function ResolutionPageContent() {
   const { activeOrgId } = useAuthStore();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -236,5 +236,21 @@ export default function ResolutionPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function ResolutionPageFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
+    </div>
+  );
+}
+
+export default function ResolutionPage() {
+  return (
+    <Suspense fallback={<ResolutionPageFallback />}>
+      <ResolutionPageContent />
+    </Suspense>
   );
 }

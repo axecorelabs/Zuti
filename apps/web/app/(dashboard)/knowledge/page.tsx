@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -63,7 +63,7 @@ type KnowledgeGap = {
   lastSeenAt: string;
 };
 
-export default function KnowledgePage() {
+function KnowledgePageContent() {
   const { activeOrgId } = useAuthStore();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -745,5 +745,21 @@ export default function KnowledgePage() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function KnowledgePageFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
+    </div>
+  );
+}
+
+export default function KnowledgePage() {
+  return (
+    <Suspense fallback={<KnowledgePageFallback />}>
+      <KnowledgePageContent />
+    </Suspense>
   );
 }

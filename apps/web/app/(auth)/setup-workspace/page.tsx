@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Building2, Handshake, Leaf, Loader2, Clock3, Ban, BadgeCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -110,7 +110,7 @@ function isSyncStale(timestamp: number) {
   return Date.now() - timestamp > 90_000;
 }
 
-export default function SetupWorkspacePage() {
+function SetupWorkspacePageContent() {
   const MIN_BUSINESS_NATURE_LENGTH = 20;
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -634,5 +634,21 @@ export default function SetupWorkspacePage() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function SetupWorkspaceFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <Loader2 className="h-5 w-5 animate-spin text-zinc-600" />
+    </div>
+  );
+}
+
+export default function SetupWorkspacePage() {
+  return (
+    <Suspense fallback={<SetupWorkspaceFallback />}>
+      <SetupWorkspacePageContent />
+    </Suspense>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { Suspense, useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download, ChevronsLeft, ChevronsRight } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
@@ -260,7 +260,7 @@ function formatLanguageBadgeTitle(languageCode: string): string {
   return label.toUpperCase() === iso ? `Language: ${iso}` : `Language: ${label} (${iso})`;
 }
 
-export default function InboxPage() {
+function InboxPageContent() {
   const { activeOrgId, orgRoles } = useAuthStore();
   const searchParams = useSearchParams();
   const requestedConversationId = searchParams.get('conversationId');
@@ -1790,5 +1790,21 @@ export default function InboxPage() {
         )}
       </div>
     </div>
+  );
+}
+
+function InboxPageFallback() {
+  return (
+    <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="w-5 h-5 border-2 border-zinc-800 border-t-zinc-500 rounded-full animate-spin" />
+    </div>
+  );
+}
+
+export default function InboxPage() {
+  return (
+    <Suspense fallback={<InboxPageFallback />}>
+      <InboxPageContent />
+    </Suspense>
   );
 }
