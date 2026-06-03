@@ -2,6 +2,7 @@ import {
   Controller, Post, Param, Body, Headers, Get, Query,
   Logger, HttpCode, HttpStatus, UseInterceptors, Req, ForbiddenException, UploadedFiles,
 } from '@nestjs/common';
+import { createHash, timingSafeEqual } from 'crypto';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
@@ -35,13 +36,24 @@ export class WebhooksController {
   }
 
   private get fileScanRequired(): boolean {
-    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'false').trim().toLowerCase();
+    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'true').trim().toLowerCase();
     return raw !== 'false' && raw !== '0' && raw !== 'no';
   }
 
   private get fileScanTimeoutMs(): number {
     const parsed = Number(this.config.get<string>('FILE_SCAN_TIMEOUT_MS') ?? '10000');
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 10000;
+  }
+
+  private get emailWebhookSecret(): string {
+    return (this.config.get<string>('EMAIL_WEBHOOK_SECRET') ?? '').trim();
+  }
+
+  private secureSecretMatch(actual: string | null | undefined, expected: string): boolean {
+    if (!actual || !expected) return false;
+    const expectedDigest = createHash('sha256').update(expected).digest();
+    const actualDigest = createHash('sha256').update(actual).digest();
+    return timingSafeEqual(expectedDigest, actualDigest);
   }
 
   private async scanInboundFiles(files: Array<Express.Multer.File>): Promise<void> {
@@ -240,9 +252,23 @@ export class WebhooksController {
   @UseInterceptors(AnyFilesInterceptor())
   @HttpCode(HttpStatus.OK)
   async handleEmailInbound(
+    @Headers('x-webhook-secret') headerSecret: string | undefined,
+    @Query('token') token: string | undefined,
     @Body() body: Record<string, string>,
     @UploadedFiles() files: Array<Express.Multer.File>,
   ) {
+    const expectedSecret = this.emailWebhookSecret;
+    if (!expectedSecret) {
+      this.logger.error('EMAIL_WEBHOOK_SECRET is not configured; rejecting inbound email webhook.');
+      return { ok: true };
+    }
+
+    const providedSecret = (headerSecret ?? token ?? '').trim();
+    if (!this.secureSecretMatch(providedSecret, expectedSecret)) {
+      this.logger.warn('Email webhook secret mismatch; request rejected.');
+      return { ok: true };
+    }
+
     let toAddress: string = body.to ?? '';
     let fromEmail: string = body.from ?? '';
 

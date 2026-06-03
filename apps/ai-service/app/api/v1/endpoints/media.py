@@ -21,7 +21,7 @@ class MediaProcessResponse(BaseModel):
 
 @router.post("/process", response_model=MediaProcessResponse)
 async def process_media(request: MediaProcessRequest, x_internal_key: str | None = Header(default=None)):
-    if settings.INTERNAL_API_SECRET and x_internal_key != settings.INTERNAL_API_SECRET:
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     if not settings.MEDIA_PROCESSING_ENABLED:

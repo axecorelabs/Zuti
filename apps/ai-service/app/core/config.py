@@ -52,7 +52,7 @@ class Settings(BaseSettings):
 
     # Uploaded file safety / virus scanning
     FILE_SCAN_URL: str = ""
-    FILE_SCAN_REQUIRED: bool = False
+    FILE_SCAN_REQUIRED: bool = True
     FILE_SCAN_TIMEOUT_MS: int = 10000
 
     class Config:

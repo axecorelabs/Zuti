@@ -169,6 +169,7 @@ class LlmService:
         draft_reply: str,
         operational_truth: dict[str, Any] | None = None,
         model: str = DEFAULT_MODEL,
+        force: bool = False,
     ) -> str:
         if not settings.OPENROUTER_API_KEY:
             return draft_reply
@@ -179,7 +180,7 @@ class LlmService:
         has_operational_claim_language = any(cue in lower_reply for cue in OPERATIONAL_CLAIM_CUES)
 
         # Skip verifier when this turn has no operational context and no claim-like language.
-        if forwarding_status == "NO_INTENT" and not has_operational_claim_language:
+        if not force and forwarding_status == "NO_INTENT" and not has_operational_claim_language:
             return draft_reply
 
         verifier_system_prompt = (

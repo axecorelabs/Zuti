@@ -1014,14 +1014,19 @@ export class ConversationsService {
     if (messages.length < 2) return;
 
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+    const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
     await this.billing.assertMinimumCredits(organizationId, 1);
     const { data: summaryData } = await firstValueFrom(
-      this.http.post<{ summary: string }>(`${aiServiceUrl}/api/v1/summarize`, {
-        messages: messages.map((m) => ({
-          role: m.role === 'USER' ? 'user' : 'assistant',
-          content: m.content,
-        })),
-      }),
+      this.http.post<{ summary: string }>(
+        `${aiServiceUrl}/api/v1/summarize`,
+        {
+          messages: messages.map((m) => ({
+            role: m.role === 'USER' ? 'user' : 'assistant',
+            content: m.content,
+          })),
+        },
+        internalApiKey ? { headers: { 'X-Internal-Key': internalApiKey } } : undefined,
+      ),
     );
     if (!summaryData?.summary) return;
 

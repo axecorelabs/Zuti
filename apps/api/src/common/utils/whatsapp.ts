@@ -154,10 +154,9 @@ export function normalizeWhatsAppPhoneNumber(value: string | null | undefined): 
 export function verifyMetaWebhookSignature(appSecret: string, rawBody: Buffer, signatureHeader?: string): boolean {
   if (!signatureHeader || !signatureHeader.startsWith('sha256=')) return false;
   const expected = `sha256=${createHmac('sha256', appSecret).update(rawBody).digest('hex')}`;
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureHeader);
-  if (expectedBuffer.length !== actualBuffer.length) return false;
-  return timingSafeEqual(expectedBuffer, actualBuffer);
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  const actualDigest = createHash('sha256').update(signatureHeader).digest();
+  return timingSafeEqual(expectedDigest, actualDigest);
 }
 
 export function verifyTwilioWebhookSignature(
@@ -184,10 +183,9 @@ export function verifyTwilioWebhookSignature(
   }
 
   const expected = createHmac('sha1', authToken).update(payload).digest('base64');
-  const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureHeader);
-  if (expectedBuffer.length !== actualBuffer.length) return false;
-  return timingSafeEqual(expectedBuffer, actualBuffer);
+  const expectedDigest = createHash('sha256').update(expected).digest();
+  const actualDigest = createHash('sha256').update(signatureHeader).digest();
+  return timingSafeEqual(expectedDigest, actualDigest);
 }
 
 export async function sendWhatsAppText(

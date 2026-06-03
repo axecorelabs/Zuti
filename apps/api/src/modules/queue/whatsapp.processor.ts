@@ -16,7 +16,7 @@ import { LanguagePreferenceService } from '../ai-usage/language-preference.servi
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
-import { buildCompactAiContext, buildConversationMetadataPatch } from '../../common/utils/ai-context';
+import { buildCompactAiContext, buildConversationMetadataPatch, getCachedPreviousCustomerContext } from '../../common/utils/ai-context';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
@@ -95,7 +95,7 @@ export class WhatsAppProcessor {
   }
 
   private get fileScanRequired(): boolean {
-    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'false').trim().toLowerCase();
+    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'true').trim().toLowerCase();
     return raw !== 'false' && raw !== '0' && raw !== 'no';
   }
 
@@ -573,6 +573,13 @@ export class WhatsAppProcessor {
       },
     };
 
+    const recentMessagesPromise = this.prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+      select: { role: true, content: true },
+    });
+
     await this.actionForwarding.detectAndQueue({
       organizationId,
       botId,
@@ -636,7 +643,15 @@ export class WhatsAppProcessor {
       }
     }
 
-    await this.callAiAndRespond(conversation.id, bot, resolvedUserText, phoneNumber ?? userId, forwardingResult, userMessage.id);
+    await this.callAiAndRespond(
+      conversation.id,
+      bot,
+      resolvedUserText,
+      phoneNumber ?? userId,
+      forwardingResult,
+      userMessage.id,
+      recentMessagesPromise,
+    );
   }
 
   private async callAiAndRespond(
@@ -656,20 +671,77 @@ export class WhatsAppProcessor {
     replyTarget: string,
     forwardingResult: ActionForwardingResult,
     inboundMessageId?: string,
+    preloadedRecentMessages?: Promise<Array<{ role: string; content: string }>>,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
     const organizationId = bot.organizationId;
     const org = await this.prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } });
     const aiConfig = (bot.aiConfig as Record<string, unknown>) ?? {};
     const systemPrompt = buildAgentSystemPrompt(aiConfig, bot.name ?? 'Assistant');
-    const recentMessages = await this.prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: 40,
-    });
+    const recentMessages = preloadedRecentMessages
+      ? await preloadedRecentMessages
+      : await this.prisma.message.findMany({
+          where: { conversationId },
+          orderBy: { createdAt: 'desc' },
+          take: 40,
+          select: { role: true, content: true },
+        });
     const priorForAi = recentMessages.filter((m) => !(m.role === 'USER' && m.content.trim() === userText.trim()));
     const latestConversation = await this.prisma.conversation.findUnique({ where: { id: conversationId } });
     if (!latestConversation) return;
+
+    const previousCustomerContextKey = latestConversation.whatsappPhoneNumber
+      ? `whatsapp:${latestConversation.whatsappPhoneNumber}`
+      : latestConversation.whatsappUserId
+        ? `whatsapp:${latestConversation.whatsappUserId}`
+        : null;
+    let previousCustomerContext: string | null = getCachedPreviousCustomerContext(
+      latestConversation.metadata,
+      previousCustomerContextKey,
+    );
+    if (!previousCustomerContext && (latestConversation.whatsappPhoneNumber || latestConversation.whatsappUserId)) {
+      const where = latestConversation.whatsappPhoneNumber
+        ? {
+            organizationId,
+            whatsappPhoneNumber: latestConversation.whatsappPhoneNumber,
+            NOT: { id: conversationId },
+            status: 'RESOLVED' as const,
+          }
+        : {
+            organizationId,
+            whatsappUserId: latestConversation.whatsappUserId,
+            NOT: { id: conversationId },
+            status: 'RESOLVED' as const,
+          };
+      const prevConvs = await this.prisma.conversation.findMany({
+        where,
+        orderBy: { lastMessageAt: 'desc' },
+        take: 3,
+        select: {
+          metadata: true,
+          messages: {
+            where: { role: 'USER' },
+            orderBy: { createdAt: 'asc' },
+            take: 10,
+            select: { content: true },
+          },
+        },
+      });
+      if (prevConvs.length > 0) {
+        const GREETINGS = /^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy|greetings|yo|sup)[^a-z]*$/i;
+        const lines = prevConvs.map((pc, i) => {
+          const meta = pc.metadata as Record<string, unknown> | null;
+          const summary = typeof meta?.handoffSummary === 'string' ? meta.handoffSummary : null;
+          if (summary) return `${i + 1}. ${summary.slice(0, 300)}`;
+          const firstSubstantive = pc.messages.find((m) => m.content.trim().length > 10 && !GREETINGS.test(m.content.trim()));
+          return firstSubstantive
+            ? `${i + 1}. Customer previously asked: ${firstSubstantive.content.trim().slice(0, 200)}`
+            : null;
+        }).filter(Boolean);
+        if (lines.length > 0) previousCustomerContext = lines.join('\n');
+      }
+    }
+
     const languageDecision = await this.languagePreference.resolveForTurn({
       userMessage: userText,
       channel: 'WHATSAPP',
@@ -691,7 +763,8 @@ export class WhatsAppProcessor {
       conversation: conversationForContext,
       priorMessages: priorForAi,
       forwarding: forwardingResult,
-      previousCustomerContext: null,
+      previousCustomerContext,
+      userMessage: userText,
     });
     const effectiveSystemPrompt = [
       systemPrompt,
@@ -710,7 +783,11 @@ export class WhatsAppProcessor {
       ),
     ].filter(Boolean).join('\n\n');
 
-    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Record<string, unknown>;
+    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, {
+      ...aiContext,
+      previousCustomerContext,
+      previousCustomerContextKey,
+    }) as Record<string, unknown>;
     const mergedMetadataPatch: Record<string, unknown> = {
       ...contextMetadataPatch,
       ...languageDecision.metadataPatch,
@@ -741,27 +818,34 @@ export class WhatsAppProcessor {
     await this.billing.assertMinimumCredits(organizationId, estimateUsageCredits(promptTokens, 1));
 
     try {
+      const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
       const response = await firstValueFrom(
-        this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
-          conversation_id: conversationId,
-          organization_id: organizationId,
-          bot_id: bot.id,
-          message: userText,
-          history: aiContext.history,
-          bot_name: bot.name,
-          org_name: org?.name ?? null,
-          system_prompt: effectiveSystemPrompt,
-          customer_context: effectiveCustomerContext,
-          forwarding_status: forwardingResult.status,
-          forwarding_reason: forwardingResult.reason,
-          action_task_id: forwardingResult.actionTaskId ?? null,
-          can_claim_completed: forwardingResult.canClaimCompleted,
-          missing_fields: forwardingResult.missingFields ?? [],
-          blocked_capability: forwardingResult.blockedCapability ?? null,
-          claim_level: forwardingResult.claimLevel,
-          delivery_status: forwardingResult.deliveryStatus,
-          operational_truth: forwardingResult.operationalTruth,
-        }),
+        this.http.post<any>(
+          `${aiServiceUrl}/api/v1/chat`,
+          {
+            conversation_id: conversationId,
+            organization_id: organizationId,
+            bot_id: bot.id,
+            message: userText,
+            history: aiContext.history,
+            bot_name: bot.name,
+            org_name: org?.name ?? null,
+            system_prompt: effectiveSystemPrompt,
+            customer_context: effectiveCustomerContext,
+            forwarding_status: forwardingResult.status,
+            forwarding_reason: forwardingResult.reason,
+            action_task_id: forwardingResult.actionTaskId ?? null,
+            can_claim_completed: forwardingResult.canClaimCompleted,
+            missing_fields: forwardingResult.missingFields ?? [],
+            blocked_capability: forwardingResult.blockedCapability ?? null,
+            claim_level: forwardingResult.claimLevel,
+            delivery_status: forwardingResult.deliveryStatus,
+            operational_truth: forwardingResult.operationalTruth,
+            risk_profile: aiContext.risk,
+            needs_verifier: aiContext.risk.needsVerifier,
+          },
+          internalApiKey ? { headers: { 'X-Internal-Key': internalApiKey } } : undefined,
+        ),
       );
 
       const aiText = String(response.data?.reply ?? 'I am unable to respond right now.');
@@ -788,7 +872,10 @@ export class WhatsAppProcessor {
         provider: bot.whatsappProvider === 'TWILIO' ? 'twilio' : 'meta',
         promptTokens,
         completionTokens,
-        metadata: { channel: 'WHATSAPP' },
+        metadata: {
+          channel: 'WHATSAPP',
+          riskProfile: aiContext.risk,
+        },
       }).catch(() => null);
 
       const escalationPhrases = [

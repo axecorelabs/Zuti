@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel
 from app.services.llm_service import llm_service
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -15,7 +16,10 @@ class SummarizeResponse(BaseModel):
 
 
 @router.post("", response_model=SummarizeResponse)
-async def summarize(request: SummarizeRequest):
+async def summarize(request: SummarizeRequest, x_internal_key: str | None = Header(default=None)):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         transcript_parts: list[str] = []
         for msg in request.messages[-30:]:

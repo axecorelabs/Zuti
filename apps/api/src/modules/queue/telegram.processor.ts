@@ -18,7 +18,7 @@ import { LanguagePreferenceService } from '../ai-usage/language-preference.servi
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
-import { buildCompactAiContext, buildConversationMetadataPatch } from '../../common/utils/ai-context';
+import { buildCompactAiContext, buildConversationMetadataPatch, getCachedPreviousCustomerContext } from '../../common/utils/ai-context';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
@@ -193,7 +193,7 @@ export class TelegramProcessor {
   }
 
   private get fileScanRequired(): boolean {
-    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'false').trim().toLowerCase();
+    const raw = (this.config.get<string>('FILE_SCAN_REQUIRED') ?? 'true').trim().toLowerCase();
     return raw !== 'false' && raw !== '0' && raw !== 'no';
   }
 
@@ -559,6 +559,12 @@ export class TelegramProcessor {
       customerName: conversation.customerName,
     });
 
+    const recentMessagesPromise = this.prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+    });
+
     if (mediaScanStatus === 'BLOCKED') {
       await firstValueFrom(
         this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
@@ -734,7 +740,7 @@ export class TelegramProcessor {
 
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, resolvedUserText,
-        bot?.name ?? 'Assistant', systemPrompt, aiConfig, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id,
+        bot?.name ?? 'Assistant', systemPrompt, aiConfig, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id, recentMessagesPromise,
       );
     }
   }
@@ -754,6 +760,7 @@ export class TelegramProcessor {
     forwardingResult: ActionForwardingResult,
     routeToRoles: string[] = ['AGENT'],
     inboundMessageId?: string,
+    preloadedRecentMessages?: Promise<Array<{ role: string; content: string }>>,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
 
@@ -839,12 +846,19 @@ export class TelegramProcessor {
     }
 
     // Fetch compact history inputs
-    const recentMessages = await this.prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: 40,
-    });
+    const recentMessages = preloadedRecentMessages
+      ? await preloadedRecentMessages
+      : await this.prisma.message.findMany({
+          where: { conversationId },
+          orderBy: { createdAt: 'desc' },
+          take: 40,
+        });
     const priorForAi = recentMessages.filter((m) => !(m.role === 'USER' && m.content.trim() === userText.trim()));
+
+    const latestConversation = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+    });
+    if (!latestConversation) return;
 
     // Build customer context from previous Telegram conversations — only on first message.
     const conv = priorForAi.length === 0
@@ -853,8 +867,9 @@ export class TelegramProcessor {
           select: { telegramChatId: true },
         })
       : null;
-    let previousCustomerContext: string | null = null;
-    if (conv?.telegramChatId) {
+    const previousCustomerContextKey = conv?.telegramChatId ? `telegram:${conv.telegramChatId}` : null;
+    let previousCustomerContext: string | null = getCachedPreviousCustomerContext(latestConversation.metadata, previousCustomerContextKey);
+    if (!previousCustomerContext && conv?.telegramChatId) {
       const prevConvs = await this.prisma.conversation.findMany({
         where: {
           organizationId,
@@ -889,10 +904,6 @@ export class TelegramProcessor {
       }
     }
 
-    const latestConversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-    });
-    if (!latestConversation) return;
     const languageDecision = await this.languagePreference.resolveForTurn({
       userMessage: userText,
       channel: 'TELEGRAM',
@@ -914,11 +925,16 @@ export class TelegramProcessor {
       priorMessages: priorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
+      userMessage: userText,
     });
     const history = aiContext.history;
     const customerContext = aiContext.customerContext;
 
-    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Record<string, unknown>;
+    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, {
+      ...aiContext,
+      previousCustomerContext,
+      previousCustomerContextKey,
+    }) as Record<string, unknown>;
     const mergedMetadataPatch: Record<string, unknown> = {
       ...contextMetadataPatch,
       ...languageDecision.metadataPatch,
@@ -969,27 +985,34 @@ export class TelegramProcessor {
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
     try {
+      const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
       const response = await firstValueFrom(
-        this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
-          conversation_id: conversationId,
-          organization_id: organizationId,
-          bot_id: botId,
-          message: userText,
-          history,
-          bot_name: botName,
-          org_name: orgName,
-          system_prompt: effectiveSystemPrompt,
-          customer_context: effectiveCustomerContext,
-          forwarding_status: forwardingResult.status,
-          forwarding_reason: forwardingResult.reason,
-          action_task_id: forwardingResult.actionTaskId ?? null,
-          can_claim_completed: forwardingResult.canClaimCompleted,
-          missing_fields: forwardingResult.missingFields ?? [],
-          blocked_capability: forwardingResult.blockedCapability ?? null,
-          claim_level: forwardingResult.claimLevel,
-          delivery_status: forwardingResult.deliveryStatus,
-          operational_truth: forwardingResult.operationalTruth,
-        }),
+        this.http.post<any>(
+          `${aiServiceUrl}/api/v1/chat`,
+          {
+            conversation_id: conversationId,
+            organization_id: organizationId,
+            bot_id: botId,
+            message: userText,
+            history,
+            bot_name: botName,
+            org_name: orgName,
+            system_prompt: effectiveSystemPrompt,
+            customer_context: effectiveCustomerContext,
+            forwarding_status: forwardingResult.status,
+            forwarding_reason: forwardingResult.reason,
+            action_task_id: forwardingResult.actionTaskId ?? null,
+            can_claim_completed: forwardingResult.canClaimCompleted,
+            missing_fields: forwardingResult.missingFields ?? [],
+            blocked_capability: forwardingResult.blockedCapability ?? null,
+            claim_level: forwardingResult.claimLevel,
+            delivery_status: forwardingResult.deliveryStatus,
+            operational_truth: forwardingResult.operationalTruth,
+            risk_profile: aiContext.risk,
+            needs_verifier: aiContext.risk.needsVerifier,
+          },
+          internalApiKey ? { headers: { 'X-Internal-Key': internalApiKey } } : undefined,
+        ),
       );
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Header
 from pydantic import BaseModel
 from app.core.config import settings
 from app.services.ingestion_service import ingestion_service
@@ -40,7 +40,10 @@ class KnowledgeItemResponse(BaseModel):
 
 
 @router.post("/ingest/url", response_model=IngestStatusResponse)
-async def ingest_url(request: IngestUrlRequest):
+async def ingest_url(request: IngestUrlRequest, x_internal_key: str | None = Header(default=None)):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         chunk_count = await ingestion_service.ingest_url(
             organization_id=request.organization_id,
@@ -61,7 +64,10 @@ async def ingest_url(request: IngestUrlRequest):
 
 
 @router.post("/ingest/text", response_model=IngestStatusResponse)
-async def ingest_text(request: IngestTextRequest):
+async def ingest_text(request: IngestTextRequest, x_internal_key: str | None = Header(default=None)):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         chunk_count = await ingestion_service.ingest_plain_text(
             organization_id=request.organization_id,
@@ -87,7 +93,11 @@ async def ingest_file(
     organization_id: str = Form(...),
     knowledge_file_id: str = Form(...),
     bot_id: str | None = Form(default=None),
+    x_internal_key: str | None = Header(default=None),
 ):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     if not settings.KNOWLEDGE_FILE_INGEST_ENABLED:
         raise HTTPException(status_code=400, detail="Knowledge file ingest is disabled. Use URL or text ingestion for now.")
 
@@ -113,7 +123,14 @@ async def ingest_file(
 
 
 @router.get("/{organization_id}/items", response_model=list[KnowledgeItemResponse])
-async def list_knowledge_items(organization_id: str, bot_id: str | None = None):
+async def list_knowledge_items(
+    organization_id: str,
+    bot_id: str | None = None,
+    x_internal_key: str | None = Header(default=None),
+):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         return await ingestion_service.list_knowledge_items(organization_id, bot_id)
     except Exception as e:
@@ -121,7 +138,14 @@ async def list_knowledge_items(organization_id: str, bot_id: str | None = None):
 
 
 @router.delete("/{organization_id}/items/{knowledge_file_id}")
-async def delete_knowledge_item(organization_id: str, knowledge_file_id: str):
+async def delete_knowledge_item(
+    organization_id: str,
+    knowledge_file_id: str,
+    x_internal_key: str | None = Header(default=None),
+):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         deleted = await ingestion_service.delete_knowledge_item(organization_id, knowledge_file_id)
         return {
@@ -134,6 +158,9 @@ async def delete_knowledge_item(organization_id: str, knowledge_file_id: str):
 
 
 @router.delete("/{organization_id}")
-async def delete_knowledge(organization_id: str):
+async def delete_knowledge(organization_id: str, x_internal_key: str | None = Header(default=None)):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     await ingestion_service.delete_collection(organization_id)
     return {"deleted": True, "organization_id": organization_id}

@@ -90,6 +90,13 @@ export class BotsController {
     return this.botsService.disableEmail(orgId, botId);
   }
 
+  @Post('email/sync-parse-rule')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'One-time sync of SendGrid parse URL/token for this organization hostname' })
+  syncEmailParseRule(@Param('id') orgId: string) {
+    return this.botsService.syncSendGridParseRuleForOrganization(orgId);
+  }
+
   @Post(':botId/telegram/connect')
   @RequireRole('OWNER', 'ADMIN')
   @ApiOperation({ summary: 'Connect a Telegram bot token to this bot' })

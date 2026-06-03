@@ -21,7 +21,7 @@ import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
 import { computeUsageCredits } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
-import { buildCompactAiContext, buildConversationMetadataPatch } from '../../common/utils/ai-context';
+import { buildCompactAiContext, buildConversationMetadataPatch, getCachedPreviousCustomerContext } from '../../common/utils/ai-context';
 import {
   buildDeterministicFollowUpMessage,
   buildOperationalIntegrityPromptBlock,
@@ -1274,10 +1274,75 @@ export class BotsService {
     return { ok: true };
   }
 
+  async syncSendGridParseRuleForOrganization(organizationId: string): Promise<{ ok: true; hostname: string }> {
+    const org = await this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { slug: true },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+
+    const hostname = `${org.slug}.bords.app`;
+    await this.syncSendGridParseRule(hostname);
+    return { ok: true, hostname };
+  }
+
   private async registerSendGridParseRule(hostname: string): Promise<void> {
     const apiKey = this.config.get<string>('SENDGRID_API_KEY');
     if (!apiKey) return;
-    const webhookUrl = `${this.config.get<string>('WEBHOOK_BASE_URL')}/api/webhooks/email`;
+    const baseWebhookUrl = `${this.config.get<string>('WEBHOOK_BASE_URL')}/api/webhooks/email`;
+    const emailWebhookSecret = (this.config.get<string>('EMAIL_WEBHOOK_SECRET') ?? '').trim();
+    if (!emailWebhookSecret) {
+      this.logger.warn('EMAIL_WEBHOOK_SECRET is not configured; skipping SendGrid parse rule registration.');
+      return;
+    }
+    const webhookUrl = `${baseWebhookUrl}?token=${encodeURIComponent(emailWebhookSecret)}`;
+
+    try {
+      await firstValueFrom(
+        this.http.post(
+          'https://api.sendgrid.com/v3/user/webhooks/parse/settings',
+          { hostname, url: webhookUrl, spam_check: false, send_raw: false },
+          { headers: { Authorization: `Bearer ${apiKey}` } },
+        ),
+      );
+      return;
+    } catch (error: unknown) {
+      const status = Number((error as any)?.response?.status ?? 0);
+      // Hostname may already exist; keep enable flow create-only and use explicit sync endpoint to update.
+      if (status !== 400 && status !== 409) {
+        throw error;
+      }
+      this.logger.warn(`SendGrid parse setting already exists for ${hostname}; run manual sync to update URL/token.`);
+    }
+  }
+
+  private async syncSendGridParseRule(hostname: string): Promise<void> {
+    const apiKey = this.config.get<string>('SENDGRID_API_KEY');
+    if (!apiKey) {
+      throw new BadRequestException('SENDGRID_API_KEY is not configured');
+    }
+    const baseWebhookUrl = `${this.config.get<string>('WEBHOOK_BASE_URL')}/api/webhooks/email`;
+    const emailWebhookSecret = (this.config.get<string>('EMAIL_WEBHOOK_SECRET') ?? '').trim();
+    if (!emailWebhookSecret) {
+      throw new BadRequestException('EMAIL_WEBHOOK_SECRET is not configured');
+    }
+
+    const webhookUrl = `${baseWebhookUrl}?token=${encodeURIComponent(emailWebhookSecret)}`;
+
+    try {
+      await firstValueFrom(
+        this.http.patch(
+          `https://api.sendgrid.com/v3/user/webhooks/parse/settings/${hostname}`,
+          { url: webhookUrl, spam_check: false, send_raw: false },
+          { headers: { Authorization: `Bearer ${apiKey}` } },
+        ),
+      );
+      return;
+    } catch (error: unknown) {
+      const status = Number((error as any)?.response?.status ?? 0);
+      if (status !== 404) throw error;
+    }
+
     await firstValueFrom(
       this.http.post(
         'https://api.sendgrid.com/v3/user/webhooks/parse/settings',
@@ -1540,6 +1605,12 @@ export class BotsService {
       message: { id: userMessage.id, role: userMessage.role, content: userMessage.content, createdAt: userMessage.createdAt },
     });
 
+    const priorMessagesPromise = this.prisma.message.findMany({
+      where: { conversationId: conversation.id, NOT: { id: userMessage.id } },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+    });
+
     let forwardingResult: ActionForwardingResult = {
       status: 'NO_INTENT',
       reason: 'SYSTEM_ERROR',
@@ -1656,12 +1727,7 @@ export class BotsService {
         this.events.emitConversationUpdate(bot.organizationId, { conversationId: conversation.id, status: 'OPEN' });
       }
     }
-    // Fetch newest 40 from DB (cheap), then trim by token budget in memory
-    const priorMessages = await this.prisma.message.findMany({
-      where: { conversationId: conversation.id, NOT: { id: userMessage.id } },
-      orderBy: { createdAt: 'desc' },
-      take: 40,
-    });
+    const priorMessages = await priorMessagesPromise;
     // Build customer context from previous conversations — only on the first message,
     // so we don't waste tokens repeating it on every turn of an ongoing conversation.
     const prevWhere = conversation.widgetVisitorEmail
@@ -1669,8 +1735,11 @@ export class BotsService {
       : conversation.widgetVisitorId
         ? { widgetVisitorId: conversation.widgetVisitorId }
         : null;
-    let previousCustomerContext: string | null = null;
-    if (priorMessages.length === 0 && prevWhere) {
+    const previousCustomerContextKey = prevWhere
+      ? `widget:${conversation.widgetVisitorEmail ?? conversation.widgetVisitorId ?? 'unknown'}`
+      : null;
+    let previousCustomerContext: string | null = getCachedPreviousCustomerContext(conversation.metadata, previousCustomerContextKey);
+    if (!previousCustomerContext && priorMessages.length === 0 && prevWhere) {
       const prevConvs = await this.prisma.conversation.findMany({
         where: {
           organizationId: bot.organizationId,
@@ -1729,11 +1798,16 @@ export class BotsService {
       priorMessages,
       forwarding: forwardingResult,
       previousCustomerContext,
+      userMessage: userText.trim(),
     });
     const history = aiContext.history;
     const customerContext = aiContext.customerContext;
 
-    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, aiContext) as Record<string, unknown>;
+    const contextMetadataPatch = buildConversationMetadataPatch(latestConversation.metadata, {
+      ...aiContext,
+      previousCustomerContext,
+      previousCustomerContextKey,
+    }) as Record<string, unknown>;
     const mergedMetadataPatch: Record<string, unknown> = {
       ...contextMetadataPatch,
       ...languageDecision.metadataPatch,
@@ -1804,6 +1878,7 @@ export class BotsService {
     await this.billing.assertMinimumCredits(bot.organizationId, preflightCredits);
     try {
       const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
+      const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
       const aiConfig = (bot.aiConfig as Record<string, unknown>) ?? {};
       const botCapabilities = ((bot.capabilities as Record<string, unknown> | null) ?? {});
       const canApplySkillBehavior = isSkillEnabledForAction(forwardingResult.actionType, botCapabilities);
@@ -1826,26 +1901,32 @@ export class BotsService {
       ].filter(Boolean).join('\n\n');
 
       const response = await firstValueFrom(
-        this.http.post<any>(`${aiServiceUrl}/api/v1/chat`, {
-          conversation_id: conversation.id,
-          organization_id: bot.organizationId,
-          bot_id: bot.id,
-          message: userText.trim(),
-          history,
-          bot_name: bot.name,
-          org_name: bot.organization?.name,
-          system_prompt: effectiveSystemPrompt,
-          customer_context: effectiveCustomerContext,
-          forwarding_status: forwardingResult.status,
-          forwarding_reason: forwardingResult.reason,
-          action_task_id: forwardingResult.actionTaskId ?? null,
-          can_claim_completed: forwardingResult.canClaimCompleted,
-          missing_fields: forwardingResult.missingFields ?? [],
-          blocked_capability: forwardingResult.blockedCapability ?? null,
-          claim_level: forwardingResult.claimLevel,
-          delivery_status: forwardingResult.deliveryStatus,
-          operational_truth: forwardingResult.operationalTruth,
-        }),
+        this.http.post<any>(
+          `${aiServiceUrl}/api/v1/chat`,
+          {
+            conversation_id: conversation.id,
+            organization_id: bot.organizationId,
+            bot_id: bot.id,
+            message: userText.trim(),
+            history,
+            bot_name: bot.name,
+            org_name: bot.organization?.name,
+            system_prompt: effectiveSystemPrompt,
+            customer_context: effectiveCustomerContext,
+            forwarding_status: forwardingResult.status,
+            forwarding_reason: forwardingResult.reason,
+            action_task_id: forwardingResult.actionTaskId ?? null,
+            can_claim_completed: forwardingResult.canClaimCompleted,
+            missing_fields: forwardingResult.missingFields ?? [],
+            blocked_capability: forwardingResult.blockedCapability ?? null,
+            claim_level: forwardingResult.claimLevel,
+            delivery_status: forwardingResult.deliveryStatus,
+            operational_truth: forwardingResult.operationalTruth,
+            risk_profile: aiContext.risk,
+            needs_verifier: aiContext.risk.needsVerifier,
+          },
+          internalApiKey ? { headers: { 'X-Internal-Key': internalApiKey } } : undefined,
+        ),
       );
 
       aiReply = response.data?.reply ?? 'I am unable to respond right now. Please try again later.';
@@ -1864,6 +1945,7 @@ export class BotsService {
           conversationId: conversation.id,
           botId: bot.id,
           sourceCount: Array.isArray(response.data?.sources) ? response.data.sources.length : 0,
+          riskProfile: aiContext.risk,
         },
       });
 

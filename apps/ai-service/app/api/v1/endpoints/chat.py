@@ -1,7 +1,8 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Header
 from pydantic import BaseModel, Field
 import re
 from app.services.rag_service import rag_service
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -30,6 +31,8 @@ class ChatRequest(BaseModel):
     claim_level: str | None = None
     delivery_status: str | None = None
     operational_truth: dict | None = None
+    risk_profile: dict | None = None
+    needs_verifier: bool | None = None
 
 
 class ChatResponse(BaseModel):
@@ -44,7 +47,10 @@ class ChatResponse(BaseModel):
 
 
 @router.post("", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, x_internal_key: str | None = Header(default=None)):
+    if not settings.INTERNAL_API_SECRET or x_internal_key != settings.INTERNAL_API_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
     try:
         reply, sources, assessment = await rag_service.chat(
             organization_id=request.organization_id,
@@ -65,6 +71,8 @@ async def chat(request: ChatRequest):
             claim_level=request.claim_level,
             delivery_status=request.delivery_status,
             operational_truth=request.operational_truth,
+            risk_profile=request.risk_profile,
+            needs_verifier=request.needs_verifier,
         )
         # Strip [RESOLVED] token from the reply text; surface it as a flag
         should_resolve = re.search(r'\[\s*resolved\s*\]', reply, re.IGNORECASE) is not None

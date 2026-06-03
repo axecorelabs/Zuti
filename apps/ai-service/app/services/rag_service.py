@@ -51,6 +51,8 @@ class RagService:
         claim_level: str | None = None,
         delivery_status: str | None = None,
         operational_truth: dict[str, Any] | None = None,
+        risk_profile: dict[str, Any] | None = None,
+        needs_verifier: bool | None = None,
     ) -> tuple[str, list[dict], dict[str, Any]]:
         # 1. Try RAG (embed + Qdrant search) — degrade gracefully if unavailable
         sources: list[dict] = []
@@ -114,7 +116,9 @@ class RagService:
                 "blocked_capability": blocked_capability,
                 "claim_level": claim_level,
                 "delivery_status": delivery_status,
+                "risk_profile": risk_profile or {},
             },
+            force=bool(needs_verifier),
         )
 
         assessment = self._assess_answerability(message, reply, sources)

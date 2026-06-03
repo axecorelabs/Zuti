@@ -25,6 +25,12 @@ export class KnowledgeService {
     return configured;
   }
 
+  private get internalApiKey() {
+    const primary = (this.config.get<string>('INTERNAL_API_SECRET') ?? '').trim();
+    if (primary) return primary;
+    return (this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
+  }
+
   private get fileIngestEnabled() {
     return this.config.get<string>('KNOWLEDGE_FILE_INGEST_ENABLED') === 'true';
   }
@@ -34,8 +40,13 @@ export class KnowledgeService {
     const timeout = setTimeout(() => controller.abort(), this.aiTimeoutMs);
 
     try {
+      const internalKey = this.internalApiKey;
+      const headers = new Headers(init.headers ?? undefined);
+      if (internalKey) headers.set('X-Internal-Key', internalKey);
+
       return await fetch(`${this.aiUrl}${path}`, {
         ...init,
+        headers,
         signal: controller.signal,
       });
     } catch (error: unknown) {
