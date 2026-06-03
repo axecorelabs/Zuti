@@ -744,7 +744,7 @@ function BotsPageContent() {
   const redirectToForwardingSettings = (message?: string) => {
     toast.error(message || 'Configure forwarding before enabling this skill.');
     closeCreateModal();
-    router.push('/settings/forwarding');
+    router.push(orgId ? `/settings/forwarding?org=${orgId}` : '/settings/forwarding');
   };
 
   const handleForwardingConfigRequired = (err: unknown): boolean => {
@@ -761,8 +761,9 @@ function BotsPageContent() {
         ? (typeof messageRaw[0] === 'string' ? messageRaw[0] : '')
         : '';
     const redirectTo = data?.redirectTo ?? nested?.redirectTo;
+    const defaultRedirect = orgId ? `/settings/forwarding?org=${orgId}` : '/settings/forwarding';
     toast.error(message || 'Configure forwarding before enabling this skill.');
-    router.push(redirectTo || '/settings/forwarding');
+    router.push(redirectTo || defaultRedirect);
     return true;
   };
 

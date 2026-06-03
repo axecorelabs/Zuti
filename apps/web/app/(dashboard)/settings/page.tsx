@@ -167,7 +167,7 @@ export default function SettingsPage() {
               {canManageForwarding && (
                 <div className="pt-1">
                   <Link
-                    href="/settings/forwarding"
+                    href={org?.id ? `/settings/forwarding?org=${org.id}` : '/settings/forwarding'}
                     className="inline-flex items-center rounded-lg border border-zinc-800 px-3 py-2 text-xs text-zinc-300 hover:bg-zinc-900 transition-colors"
                   >
                     Manage Forwarding Settings
