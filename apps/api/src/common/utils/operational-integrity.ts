@@ -212,7 +212,7 @@ export function sanitizeOperationalClaims(
     ? `I can help log this for review once I have: ${missingFields.join(', ')}.`
     : isCapabilityBlocked
       ? capabilityBlockedPrompt
-    : 'I can help log this for review for our team';
+    : 'I can help log this for review for our team.';
 
   for (const pattern of ESCALATION_CLAIM_PATTERNS) {
     sanitized = sanitized.replace(
@@ -274,11 +274,32 @@ export function sanitizeOperationalClaims(
     sanitized = sanitized.replace(
       pattern,
       hasTeamDeliveryConfirmation
-        ? 'our team has been notified and will follow up'
+        ? 'our team has been notified and will follow up.'
         : canConfirmForwardingRequest
-          ? 'I have logged an internal request for review in this conversation context, but I cannot confirm downstream delivery yet'
-          : 'I can help prepare this as a request for review once required details are confirmed',
+          ? 'I have logged an internal request for review in this conversation context, but I cannot confirm downstream delivery yet.'
+          : 'I can help prepare this as a request for review once required details are confirmed.',
     );
+  }
+
+  // Normalize whitespace and reduce duplicate sentence artifacts from overlapping replacements.
+  sanitized = sanitized
+    .replace(/\s+([,.;!?])/g, '$1')
+    .replace(/([.!?])(\S)/g, '$1 $2')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  const dedupedSentences: string[] = [];
+  const seenSentences = new Set<string>();
+  for (const sentence of sanitized.split(/(?<=[.!?])\s+/)) {
+    const normalizedSentence = sentence.trim();
+    if (!normalizedSentence) continue;
+    const key = normalizedSentence.toLowerCase();
+    if (seenSentences.has(key)) continue;
+    seenSentences.add(key);
+    dedupedSentences.push(normalizedSentence);
+  }
+  if (dedupedSentences.length > 0) {
+    sanitized = dedupedSentences.join(' ').trim();
   }
 
   if (sanitized !== text && !/cannot confirm operational actions as completed/i.test(sanitized)) {
@@ -403,8 +424,12 @@ export function buildTruthAwareResponseTemplate(
   });
   if (deterministic) return deterministic;
 
-  if (reason === 'SYSTEM_ERROR' || status === 'FAILED' || status === 'UNKNOWN') {
+  if (reason === 'SYSTEM_ERROR' || status === 'FAILED') {
     return 'I could not verify or complete that action on this turn due to a system issue. I can help you retry now, or route this to a human teammate.';
+  }
+
+  if (status === 'UNKNOWN') {
+    return 'I could not verify the operational status for that request on this turn. Please restate what you want to do, and I will guide the next step clearly.';
   }
 
   if (status === 'QUEUED' || status === 'DUPLICATE' || claimLevel === 'QUEUED_INTERNAL') {

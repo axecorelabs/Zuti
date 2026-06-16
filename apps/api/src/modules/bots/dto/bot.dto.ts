@@ -109,13 +109,13 @@ export class CreateBotDto {
 
   @ApiPropertyOptional({
     description: 'Template used to preconfigure the bot capabilities and action forwarding behavior',
-    enum: ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'],
+    enum: ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL', 'ECOMMERCE'],
     example: 'GENERAL',
   })
   @IsOptional()
   @IsString()
-  @IsIn(['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'])
-  template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+  @IsIn(['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL', 'ECOMMERCE'])
+  template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
 
   @ApiPropertyOptional({
     description: 'Explicitly enable or disable action forwarding for this bot',
@@ -123,6 +123,11 @@ export class CreateBotDto {
   @IsOptional()
   @IsBoolean()
   actionForwardingEnabled?: boolean;
+
+  @ApiPropertyOptional({ description: 'Zuti Commerce store to receive bot-captured orders. Optional for ECOMMERCE bots — can be connected later.' })
+  @IsOptional()
+  @IsString()
+  commerceStoreId?: string;
 }
 
 export class UpdateBotDto {
@@ -244,13 +249,13 @@ export class UpdateBotDto {
 
   @ApiPropertyOptional({
     description: 'Template used to preconfigure the bot capabilities and action forwarding behavior',
-    enum: ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'],
+    enum: ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL', 'ECOMMERCE'],
     example: 'GENERAL',
   })
   @IsOptional()
   @IsString()
-  @IsIn(['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'])
-  template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+  @IsIn(['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL', 'ECOMMERCE'])
+  template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
 
   @ApiPropertyOptional({
     description: 'Explicitly enable or disable action forwarding for this bot',
@@ -258,6 +263,13 @@ export class UpdateBotDto {
   @IsOptional()
   @IsBoolean()
   actionForwardingEnabled?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Zuti Commerce store to receive bot-captured orders. Required for ECOMMERCE bots.',
+  })
+  @IsOptional()
+  @IsString()
+  commerceStoreId?: string;
 }
 
 export class CompleteMetaEmbeddedSignupDto {

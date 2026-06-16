@@ -1,13 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { sendWhatsAppText } from '../../common/utils/whatsapp';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
   ActionClaimLevel,
@@ -72,6 +73,7 @@ type ContractFieldKey =
   | 'booking_reason'
   | 'consultation_purpose'
   | 'product'
+  | 'unit_price'
   | 'issue_summary';
 
 interface ActionContractDefinition {
@@ -231,6 +233,28 @@ function extractLikelyEmail(text: string): string | null {
   return null;
 }
 
+function isEmailOnlyMessage(messageText: string): boolean {
+  const detectedEmail = extractLikelyEmail(messageText);
+  if (!detectedEmail) return false;
+
+  const lowered = messageText.toLowerCase();
+  const withoutEmail = lowered.replace(new RegExp(detectedEmail.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
+  const stripped = withoutEmail
+    .replace(/\b(my|email|is|it('| i)?s|reach|me|at|you|can|contact)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  return stripped.length === 0;
+}
+
+function hasTechnicalIssueSignals(text: string): boolean {
+  return /(issue|problem|error|bug|failing|fails|crash|cannot|can't|unable|not working|internal server error|latency|timeout|down|failure)/i.test(text);
+}
+
+function hasConsultationOrOnboardingSignals(text: string): boolean {
+  return /(consultation|consulting|demo|sales|package|integration|onboarding|implementation|start using|start with|how can i start|how do i start|how to start|can i start|pricing|subscribe|trial)/i.test(text);
+}
+
 function shouldContinuePendingContract(actionType: ActionType, messageText: string): boolean {
   const text = messageText.trim().toLowerCase();
   if (!text) return false;
@@ -258,15 +282,21 @@ function shouldContinuePendingContract(actionType: ActionType, messageText: stri
   ];
   if (socialCheckIn.some((phrase) => text.includes(phrase))) return false;
 
+  const emailOnlyMessage = isEmailOnlyMessage(text);
+  if (emailOnlyMessage) {
+    // Email-only replies should continue only for workflows where email is a common missing intake field.
+    return actionType === 'MEETING_REQUEST' || actionType === 'CONSULTATION_REQUEST' || actionType === 'SALES_ORDER_REQUEST';
+  }
+
   if (extractLikelyEmail(text)) return true;
 
   switch (actionType) {
     case 'TECHNICAL_ISSUE':
-      return /(issue|problem|error|bug|failing|fails|crash|cannot|can\'t|unable|not working|internal server error)/i.test(text);
+      return hasTechnicalIssueSignals(text);
     case 'MEETING_REQUEST':
       return /(meeting|book|schedule|available|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday|sunday|am|pm)/i.test(text);
     case 'CONSULTATION_REQUEST':
-      return /(consultation|consulting|demo|sales|package|integration|onboarding|implementation)/i.test(text);
+      return hasConsultationOrOnboardingSignals(text);
     case 'SALES_ORDER_REQUEST':
       return /(order|buy|purchase|quantity|unit|product)/i.test(text);
     default:
@@ -536,6 +566,17 @@ export class ActionForwardingService {
     if (actionType === 'SALES_ORDER_REQUEST') {
       const productMatch = text.match(/\b(?:order|buy|purchase)\s+(?:a|an|the)?\s*([A-Za-z0-9][A-Za-z0-9\s\-]{1,80})\b/i);
       if (productMatch?.[1]) extracted.product = productMatch[1].trim();
+
+      // Extract quantity e.g. "2 of", "order 3", "I want 5"
+      const qtyMatch = text.match(/\b(?:order|want|take|buy|get|need|x)\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:of|units?|pcs?|pieces?|items?)\b/i);
+      const qtyVal = qtyMatch?.[1] ?? qtyMatch?.[2];
+      if (qtyVal) extracted.quantity = qtyVal;
+
+      // Extract price from text — the customer may repeat the price they saw from the bot
+      // e.g. "₦5,000", "N5000", "5000 naira", "NGN 5000", "$50", "for 5000"
+      const priceMatch = text.match(/(?:[₦$£€]|NGN|USD|GBP|EUR|naira)[\s]*([\d,]+(?:\.\d{1,2})?)|(?:^|\s)([\d,]+(?:\.\d{1,2})?)[\s]*(?:NGN|USD|naira|each|per item)|(?:costs?|priced?|worth|at|for)\s+(?:[₦$£€]|NGN|USD)?\s*([\d,]+(?:\.\d{1,2})?)/i);
+      const rawPrice = priceMatch?.[1] ?? priceMatch?.[2] ?? priceMatch?.[3];
+      if (rawPrice) extracted.unit_price = rawPrice.replace(/,/g, '');
     }
 
     if (actionType === 'CONSULTATION_REQUEST') {
@@ -552,7 +593,7 @@ export class ActionForwardingService {
       const summaryMatch = text.match(/\b(?:issue|problem|error|bug)(?:\s+is|\s*:\s*|\s*-\s*)(.{8,180})$/i);
       if (summaryMatch?.[1]) {
         extracted.issue_summary = summaryMatch[1].trim();
-      } else if (text.length >= 8) {
+      } else if (text.length >= 8 && hasTechnicalIssueSignals(text) && !isEmailOnlyMessage(text)) {
         // Fallback to concise first sentence/segment for issue summary.
         const fallback = text.split(/[.!?\n]/).map((part) => part.trim()).find((part) => part.length >= 8);
         if (fallback) extracted.issue_summary = fallback.slice(0, 180);
@@ -1050,6 +1091,25 @@ export class ActionForwardingService {
       };
     }
 
+    if (detected.actionType === 'TECHNICAL_ISSUE') {
+      const text = input.messageText;
+      const hasTechnicalSignals = hasTechnicalIssueSignals(text);
+      if (!hasTechnicalSignals) {
+        if (hasConsultationOrOnboardingSignals(text)) {
+          detected = {
+            actionType: 'CONSULTATION_REQUEST',
+            confidence: Math.max(detected.confidence, 0.72),
+            summary: 'Customer requested onboarding/consultation follow-up.',
+          };
+        } else if (isEmailOnlyMessage(text)) {
+          return this.buildForwardingResult({
+            status: 'NO_INTENT',
+            reason: 'NO_ACTIONABLE_INTENT',
+          });
+        }
+      }
+    }
+
     const capabilityConfig = ACTION_CAPABILITY_REGISTRY.actions[detected.actionType];
     const capabilityKey = capabilityConfig.capabilityKey;
 
@@ -1347,6 +1407,7 @@ export class ActionForwardingService {
                 customerName: collectedFields.customer_name ?? input.customerName ?? null,
                 customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
                 product: collectedFields.product ?? null,
+                unitPriceMinor: this.parsePriceToMinor(collectedFields.unit_price),
                 notes: input.messageText,
                 metadata: {
                   ...existingOrderMetadata,
@@ -1443,6 +1504,15 @@ export class ActionForwardingService {
               removeOnComplete: true,
             },
           );
+
+          if (detected.actionType === 'SALES_ORDER_REQUEST') {
+            void this.bridgeToCommerceOrder({
+              organizationId: input.organizationId,
+              botId: input.botId,
+              conversationId: input.conversationId,
+              actionTaskId: existingTask.id,
+            });
+          }
 
           const notification = buildQueuedActionNotification(detected.actionType, collectedFields, input);
           await this.notifications.createOrgNotification(
@@ -1550,6 +1620,8 @@ export class ActionForwardingService {
           customerName: collectedFields.customer_name ?? input.customerName ?? null,
           customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
           product: collectedFields.product ?? null,
+          quantity: collectedFields.quantity ? parseInt(collectedFields.quantity, 10) || null : null,
+          unitPriceMinor: this.parsePriceToMinor(collectedFields.unit_price),
           notes: input.messageText,
           metadata: {
             customFields,
@@ -1568,6 +1640,7 @@ export class ActionForwardingService {
             customerName: collectedFields.customer_name ?? input.customerName ?? null,
             customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
             product: collectedFields.product ?? null,
+            unitPrice: collectedFields.unit_price ?? null,
             followUpMissingFields,
           },
         },
@@ -1728,6 +1801,15 @@ export class ActionForwardingService {
           removeOnComplete: true,
         },
       );
+
+      if (task.actionType === 'SALES_ORDER_REQUEST') {
+        void this.bridgeToCommerceOrder({
+          organizationId: input.organizationId,
+          botId: input.botId,
+          conversationId: input.conversationId,
+          actionTaskId: task.id,
+        });
+      }
     }
 
     if (contract) {
@@ -1876,5 +1958,313 @@ export class ActionForwardingService {
     }
 
     return { ok: true, updated: true };
+  }
+
+  // ── E-commerce bridge ──────────────────────────────────────────────────────
+
+  private parsePriceToMinor(raw: string | undefined): number | null {
+    if (!raw) return null;
+    const cleaned = raw.replace(/[^0-9.]/g, '');
+    const value = parseFloat(cleaned);
+    if (isNaN(value) || value <= 0) return null;
+    return Math.round(value * 100);
+  }
+
+  private async notifyCommerceBridgeBlocked(options: {
+    organizationId: string;
+    actionTaskId: string;
+    orderId?: string;
+    reason: string;
+  }): Promise<void> {
+    await this.notifications.createOrgNotification(
+      options.organizationId,
+      'ecommerce_order_blocked',
+      'Order needs attention — payment link not sent',
+      `A customer order could not get an automatic payment link: ${options.reason}. Open Commerce to resolve it and send the link manually.`,
+      {
+        actionTaskId: options.actionTaskId,
+        commerceOrderId: options.orderId ?? null,
+      },
+    );
+  }
+
+  private async flagBlockedCommerceOrder(options: {
+    organizationId: string;
+    actionTaskId: string;
+    orderId: string;
+    existingMetadata: unknown;
+    reason: string;
+  }): Promise<void> {
+    const prismaAny = this.prisma as any;
+    const baseMetadata = options.existingMetadata && typeof options.existingMetadata === 'object'
+      ? (options.existingMetadata as Record<string, unknown>)
+      : {};
+    await prismaAny.commerceOrder.update({
+      where: { id: options.orderId },
+      data: { metadata: { ...baseMetadata, blocked: true, blockedReason: options.reason } },
+    });
+    await this.notifyCommerceBridgeBlocked({
+      organizationId: options.organizationId,
+      actionTaskId: options.actionTaskId,
+      orderId: options.orderId,
+      reason: options.reason,
+    });
+  }
+
+  private async bridgeToCommerceOrder(options: {
+    organizationId: string;
+    botId: string;
+    conversationId: string;
+    actionTaskId: string;
+  }): Promise<void> {
+    const prismaAny = this.prisma as any;
+    try {
+      const bot = await this.prisma.bot.findUnique({
+        where: { id: options.botId },
+        select: {
+          commerceStoreId: true,
+          telegramToken: true,
+          primaryChannel: true,
+          whatsappChannelIdentifier: true,
+          whatsappProvider: true,
+          whatsappConfig: true,
+        },
+      });
+
+      if (!bot?.commerceStoreId) return;
+
+      const salesOrder = await prismaAny.salesOrder.findUnique({
+        where: { actionTaskId: options.actionTaskId },
+      });
+
+      if (!salesOrder || salesOrder.commerceOrderId) return;
+
+      const unitPriceMinor = salesOrder.unitPriceMinor;
+      if (!unitPriceMinor || unitPriceMinor <= 0) {
+        this.logger.warn(`bridgeToCommerceOrder: no valid unit price for task ${options.actionTaskId}, skipping`);
+        await this.notifyCommerceBridgeBlocked({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          reason: 'the captured order has no valid price',
+        });
+        return;
+      }
+
+      const store = await prismaAny.commerceStore.findFirst({
+        where: { id: bot.commerceStoreId, organizationId: options.organizationId },
+        select: { id: true, currency: true, metadata: true },
+      });
+
+      if (!store) {
+        this.logger.warn(`bridgeToCommerceOrder: store ${bot.commerceStoreId} not found for org ${options.organizationId}`);
+        await this.notifyCommerceBridgeBlocked({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          reason: 'the connected commerce store could not be found',
+        });
+        return;
+      }
+
+      const quantity = salesOrder.quantity ?? 1;
+      const lineTotal = unitPriceMinor * quantity;
+
+      const order = await prismaAny.commerceOrder.create({
+        data: {
+          organizationId: options.organizationId,
+          storeId: store.id,
+          customerName: salesOrder.customerName ?? null,
+          customerEmail: salesOrder.customerEmail ?? null,
+          customerPhone: salesOrder.customerPhone ?? null,
+          currency: store.currency,
+          subtotalMinor: lineTotal,
+          totalMinor: lineTotal,
+          notes: `Bot order — ${salesOrder.product ?? 'product'}`,
+          status: 'DRAFT',
+          metadata: { source: 'bot', actionTaskId: options.actionTaskId, botId: options.botId },
+          items: {
+            create: {
+              lineDescription: salesOrder.product ?? null,
+              quantity,
+              unitPriceMinor,
+              lineTotalMinor: lineTotal,
+              metadata: { source: 'bot' },
+            },
+          },
+        },
+      });
+
+      await prismaAny.salesOrder.update({
+        where: { id: salesOrder.id },
+        data: { commerceOrderId: order.id },
+      });
+
+      const paystackSecret = this.config.get<string>('PAYSTACK_SECRET_KEY');
+      if (!paystackSecret || !salesOrder.customerEmail) {
+        this.logger.warn(`bridgeToCommerceOrder: missing Paystack key or customer email for order ${order.id}`);
+        await this.flagBlockedCommerceOrder({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          orderId: order.id,
+          existingMetadata: order.metadata,
+          reason: !paystackSecret ? 'Paystack is not configured' : 'the customer did not provide an email address',
+        });
+        return;
+      }
+
+      const storeMetadata = (store.metadata && typeof store.metadata === 'object' ? store.metadata : {}) as Record<string, unknown>;
+      const subaccount = typeof storeMetadata.paystackSubaccountCode === 'string' ? storeMetadata.paystackSubaccountCode : undefined;
+
+      if (!subaccount) {
+        this.logger.warn(`bridgeToCommerceOrder: store ${store.id} has no Paystack subaccount configured`);
+        await this.flagBlockedCommerceOrder({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          orderId: order.id,
+          existingMetadata: order.metadata,
+          reason: 'the store has no Paystack subaccount configured',
+        });
+        return;
+      }
+
+      const reference = `zuti_commerce_${Date.now()}_${randomBytes(6).toString('hex')}`;
+      const paystackPayload: Record<string, unknown> = {
+        amount: order.totalMinor,
+        email: salesOrder.customerEmail,
+        currency: order.currency,
+        reference,
+        subaccount,
+        metadata: { organizationId: options.organizationId, commerceOrderId: order.id, source: 'zuti-bot' },
+      };
+
+      let authorizationUrl: string | null = null;
+      let confirmedReference = reference;
+      try {
+        const response = await firstValueFrom(
+          this.http.post<{ status: boolean; data: { authorization_url: string; reference: string } }>(
+            'https://api.paystack.co/transaction/initialize',
+            paystackPayload,
+            { headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' } },
+          ),
+        );
+        authorizationUrl = response.data?.data?.authorization_url ?? null;
+        confirmedReference = response.data?.data?.reference ?? reference;
+      } catch (err) {
+        this.logger.error(`bridgeToCommerceOrder: Paystack init failed for order ${order.id}`, err);
+        await this.flagBlockedCommerceOrder({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          orderId: order.id,
+          existingMetadata: order.metadata,
+          reason: 'Paystack rejected the payment link request',
+        });
+        return;
+      }
+
+      if (!authorizationUrl) {
+        this.logger.warn(`bridgeToCommerceOrder: Paystack returned no authorization_url for order ${order.id}`);
+        await this.flagBlockedCommerceOrder({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          orderId: order.id,
+          existingMetadata: order.metadata,
+          reason: 'Paystack did not return a payment link',
+        });
+        return;
+      }
+
+      await prismaAny.commercePayment.create({
+        data: {
+          organizationId: options.organizationId,
+          orderId: order.id,
+          provider: 'PAYSTACK',
+          reference: confirmedReference,
+          amountMinor: order.totalMinor,
+          currency: order.currency,
+          status: 'PENDING',
+          authorizationUrl,
+          metadata: { source: 'bot', botId: options.botId, subaccount },
+        },
+      });
+
+      await prismaAny.commerceOrder.update({
+        where: { id: order.id },
+        data: { status: 'PENDING_PAYMENT', paymentStatus: 'PENDING' },
+      });
+
+      await this.sendPaymentLinkToCustomer({
+        organizationId: options.organizationId,
+        conversationId: options.conversationId,
+        bot,
+        authorizationUrl,
+        orderId: order.id,
+        product: salesOrder.product,
+        totalMinor: order.totalMinor,
+        currency: store.currency,
+      });
+    } catch (err) {
+      this.logger.error(`bridgeToCommerceOrder failed for task ${options.actionTaskId}`, err);
+      try {
+        await this.notifyCommerceBridgeBlocked({
+          organizationId: options.organizationId,
+          actionTaskId: options.actionTaskId,
+          reason: 'an unexpected error occurred while processing the order',
+        });
+      } catch (notifyErr) {
+        this.logger.error(`bridgeToCommerceOrder: failed to notify org for task ${options.actionTaskId}`, notifyErr);
+      }
+    }
+  }
+
+  private async sendPaymentLinkToCustomer(options: {
+    organizationId: string;
+    conversationId: string;
+    bot: {
+      telegramToken: string | null;
+      primaryChannel: string;
+      whatsappChannelIdentifier: string | null;
+      whatsappProvider: string | null;
+      whatsappConfig: unknown;
+    };
+    authorizationUrl: string;
+    orderId: string;
+    product: string | null;
+    totalMinor: number;
+    currency: string;
+  }): Promise<void> {
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: options.conversationId },
+      select: { channel: true, telegramChatId: true, whatsappPhoneNumber: true },
+    });
+
+    if (!conversation) return;
+
+    const formattedTotal = (options.totalMinor / 100).toLocaleString('en-NG', {
+      style: 'currency',
+      currency: options.currency,
+      minimumFractionDigits: 0,
+    });
+    const orderRef = options.orderId.slice(-8).toUpperCase();
+    const productLine = options.product ? `Product: ${options.product}\n` : '';
+    const message = `Your order has been received!\n\n${productLine}Total: ${formattedTotal}\n\nComplete your payment here:\n${options.authorizationUrl}\n\nOrder ref: #${orderRef}`;
+
+    try {
+      if (conversation.channel === 'TELEGRAM' && conversation.telegramChatId && options.bot.telegramToken) {
+        await firstValueFrom(
+          this.http.post(
+            `https://api.telegram.org/bot${options.bot.telegramToken}/sendMessage`,
+            { chat_id: conversation.telegramChatId, text: message },
+          ),
+        );
+      } else if (conversation.channel === 'WHATSAPP' && conversation.whatsappPhoneNumber) {
+        const connection = {
+          provider: options.bot.whatsappProvider as 'META' | 'TWILIO' | null,
+          channelIdentifier: options.bot.whatsappChannelIdentifier,
+          config: options.bot.whatsappConfig,
+        };
+        await sendWhatsAppText(this.http, connection, conversation.whatsappPhoneNumber, message);
+      }
+    } catch (err) {
+      this.logger.error(`sendPaymentLinkToCustomer failed for conversation ${options.conversationId}`, err);
+    }
   }
 }

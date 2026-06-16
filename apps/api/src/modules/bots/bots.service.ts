@@ -43,7 +43,7 @@ function estimateUsageCredits(promptTokens: number, completionTokens: number): n
   return computeUsageCredits(promptTokens, completionTokens, 1);
 }
 
-type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
 type BotSkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 type CapabilitySkill = 'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING';
 type BotMode = 'GENERALIST' | 'SPECIALIST';
@@ -420,6 +420,25 @@ function getTemplatePreset(template: BotTemplate) {
         },
         actionForwardingEnabled: true,
       };
+    case 'ECOMMERCE':
+      return {
+        capabilities: {
+          canCreateLead: false,
+          canCreateOrder: true,
+          canNotifyOwner: true,
+          canNotifyTeam: false,
+          canCreateMeetingRequest: false,
+          canCreateTechnicalIssue: false,
+        },
+        actionForwardingEnabled: true,
+        aiConfig: {
+          guidedPreset: 'ecommerce',
+          mission: 'Help customers discover products and place orders. You are a friendly, persuasive sales assistant who knows the product catalog well. Guide customers toward purchase, collect their order details, and confirm their order before submitting.',
+          persona: 'Persuasive sales assistant',
+          tone: 'Friendly and conversational',
+          escalationPolicy: 'Only escalate if the customer explicitly asks to speak with a human.',
+        },
+      };
     case 'GENERAL':
     default:
       return {
@@ -437,7 +456,7 @@ function getTemplatePreset(template: BotTemplate) {
 }
 
 function getTemplateCatalog() {
-  const templates: BotTemplate[] = ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL'];
+  const templates: BotTemplate[] = ['GENERAL', 'SALES', 'SUPPORT', 'BOOKING', 'TECHNICAL', 'ECOMMERCE'];
   return templates.map((template) => {
     const preset = getTemplatePreset(template);
     return {
@@ -449,6 +468,7 @@ function getTemplateCatalog() {
         SUPPORT: 'Support-focused bot with technical issue forwarding.',
         BOOKING: 'Meeting and scheduling focused bot.',
         TECHNICAL: 'Technical issue and incident intake bot.',
+        ECOMMERCE: 'Sales-first bot that takes product orders and sends customers a payment link automatically.',
       }[template],
       actionForwardingEnabled: preset.actionForwardingEnabled,
       capabilities: preset.capabilities,
@@ -541,24 +561,42 @@ export class BotsService {
       dto.actionForwardingEnabled ?? true,
     );
     const requestedSkills = specialistResolution.skills;
-    const template: BotTemplate = specialistResolution.mode === 'SPECIALIST' && specialistResolution.specialistSkill
-      ? templateForSpecialistSkill(specialistResolution.specialistSkill)
-      : 'GENERAL';
-    const capabilities = buildCapabilitiesFromSkills(requestedSkills);
-    const actionForwardingEnabled = requestedSkills.includes('FORWARDING');
-    const aiConfig: Record<string, unknown> = specialistResolution.mode === 'SPECIALIST' && specialistResolution.specialistSkill
-      ? {
-          specialistProfile: {
-            mode: 'SPECIALIST',
-            skill: specialistResolution.specialistSkill,
-            strictScope: true,
-          },
-        }
-      : {};
+    const isEcommerceTemplate = dto.template === 'ECOMMERCE';
+    const template: BotTemplate = isEcommerceTemplate
+      ? 'ECOMMERCE'
+      : specialistResolution.mode === 'SPECIALIST' && specialistResolution.specialistSkill
+        ? templateForSpecialistSkill(specialistResolution.specialistSkill)
+        : 'GENERAL';
+    const ecommercePreset = isEcommerceTemplate ? getTemplatePreset('ECOMMERCE') : null;
+    const capabilities = isEcommerceTemplate
+      ? ecommercePreset!.capabilities
+      : buildCapabilitiesFromSkills(requestedSkills);
+    const actionForwardingEnabled = isEcommerceTemplate
+      ? true
+      : requestedSkills.includes('FORWARDING');
+    const aiConfig: Record<string, unknown> = isEcommerceTemplate
+      ? { ...(ecommercePreset!.aiConfig ?? {}) }
+      : specialistResolution.mode === 'SPECIALIST' && specialistResolution.specialistSkill
+        ? {
+            specialistProfile: {
+              mode: 'SPECIALIST',
+              skill: specialistResolution.specialistSkill,
+              strictScope: true,
+            },
+          }
+        : {};
 
     if (actionForwardingEnabled) {
       const hasRoute = await this.hasForwardingRouteConfiguration(organizationId);
       if (!hasRoute) this.throwForwardingConfigurationRequired();
+    }
+
+    if (dto.commerceStoreId) {
+      const storeExists = await this.prisma.commerceStore.findFirst({
+        where: { id: dto.commerceStoreId, organizationId },
+        select: { id: true },
+      });
+      if (!storeExists) throw new NotFoundException('Commerce store not found');
     }
 
     if (needsTelegram && !telegramToken) {
@@ -620,6 +658,7 @@ export class BotsService {
         template,
         capabilities: capabilities as any,
         actionForwardingEnabled,
+        ...(dto.commerceStoreId && { commerceStoreId: dto.commerceStoreId }),
       },
     });
     return this.sanitizeBot(created as any);
@@ -718,6 +757,14 @@ export class BotsService {
       if (!hasRoute) this.throwForwardingConfigurationRequired();
     }
 
+    if (dto.commerceStoreId) {
+      const storeExists = await this.prisma.commerceStore.findFirst({
+        where: { id: dto.commerceStoreId, organizationId },
+        select: { id: true },
+      });
+      if (!storeExists) throw new NotFoundException('Commerce store not found');
+    }
+
     if (widgetWillBeEnabled && resolvedAllowedDomains.length === 0) {
       throw new BadRequestException('Set at least one allowed widget domain before enabling the web widget channel');
     }
@@ -797,6 +844,7 @@ export class BotsService {
         ...(resolvedTemplate !== undefined && { template: resolvedTemplate as BotTemplate }),
         ...(resolvedActionForwardingEnabled !== undefined && { actionForwardingEnabled: resolvedActionForwardingEnabled }),
         ...((enableWidget && !existing.webWidgetKey) && { webWidgetKey: this.generateWidgetKey() }),
+        ...(dto.commerceStoreId !== undefined && { commerceStoreId: dto.commerceStoreId || null }),
       },
     });
     return this.sanitizeBot(updated as any);
