@@ -331,9 +331,10 @@ export const botsApi = {
       whatsappPhoneNumber?: string;
       whatsappDisplayName?: string;
       whatsappConfig?: Record<string, unknown>;
-      template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+      template?: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
       skills?: Array<'SALES' | 'BOOKING' | 'SUPPORT' | 'TECHNICAL' | 'FORWARDING'>;
       actionForwardingEnabled?: boolean;
+      commerceStoreId?: string;
     },
   ) => api.post(`/organizations/${orgId}/bots`, data),
   update: (orgId: string, botId: string, data: Record<string, unknown>) =>
@@ -436,6 +437,11 @@ export const conversationsApi = {
     params: { days: String(days), ...(botId ? { botId } : {}) },
     ...config,
   }),
+};
+
+// ── Commerce ─────────────────────────────────────────────────────────────────
+export const commerceApi = {
+  listStores: (orgId: string) => api.get(`/organizations/${orgId}/commerce/stores`),
 };
 
 // ── Canned Responses ──────────────────────────────────────────────────────────

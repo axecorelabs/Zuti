@@ -231,6 +231,9 @@ model Bot {
   capabilities   Json     @default("{}")
   actionForwardingEnabled Boolean @default(false)
 
+  // ── Commerce ──────────────────────────────────────────────────────────────
+  commerceStoreId String?
+
   // ── Email channel ─────────────────────────────────────────────────────────
   // Option B: Zuti-hosted address (auto-generated, zero user DNS setup)
   emailEnabled          Boolean  @default(false)
@@ -254,6 +257,7 @@ model Bot {
   updatedAt      DateTime @updatedAt
 
   organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  commerceStore  CommerceStore? @relation(fields: [commerceStoreId], references: [id], onDelete: SetNull)
   conversations  Conversation[]
   contactPolicies ContactPolicy[]
   actionTasks ActionTask[]
@@ -269,6 +273,7 @@ enum BotTemplate {
   SUPPORT
   BOOKING
   TECHNICAL
+  ECOMMERCE
 }
 
 enum BotPrimaryChannel {
@@ -714,15 +719,18 @@ model SalesOrder {
   customerPhone         String?
   product               String?
   quantity              Int?
+  unitPriceMinor        Int?
+  commerceOrderId       String?  @unique
   notes                 String?
   status                String   @default("NEW")
   metadata              Json     @default("{}")
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
-  organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
-  actionTask            ActionTask   @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+  organization          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot                   Bot           @relation(fields: [botId], references: [id], onDelete: Cascade)
+  actionTask            ActionTask    @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+  commerceOrder         CommerceOrder? @relation(fields: [commerceOrderId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([orgId, customerEmail])
@@ -799,6 +807,7 @@ model CommerceStore {
   updatedAt      DateTime @updatedAt
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bots           Bot[]
   locations      CommerceLocation[]
   products       CommerceProduct[]
   orders         CommerceOrder[]
@@ -913,26 +922,28 @@ model CommerceOrder {
   store           CommerceStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
   items           CommerceOrderItem[]
   payments        CommercePayment[]
+  salesOrder      SalesOrder?
 
   @@index([organizationId, status, createdAt(sort: Desc)])
   @@index([storeId, status, createdAt(sort: Desc)])
 }
 
 model CommerceOrderItem {
-  id             String   @id @default(cuid())
-  orderId        String
-  variantId      String
-  locationId     String?
-  quantity       Int      @default(1)
-  unitPriceMinor Int
-  lineTotalMinor Int
-  metadata       Json     @default("{}")
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id              String   @id @default(cuid())
+  orderId         String
+  variantId       String?
+  lineDescription String?
+  locationId      String?
+  quantity        Int      @default(1)
+  unitPriceMinor  Int
+  lineTotalMinor  Int
+  metadata        Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  order          CommerceOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  variant        CommerceVariant @relation(fields: [variantId], references: [id], onDelete: Restrict)
-  location       CommerceLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  order           CommerceOrder    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  variant         CommerceVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict)
+  location        CommerceLocation? @relation(fields: [locationId], references: [id], onDelete: SetNull)
 
   @@index([orderId])
   @@index([variantId])

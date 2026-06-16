@@ -2,9 +2,9 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown, MessageCircle } from 'lucide-react';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown, MessageCircle, ShoppingCart } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { botsApi, orgsApi } from '@/lib/api';
+import { botsApi, orgsApi, commerceApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 import { BotKnowledgeTab } from '@/components/bots/bot-knowledge-tab';
 
@@ -583,7 +583,9 @@ interface BotRecord {
   id: string;
   name: string;
   primaryChannel: 'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL' | 'WHATSAPP';
-  template: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL';
+  template: 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
+  commerceStoreId?: string | null;
+  commerceStore?: { id: string; name: string } | null;
   skills?: BotSkill[];
   capabilities?: Record<string, unknown>;
   actionForwardingEnabled: boolean;
@@ -657,6 +659,11 @@ function BotsPageContent() {
   const [createTelegramToken, setCreateTelegramToken] = useState('');
   const [createWidgetDomains, setCreateWidgetDomains] = useState('');
   const [createActionForwardingEnabled, setCreateActionForwardingEnabled] = useState(true);
+  const [createBotType, setCreateBotType] = useState<'GENERAL' | 'ECOMMERCE'>('GENERAL');
+  const [createCommerceStoreId, setCreateCommerceStoreId] = useState('');
+  const [orgCommerceStores, setOrgCommerceStores] = useState<{ id: string; name: string }[]>([]);
+  const [editCommerceStoreId, setEditCommerceStoreId] = useState('');
+  const [commerceSaving, setCommerceSaving] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [settingsBot, setSettingsBot] = useState<BotRecord | null>(null);
   const [editAgentAlias, setEditAgentAlias] = useState('');
@@ -692,7 +699,7 @@ function BotsPageContent() {
   const [editWidgetEnabled, setEditWidgetEnabled] = useState(false);
   const [editWidgetDomains, setEditWidgetDomains] = useState('');
   const [widgetSnippetType, setWidgetSnippetType] = useState<WidgetSnippetType>('html');
-  const [settingsTab, setSettingsTab] = useState<'ai' | 'skills' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram' | 'whatsapp'>('ai');
+  const [settingsTab, setSettingsTab] = useState<'ai' | 'skills' | 'knowledge' | 'routing' | 'widget' | 'email' | 'telegram' | 'whatsapp' | 'commerce'>('ai');
   const [saving, setSaving] = useState(false);
   const [emailLocalPart, setEmailLocalPart] = useState('');
   const [emailSaving, setEmailSaving] = useState(false);
@@ -782,6 +789,12 @@ function BotsPageContent() {
   useEffect(() => {
     if (!orgId) return;
     botsApi.list(orgId).then((res) => setBots(res.data)).catch(() => {}).finally(() => setLoading(false));
+    commerceApi.listStores(orgId)
+      .then((res) => {
+        const stores = (res.data ?? []) as { id: string; name: string }[];
+        setOrgCommerceStores(stores);
+      })
+      .catch(() => {});
   }, [orgId]);
 
   useEffect(() => {
@@ -967,6 +980,8 @@ function BotsPageContent() {
     setCreateTelegramToken('');
     setCreateWidgetDomains('');
     setCreateActionForwardingEnabled(true);
+    setCreateBotType('GENERAL');
+    setCreateCommerceStoreId('');
     setShowCreate(true);
   };
 
@@ -985,11 +1000,14 @@ function BotsPageContent() {
         .map((domain) => domain.trim())
         .filter(Boolean);
 
+      const isEcommerce = createBotType === 'ECOMMERCE';
       const payload = {
         name: createName,
         primaryChannel: createPrimaryChannel,
-        skills: createActionForwardingEnabled ? (['FORWARDING'] as BotSkill[]) : ([] as BotSkill[]),
-        actionForwardingEnabled: createActionForwardingEnabled,
+        skills: (isEcommerce || createActionForwardingEnabled) ? (['FORWARDING'] as BotSkill[]) : ([] as BotSkill[]),
+        actionForwardingEnabled: isEcommerce ? true : createActionForwardingEnabled,
+        ...(isEcommerce ? { template: 'ECOMMERCE' as const } : {}),
+        ...(isEcommerce && createCommerceStoreId ? { commerceStoreId: createCommerceStoreId } : {}),
         ...(createPrimaryChannel === 'TELEGRAM' ? { telegramToken: createTelegramToken } : {}),
         ...(createPrimaryChannel === 'WEB_WIDGET' ? { webWidgetAllowedDomains: createAllowedDomains } : {}),
       };
@@ -1002,6 +1020,8 @@ function BotsPageContent() {
       setCreateTelegramToken('');
       setCreateWidgetDomains('');
       setCreateActionForwardingEnabled(true);
+      setCreateBotType('GENERAL');
+      setCreateCommerceStoreId('');
       toast.success('Bot created');
     } catch (err: unknown) {
       if (handleForwardingConfigRequired(err)) return;
@@ -1282,6 +1302,7 @@ onBeforeUnmount(() => {
     setEditWhatsAppTwilioAccountSid('');
     setEditWhatsAppTwilioAuthToken('');
     setEditWhatsAppTwilioMessagingServiceSid('');
+    setEditCommerceStoreId(sourceBot.commerceStoreId ?? '');
     setSettingsTab('ai');
   };
 
@@ -1490,6 +1511,23 @@ onBeforeUnmount(() => {
         toast.error('Failed to save settings');
       }
     } finally { setSaving(false); }
+  };
+
+  const handleSaveCommerce = async () => {
+    if (!orgId || !settingsBot) return;
+    setCommerceSaving(true);
+    try {
+      const res = await botsApi.update(orgId, settingsBot.id, {
+        commerceStoreId: editCommerceStoreId || null,
+      });
+      setBots((prev) => prev.map((b) => (b.id === settingsBot.id ? res.data : b)));
+      setSettingsBot(res.data as BotRecord);
+      toast.success('Commerce store updated');
+    } catch {
+      toast.error('Failed to update commerce store');
+    } finally {
+      setCommerceSaving(false);
+    }
   };
 
   const handleEnableEmail = async () => {
@@ -1947,35 +1985,38 @@ onBeforeUnmount(() => {
                 ? 'Knowledge Packs'
                 : settingsTab === 'routing'
                   ? 'Escalation Routing'
-                  : settingsTab === 'email'
-                    ? 'Email Channel'
-                    : settingsTab === 'whatsapp'
-                      ? 'WhatsApp Channel'
-                    : settingsTab === 'telegram'
-                      ? 'Telegram Channel'
-                      : 'Website Widget'}
+                  : settingsTab === 'commerce'
+                    ? 'Commerce'
+                    : settingsTab === 'email'
+                      ? 'Email Channel'
+                      : settingsTab === 'whatsapp'
+                        ? 'WhatsApp Channel'
+                      : settingsTab === 'telegram'
+                        ? 'Telegram Channel'
+                        : 'Website Widget'}
           </span>
         </div>
 
         <div className="mb-6">
-          <div className="ai-settings-tabs inline-flex rounded-xl border border-zinc-800 bg-zinc-900/70 p-1">
+          <div className="ai-settings-tabs inline-flex rounded-xl border border-zinc-800 bg-zinc-900/70 p-1 flex-wrap gap-y-1">
             {([
               { key: 'ai', label: 'Behavior' },
               { key: 'skills', label: 'Skills' },
               { key: 'knowledge', label: 'Knowledge' },
               { key: 'routing', label: 'Routing' },
+              ...(settingsBot?.template === 'ECOMMERCE' ? [{ key: 'commerce', label: 'Commerce' }] : []),
               { key: 'widget', label: 'Widget' },
               { key: 'email', label: 'Email' },
               { key: 'whatsapp', label: 'WhatsApp' },
               { key: 'telegram', label: 'Telegram' },
-            ] as const).map((tab) => (
+            ] as { key: 'ai' | 'skills' | 'knowledge' | 'routing' | 'commerce' | 'widget' | 'email' | 'whatsapp' | 'telegram'; label: string }[]).map((tab) => (
               <button
                 key={tab.key}
                 type="button"
                 onClick={() => setSettingsTab(tab.key)}
                 className={`ai-settings-tab-btn px-4 py-1.5 rounded-lg text-xs font-medium transition-colors ${
                   settingsTab === tab.key
-                    ? 'is-active bg-blue-600 text-white'
+                    ? `is-active text-white ${tab.key === 'commerce' ? 'bg-emerald-600' : 'bg-blue-600'}`
                     : 'text-zinc-400 hover:text-white hover:bg-zinc-800'
                 }`}
               >
@@ -2228,6 +2269,59 @@ onBeforeUnmount(() => {
               <p className="text-[11px] text-zinc-600 mt-3 font-light">
                 At least one role must be selected. Availability and capacity limits still apply.
               </p>
+            </div>
+            )}
+
+            {/* Commerce */}
+            {settingsTab === 'commerce' && (
+            <div className="card p-6 border border-zinc-800">
+              <div className="flex items-center gap-3 mb-5">
+                <div className="w-8 h-8 rounded-lg bg-emerald-900/30 border border-emerald-800/40 flex items-center justify-center shrink-0">
+                  <ShoppingCart className="w-4 h-4 text-emerald-400" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-semibold text-white">Commerce Store</h2>
+                  <p className="text-xs text-zinc-500 font-light">Link a Zuti Commerce store to receive bot-captured orders and generate payment links automatically.</p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Connected store</label>
+                  <select
+                    value={editCommerceStoreId}
+                    onChange={(e) => setEditCommerceStoreId(e.target.value)}
+                    className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-emerald-600/50 transition-colors"
+                  >
+                    <option value="">No store connected</option>
+                    {orgCommerceStores.map((store) => (
+                      <option key={store.id} value={store.id}>{store.name}</option>
+                    ))}
+                  </select>
+                  {orgCommerceStores.length === 0 && (
+                    <p className="mt-1.5 text-[11px] text-zinc-600">No commerce stores found. Create one in the Commerce section first.</p>
+                  )}
+                </div>
+
+                {editCommerceStoreId ? (
+                  <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/30 px-3 py-2.5 text-[11px] text-emerald-600">
+                    Orders captured by this bot will be created in the selected store. A Paystack payment link will be generated and sent to the customer automatically.
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 px-3 py-2.5 text-[11px] text-zinc-500">
+                    Without a connected store, orders are forwarded to your team but no payment link is generated.
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleSaveCommerce}
+                  disabled={commerceSaving}
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                >
+                  {commerceSaving ? 'Saving…' : 'Save'}
+                </button>
+              </div>
             </div>
             )}
 
@@ -2752,7 +2846,7 @@ onBeforeUnmount(() => {
               >
                 ← Back to bots
               </button>
-              {settingsTab !== 'knowledge' && (
+              {settingsTab !== 'knowledge' && settingsTab !== 'commerce' && (
                 <button
                   onClick={handleSaveSettings}
                   disabled={saving || !hasUnsavedSettingsChanges}
@@ -2762,7 +2856,7 @@ onBeforeUnmount(() => {
                 </button>
               )}
             </div>
-            {settingsTab !== 'knowledge' && hasUnsavedSettingsChanges && !settingsValidationError && (
+            {settingsTab !== 'knowledge' && settingsTab !== 'commerce' && hasUnsavedSettingsChanges && !settingsValidationError && (
               <div className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
                 <p className="text-xs text-amber-300">You have unsaved changes. Click &quot;Save changes&quot; to persist them.</p>
               </div>
@@ -3304,54 +3398,117 @@ onBeforeUnmount(() => {
             <form onSubmit={handleCreate} className="space-y-5">
               {createStep === 1 && (
                 <div className="space-y-5">
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3">
-                    <p className="text-sm text-zinc-200 font-medium">Default behavior</p>
-                    <p className="text-[11px] text-zinc-500 mt-0.5">
-                      New bots are created as General by default. You can enable Sales, Booking, Support, and Technical skills later in bot settings.
-                    </p>
-                  </div>
-
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3 flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-sm text-zinc-200 font-medium">Action forwarding</p>
-                      <p className="text-[11px] text-zinc-500 mt-0.5">Forward actionable intents to owner or team contacts.</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (createActionForwardingEnabled) {
-                          setCreateActionForwardingEnabled(false);
-                          return;
-                        }
-                        try {
-                          const hasConfig = await hasOrgForwardingConfiguration();
-                          if (!hasConfig) {
-                            redirectToForwardingSettings('Set up forwarding endpoints and default policy first.');
-                            return;
-                          }
-                          setCreateActionForwardingEnabled(true);
-                        } catch {
-                          toast.error('Unable to verify forwarding settings right now.');
-                        }
-                      }}
-                      className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                        createActionForwardingEnabled ? 'bg-blue-600' : 'bg-zinc-700'
-                      }`}
-                    >
-                      <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${createActionForwardingEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                    </button>
-                  </div>
-
-                  {!createActionForwardingEnabled && (
-                    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 flex items-center justify-between gap-3">
-                      <p className="text-[11px] text-zinc-500">Want forwarding enabled? Configure endpoints first for a smooth setup.</p>
+                  {/* Bot type selector */}
+                  <div>
+                    <label className="block text-xs text-zinc-400 mb-2 font-medium">Bot type</label>
+                    <div className="grid grid-cols-2 gap-3">
                       <button
                         type="button"
-                        onClick={() => redirectToForwardingSettings('Opening forwarding settings...')}
-                        className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300"
+                        onClick={() => setCreateBotType('GENERAL')}
+                        className={`flex flex-col items-start gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${
+                          createBotType === 'GENERAL'
+                            ? 'border-blue-500/40 bg-blue-500/10'
+                            : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
+                        }`}
                       >
-                        Configure now <ExternalLink className="w-3 h-3" />
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${createBotType === 'GENERAL' ? 'bg-blue-600/20' : 'bg-zinc-800'}`}>
+                          <Bot className={`w-4 h-4 ${createBotType === 'GENERAL' ? 'text-blue-400' : 'text-zinc-500'}`} />
+                        </div>
+                        <div>
+                          <p className={`text-sm font-medium ${createBotType === 'GENERAL' ? 'text-blue-300' : 'text-zinc-300'}`}>General Bot</p>
+                          <p className="text-[11px] text-zinc-500 mt-0.5">Chat, support, bookings. Enable skills in settings.</p>
+                        </div>
                       </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreateBotType('ECOMMERCE')}
+                        className={`flex flex-col items-start gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${
+                          createBotType === 'ECOMMERCE'
+                            ? 'border-emerald-500/40 bg-emerald-500/10'
+                            : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
+                        }`}
+                      >
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${createBotType === 'ECOMMERCE' ? 'bg-emerald-600/20' : 'bg-zinc-800'}`}>
+                          <ShoppingCart className={`w-4 h-4 ${createBotType === 'ECOMMERCE' ? 'text-emerald-400' : 'text-zinc-500'}`} />
+                        </div>
+                        <div>
+                          <p className={`text-sm font-medium ${createBotType === 'ECOMMERCE' ? 'text-emerald-300' : 'text-zinc-300'}`}>E-commerce Bot</p>
+                          <p className="text-[11px] text-zinc-500 mt-0.5">Sells products, takes orders, sends payment links.</p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {createBotType === 'ECOMMERCE' && (
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Commerce store <span className="text-zinc-600">(optional — can connect later)</span></label>
+                      <select
+                        value={createCommerceStoreId}
+                        onChange={(e) => setCreateCommerceStoreId(e.target.value)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-3 text-sm text-zinc-200 focus:outline-none focus:border-emerald-600/50 transition-colors"
+                      >
+                        <option value="">No store selected</option>
+                        {orgCommerceStores.map((store) => (
+                          <option key={store.id} value={store.id}>{store.name}</option>
+                        ))}
+                      </select>
+                      {orgCommerceStores.length === 0 && (
+                        <p className="mt-1.5 text-[11px] text-zinc-600">No commerce stores found. Create one in the Commerce section first.</p>
+                      )}
+                    </div>
+                  )}
+
+                  {createBotType === 'GENERAL' && (
+                    <>
+                      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3 flex items-center justify-between gap-4">
+                        <div>
+                          <p className="text-sm text-zinc-200 font-medium">Action forwarding</p>
+                          <p className="text-[11px] text-zinc-500 mt-0.5">Forward actionable intents to owner or team contacts.</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (createActionForwardingEnabled) {
+                              setCreateActionForwardingEnabled(false);
+                              return;
+                            }
+                            try {
+                              const hasConfig = await hasOrgForwardingConfiguration();
+                              if (!hasConfig) {
+                                redirectToForwardingSettings('Set up forwarding endpoints and default policy first.');
+                                return;
+                              }
+                              setCreateActionForwardingEnabled(true);
+                            } catch {
+                              toast.error('Unable to verify forwarding settings right now.');
+                            }
+                          }}
+                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                            createActionForwardingEnabled ? 'bg-blue-600' : 'bg-zinc-700'
+                          }`}
+                        >
+                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${createActionForwardingEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                        </button>
+                      </div>
+
+                      {!createActionForwardingEnabled && (
+                        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 flex items-center justify-between gap-3">
+                          <p className="text-[11px] text-zinc-500">Want forwarding enabled? Configure endpoints first for a smooth setup.</p>
+                          <button
+                            type="button"
+                            onClick={() => redirectToForwardingSettings('Opening forwarding settings...')}
+                            className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300"
+                          >
+                            Configure now <ExternalLink className="w-3 h-3" />
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {createBotType === 'ECOMMERCE' && (
+                    <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/30 px-3 py-2.5 text-[11px] text-emerald-600">
+                      Action forwarding is always enabled for E-commerce bots — orders are routed automatically.
                     </div>
                   )}
                 </div>
@@ -3453,12 +3610,20 @@ onBeforeUnmount(() => {
                   <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-xs text-zinc-500 uppercase tracking-[0.2em]">Bot mode</p>
-                        <p className="text-sm text-white font-medium mt-1">General</p>
-                        <p className="text-xs text-zinc-500 mt-1">Skills can be enabled in bot settings after creation.</p>
+                        <p className="text-xs text-zinc-500 uppercase tracking-[0.2em]">Bot type</p>
+                        <p className="text-sm text-white font-medium mt-1">{createBotType === 'ECOMMERCE' ? 'E-commerce Bot' : 'General Bot'}</p>
+                        <p className="text-xs text-zinc-500 mt-1">
+                          {createBotType === 'ECOMMERCE'
+                            ? 'Takes product orders and sends payment links automatically.'
+                            : 'Skills can be enabled in bot settings after creation.'}
+                        </p>
                       </div>
-                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-400">
-                        {createActionForwardingEnabled ? 'Forwarding enabled' : 'Forwarding disabled'}
+                      <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
+                        createBotType === 'ECOMMERCE'
+                          ? 'bg-emerald-900/40 text-emerald-400'
+                          : 'bg-zinc-800 text-zinc-400'
+                      }`}>
+                        {createBotType === 'ECOMMERCE' ? 'Forwarding always on' : (createActionForwardingEnabled ? 'Forwarding enabled' : 'Forwarding disabled')}
                       </span>
                     </div>
                     <div className="grid gap-2 text-sm text-zinc-300">
@@ -3470,10 +3635,12 @@ onBeforeUnmount(() => {
                         <span className="text-zinc-500">Primary channel</span>
                         <span className="text-white font-medium">{createPrimaryChannel.replace('_', ' ')}</span>
                       </div>
-                      <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
-                        <span className="text-zinc-500">Forwarding</span>
-                        <span className="text-white font-medium">{createActionForwardingEnabled ? 'On' : 'Off'}</span>
-                      </div>
+                      {createBotType === 'ECOMMERCE' && createCommerceStoreId && (
+                        <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                          <span className="text-zinc-500">Commerce store</span>
+                          <span className="text-white font-medium">{orgCommerceStores.find((s) => s.id === createCommerceStoreId)?.name ?? createCommerceStoreId}</span>
+                        </div>
+                      )}
                       {createPrimaryChannel === 'WEB_WIDGET' ? (
                         <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
                           <span className="text-zinc-500">Allowed domains</span>
@@ -3585,6 +3752,11 @@ onBeforeUnmount(() => {
                     <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-400">
                       {bot.primaryChannel === 'TELEGRAM' ? 'Telegram' : 'Website Widget'}
                     </span>
+                    {bot.template === 'ECOMMERCE' && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-emerald-900/40 text-emerald-400">
+                        E-commerce
+                      </span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
