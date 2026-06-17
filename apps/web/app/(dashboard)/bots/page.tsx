@@ -2034,62 +2034,81 @@ onBeforeUnmount(() => {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <h2 className="text-sm font-semibold text-white">Bot Skills</h2>
-                    <p className="text-xs text-zinc-500 font-light">Turn skills on or off any time. You can enable multiple skills on one bot.</p>
+                    <p className="text-xs text-zinc-500 font-light">
+                      {settingsBot?.template === 'ECOMMERCE'
+                        ? 'E-commerce bots have fixed skills optimised for selling and order capture.'
+                        : 'Turn skills on or off any time. You can enable multiple skills on one bot.'}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
-                      Enabled: <span className="text-white font-medium">{editSkills.length}</span>
+                  {settingsBot?.template !== 'ECOMMERCE' && (
+                    <div className="flex items-center gap-2">
+                      <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
+                        Enabled: <span className="text-white font-medium">{editSkills.length}</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSaveSkillsOnly}
+                        disabled={!hasUnsavedSkillChanges || skillsSaving}
+                        className="text-[11px] px-2.5 py-1 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {skillsSaving ? 'Saving...' : 'Save skill changes'}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleSaveSkillsOnly}
-                      disabled={!hasUnsavedSkillChanges || skillsSaving}
-                      className="text-[11px] px-2.5 py-1 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {skillsSaving ? 'Saving...' : 'Save skill changes'}
-                    </button>
-                  </div>
+                  )}
                 </div>
 
-                {hasUnsavedSkillChanges && (
+                {settingsBot?.template === 'ECOMMERCE' && (
+                  <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-2.5">
+                    <p className="text-[11px] text-emerald-300">Action Forwarding and Sales are always on for E-commerce bots and cannot be changed. Booking, Support, and Technical skills are not available for this bot type.</p>
+                  </div>
+                )}
+
+                {settingsBot?.template !== 'ECOMMERCE' && hasUnsavedSkillChanges && (
                   <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
                     <p className="text-[11px] text-amber-300">You have unsaved skill changes. Click "Save skill changes" to persist.</p>
                   </div>
                 )}
 
                 <div className="space-y-2">
-                  {BOT_SKILL_OPTIONS.map((skill) => {
-                    const intakeKey = intakeKeyForSkillCard(skill.skill);
-                    const skillEnabled = editSkills.includes(skill.skill);
-                    return (
-                    <div
-                      key={skill.skill}
-                      className={`rounded-xl border px-3 py-3 transition-all duration-200 ${
-                        skillEnabled
-                          ? 'border-blue-500/50 bg-blue-500/10 text-white shadow-[0_0_0_1px_rgba(59,130,246,0.12)]'
-                          : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-white leading-none">{skill.name}</div>
-                          <div className="mt-1 text-[11px] leading-4 text-zinc-500">{skill.description}</div>
+                  {BOT_SKILL_OPTIONS
+                    .filter((s) => settingsBot?.template !== 'ECOMMERCE' || s.skill === 'FORWARDING' || s.skill === 'SALES')
+                    .map((skill) => {
+                      const isEcommerceBot = settingsBot?.template === 'ECOMMERCE';
+                      const intakeKey = intakeKeyForSkillCard(skill.skill);
+                      const skillEnabled = isEcommerceBot ? true : editSkills.includes(skill.skill);
+                      return (
+                      <div
+                        key={skill.skill}
+                        className={`rounded-xl border px-3 py-3 transition-all duration-200 ${
+                          skillEnabled
+                            ? 'border-blue-500/50 bg-blue-500/10 text-white shadow-[0_0_0_1px_rgba(59,130,246,0.12)]'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <div className="text-sm font-semibold text-white leading-none">{skill.name}</div>
+                              {isEcommerceBot && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Always on</span>}
+                            </div>
+                            <div className="mt-1 text-[11px] leading-4 text-zinc-500">{skill.description}</div>
+                          </div>
+                          <button
+                            type="button"
+                            aria-label={`${skillEnabled ? 'Disable' : 'Enable'} ${skill.name} skill`}
+                            onClick={() => !isEcommerceBot && toggleSkill(skill.skill)}
+                            disabled={isEcommerceBot}
+                            className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                              skillEnabled ? 'bg-blue-600' : 'bg-zinc-700'
+                            } ${isEcommerceBot ? 'opacity-60 cursor-not-allowed' : ''}`}
+                          >
+                            <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${skillEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          aria-label={`${skillEnabled ? 'Disable' : 'Enable'} ${skill.name} skill`}
-                          onClick={() => toggleSkill(skill.skill)}
-                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                            skillEnabled ? 'bg-blue-600' : 'bg-zinc-700'
-                          }`}
-                        >
-                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${skillEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                        </button>
-                      </div>
 
-                      {intakeKey && skillEnabled && renderSkillIntakePanel(intakeKey)}
-                    </div>
-                    );
+                        {!isEcommerceBot && intakeKey && skillEnabled && renderSkillIntakePanel(intakeKey)}
+                      </div>
+                      );
                   })}
                 </div>
 

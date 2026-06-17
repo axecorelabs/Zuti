@@ -705,6 +705,7 @@ export class BotsService {
     const existingWhatsAppConfig = extractWhatsAppConfig(existing.whatsappConfig);
     const nextTemplate = (dto.template ?? existing.template) as BotTemplate;
     const preset = getTemplatePreset(nextTemplate);
+    const isExistingEcommerce = (existing.template as BotTemplate) === 'ECOMMERCE';
     const existingAiConfig = ((existing.aiConfig as Record<string, unknown> | null) ?? {});
     const existingSpecialistProfile = parseSpecialistProfile(existingAiConfig);
     const requestedBotMode: BotMode = dto.botMode
@@ -728,15 +729,23 @@ export class BotsService {
       ? specialistResolution.specialistSkill
       : null;
     const isSpecialistMode = !!resolvedSpecialistSkill;
-    const resolvedCapabilities = (hasSkillsUpdate || specialistTouched)
-      ? buildCapabilitiesFromSkills(requestedSkills)
-      : (dto.template !== undefined ? preset.capabilities : undefined);
-    const resolvedTemplate = isSpecialistMode
-      ? templateForSpecialistSkill(resolvedSpecialistSkill)
-      : (hasSkillsUpdate ? 'GENERAL' : (dto.template !== undefined ? nextTemplate : undefined));
-    const resolvedActionForwardingEnabled = (hasSkillsUpdate || specialistTouched)
-      ? requestedSkills.includes('FORWARDING')
-      : dto.actionForwardingEnabled;
+    // ECOMMERCE bots keep their template, capabilities, and forwarding state locked regardless
+    // of any skills/specialist payload — prevents accidental demotion to GENERAL.
+    const resolvedCapabilities = isExistingEcommerce
+      ? preset.capabilities
+      : (hasSkillsUpdate || specialistTouched)
+        ? buildCapabilitiesFromSkills(requestedSkills)
+        : (dto.template !== undefined ? preset.capabilities : undefined);
+    const resolvedTemplate = isExistingEcommerce
+      ? 'ECOMMERCE'
+      : isSpecialistMode
+        ? templateForSpecialistSkill(resolvedSpecialistSkill)
+        : (hasSkillsUpdate ? 'GENERAL' : (dto.template !== undefined ? nextTemplate : undefined));
+    const resolvedActionForwardingEnabled = isExistingEcommerce
+      ? true
+      : (hasSkillsUpdate || specialistTouched)
+        ? requestedSkills.includes('FORWARDING')
+        : dto.actionForwardingEnabled;
 
     const mergedAiConfig: Record<string, unknown> = {
       ...existingAiConfig,
