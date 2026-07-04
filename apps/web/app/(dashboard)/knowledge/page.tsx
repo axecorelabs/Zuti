@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   Link as LinkIcon,
   FileText,
+  Upload,
   Trash2,
   RefreshCw,
   ShieldCheck,
@@ -19,7 +20,7 @@ import toast from 'react-hot-toast';
 import { api, botsApi, knowledgeApi, orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
-type IngestTab = 'url' | 'text';
+type IngestTab = 'url' | 'text' | 'file';
 type PageTab = 'sources' | 'suggestions' | 'gaps';
 type GapStatus = 'OPEN' | 'ANSWERED' | 'RESOLVED' | 'DISMISSED';
 
@@ -80,6 +81,8 @@ function KnowledgePageContent() {
   const [urlName, setUrlName] = useState('');
   const [textName, setTextName] = useState('');
   const [textContent, setTextContent] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileName, setFileName] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [itemsLoading, setItemsLoading] = useState(false);
@@ -214,6 +217,29 @@ function KnowledgePageContent() {
       await loadItems(orgId);
     } catch {
       toast.error('Failed to ingest text');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleIngestFile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!orgId || !selectedFile) return;
+    setLoading(true);
+    try {
+      const form = new FormData();
+      form.append('file', selectedFile);
+      form.append('name', fileName || selectedFile.name);
+      if (knowledgeScopeBotId !== 'shared') form.append('botId', knowledgeScopeBotId);
+      await api.post(`/organizations/${orgId}/knowledge/ingest/file`, form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      toast.success('File ingested successfully');
+      setSelectedFile(null);
+      setFileName('');
+      await loadItems(orgId);
+    } catch {
+      toast.error('Failed to ingest file');
     } finally {
       setLoading(false);
     }
@@ -390,7 +416,7 @@ function KnowledgePageContent() {
               <h2 className="font-brand font-semibold text-base tracking-tight text-white mb-4">Add source</h2>
 
               <div className="knowledge-ingest-tabs flex gap-1 bg-zinc-900 rounded-lg p-1 mb-6">
-                {(['url', 'text'] as IngestTab[]).map((t) => (
+                {(['url', 'text', 'file'] as IngestTab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setIngestTab(t)}
@@ -400,8 +426,10 @@ function KnowledgePageContent() {
                   >
                     {t === 'url' ? (
                       <><LinkIcon className="w-3.5 h-3.5" /> From URL</>
-                    ) : (
+                    ) : t === 'text' ? (
                       <><FileText className="w-3.5 h-3.5" /> Write text</>
+                    ) : (
+                      <><Upload className="w-3.5 h-3.5" /> Upload file</>
                     )}
                   </button>
                 ))}
@@ -434,7 +462,7 @@ function KnowledgePageContent() {
                     {loading ? 'Ingesting…' : 'Ingest URL'}
                   </button>
                 </form>
-              ) : (
+              ) : ingestTab === 'text' ? (
                 <form onSubmit={handleIngestText} className="space-y-4">
                   <div>
                     <label className="block text-xs text-zinc-500 mb-1.5 font-normal">Name</label>
@@ -464,6 +492,45 @@ function KnowledgePageContent() {
                     className="btn-primary w-full py-2.5 text-sm"
                   >
                     {loading ? 'Processing…' : 'Save & ingest'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleIngestFile} className="space-y-4">
+                  <div>
+                    <label className="block text-xs text-zinc-500 mb-1.5 font-normal">Name (optional)</label>
+                    <input
+                      type="text"
+                      value={fileName}
+                      onChange={(e) => setFileName(e.target.value)}
+                      className="input-base"
+                      placeholder="e.g. Product catalogue"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-zinc-500 mb-1.5 font-normal">File</label>
+                    <label className={`flex flex-col items-center justify-center gap-2 w-full rounded-xl border-2 border-dashed px-4 py-8 cursor-pointer transition-colors ${
+                      selectedFile ? 'border-blue-500/40 bg-blue-500/5' : 'border-zinc-800 bg-zinc-900/50 hover:border-zinc-700'
+                    }`}>
+                      <Upload className={`w-5 h-5 ${selectedFile ? 'text-blue-400' : 'text-zinc-600'}`} />
+                      {selectedFile ? (
+                        <span className="text-xs text-blue-300 font-medium text-center break-all">{selectedFile.name}</span>
+                      ) : (
+                        <span className="text-xs text-zinc-500 text-center">Click to choose a file<br /><span className="text-zinc-700">PDF, DOCX, or TXT</span></span>
+                      )}
+                      <input
+                        type="file"
+                        accept=".pdf,.docx,.txt,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        className="hidden"
+                        onChange={(e) => setSelectedFile(e.target.files?.[0] ?? null)}
+                      />
+                    </label>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading || !selectedFile}
+                    className="btn-primary w-full py-2.5 text-sm"
+                  >
+                    {loading ? 'Uploading…' : 'Upload & ingest'}
                   </button>
                 </form>
               )}

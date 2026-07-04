@@ -303,7 +303,6 @@ export default function BillingUsagePage() {
       })
       .finally(() => {
         params.delete('reference');
-        params.delete('org');
         const next = params.toString();
         window.history.replaceState({}, '', next ? `?${next}` : window.location.pathname);
       });

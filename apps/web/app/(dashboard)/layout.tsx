@@ -64,6 +64,7 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
     let active = true;
 
     const runRoleCheck = async () => {
+      let navigatingAway = false;
       try {
         const res = await orgsApi.listSummary();
         const list = res.data as Array<{
@@ -74,7 +75,9 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
         }>;
 
         if (active && list.length === 0) {
+          setActiveOrgId(null);
           router.replace('/global-overview');
+          navigatingAway = true;
           return;
         }
 
@@ -89,13 +92,15 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
           : null;
 
         if (!isGlobalOverviewRoute && !selectedFromUrl) {
+          setActiveOrgId(null);
           router.replace('/global-overview');
+          navigatingAway = true;
           return;
         }
 
-        const preferredOrg = selectedFromUrl
-          ?? (activeOrgId ? (list.find((org) => org.id === activeOrgId) ?? null) : null)
-          ?? null;
+        // Prefer the org from URL, otherwise try to find the activeOrgId in the list.
+        // Avoid redundant nullish checks: directly attempt to find the org by activeOrgId.
+        const preferredOrg = selectedFromUrl ?? (activeOrgId ? list.find((org) => org.id === activeOrgId) ?? null : null);
 
         if (preferredOrg?.id && preferredOrg.id !== activeOrgId) {
           setActiveOrgId(preferredOrg.id);
@@ -128,7 +133,8 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
         // If role check fails, keep UX safe by allowing only non-restricted pages via API checks.
         setSetupBanner({ show: false, count: 0 });
       } finally {
-        if (active) {
+        // Keep the spinner while navigating — the new route's effect run will clear it.
+        if (active && !navigatingAway) {
           setRoleCheckLoading(false);
         }
       }
