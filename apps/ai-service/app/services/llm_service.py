@@ -15,6 +15,44 @@ logger = logging.getLogger(__name__)
 # Default model — change to any model slug on https://openrouter.ai/models
 DEFAULT_MODEL = "google/gemini-2.5-flash"
 
+ACTION_TYPE_VALUES = (
+    "NONE",
+    "MEETING_REQUEST",
+    "CONSULTATION_REQUEST",
+    "SALES_ORDER_REQUEST",
+    "TECHNICAL_ISSUE",
+    "OWNER_ATTENTION_NEEDED",
+)
+
+STRUCTURED_OUTPUT_SCHEMA = """\
+You must respond with a valid JSON object only — no markdown fences, no extra text.
+
+JSON schema (all fields required):
+{
+  "reply": "<complete natural customer-facing response>",
+  "should_resolve": <true if the customer's issue is fully resolved, false otherwise>,
+  "action_type": "<one of: NONE | MEETING_REQUEST | CONSULTATION_REQUEST | SALES_ORDER_REQUEST | TECHNICAL_ISSUE | OWNER_ATTENTION_NEEDED>",
+  "intent_confidence": <float 0.0–1.0>,
+  "intent_summary": "<1–2 sentence synthesis of the customer's intent drawn from the full conversation — empty string when action_type is NONE>",
+  "conversation_summary": "<concise running summary of the conversation so far including this turn — always populated>"
+}
+
+Intent classification guide:
+- MEETING_REQUEST: customer wants to book/schedule a call or meeting.
+- CONSULTATION_REQUEST: customer wants a demo, consultation, or specialist follow-up.
+- SALES_ORDER_REQUEST: customer clearly expresses intent to buy/order.
+- OWNER_ATTENTION_NEEDED: customer explicitly requests owner or management involvement.
+- TECHNICAL_ISSUE: customer reports a bug, outage, error, or technical malfunction needing follow-up.
+- NONE: no actionable forwarding intent.
+
+Rules:
+- The reply field must be exactly what is sent to the customer — complete, natural, on-brand.
+- intent_summary must synthesize context from the FULL conversation, not just the current message.
+- conversation_summary is a running log that should be updated each turn to reflect what has been discussed.
+- If uncertain about intent, use NONE with intent_confidence 0.0 and empty intent_summary.
+- If should_resolve is true, the reply should naturally ask if the customer needs anything else.
+"""
+
 RESOLUTION_TAG_INSTRUCTION = (
     "IMPORTANT: When you are confident the customer's issue is fully resolved, "
     "end your reply naturally by asking if they are satisfied or need anything else "
@@ -81,6 +119,37 @@ class LlmService:
             },
         )
 
+    def _build_messages(
+        self,
+        user_message: str,
+        context: str,
+        history: list[dict],
+        system_prompt: str,
+        customer_context: str | None,
+        conversation_summary: str | None,
+    ) -> list[dict]:
+        messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        if context:
+            messages.append({
+                "role": "system",
+                "content": f"Relevant context from knowledge base:\n{context}",
+            })
+        if customer_context:
+            messages.append({
+                "role": "system",
+                "content": f"Customer history (for context only — do not mention this to the customer unless directly relevant):\n{customer_context}",
+            })
+        if conversation_summary:
+            messages.append({
+                "role": "system",
+                "content": f"Conversation summary so far (use this as context; the recent messages below are the most recent turns):\n{conversation_summary}",
+            })
+        for turn in history:
+            if turn.get("role") in ("user", "assistant") and turn.get("content"):
+                messages.append({"role": turn["role"], "content": turn["content"]})
+        messages.append({"role": "user", "content": user_message})
+        return messages
+
     async def generate(
         self,
         user_message: str,
@@ -92,28 +161,21 @@ class LlmService:
         org_name: str | None = None,
         system_prompt_override: str | None = None,
         customer_context: str | None = None,
+        conversation_summary: str | None = None,
     ) -> str:
         if not settings.OPENROUTER_API_KEY:
             logger.warning("OPENROUTER_API_KEY not set — returning fallback response")
             return "I'm sorry, I'm not configured to respond yet. Please contact support."
 
         prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
-        messages: list[dict] = [{"role": "system", "content": prompt}]
-        if context:
-            messages.append({
-                "role": "system",
-                "content": f"Relevant context from knowledge base:\n{context}",
-            })
-        if customer_context:
-            messages.append({
-                "role": "system",
-                "content": f"Customer history (for context only — do not mention this to the customer unless directly relevant):\n{customer_context}",
-            })
-        # Inject conversation history so the AI has full context
-        for turn in (history or []):
-            if turn.get("role") in ("user", "assistant") and turn.get("content"):
-                messages.append({"role": turn["role"], "content": turn["content"]})
-        messages.append({"role": "user", "content": user_message})
+        messages = self._build_messages(
+            user_message=user_message,
+            context=context,
+            history=history or [],
+            system_prompt=prompt,
+            customer_context=customer_context,
+            conversation_summary=conversation_summary,
+        )
 
         response = await self._client().chat.completions.create(
             model=model,
@@ -122,6 +184,75 @@ class LlmService:
             temperature=0.2,
         )
         return response.choices[0].message.content or ""
+
+    async def generate_structured(
+        self,
+        user_message: str,
+        context: str = "",
+        conversation_id: str = "",
+        history: list[dict] | None = None,
+        model: str = DEFAULT_MODEL,
+        bot_name: str = "Assistant",
+        org_name: str | None = None,
+        system_prompt_override: str | None = None,
+        customer_context: str | None = None,
+        conversation_summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Single LLM call that generates the customer reply, classifies action intent,
+        and produces a running conversation summary — eliminating the separate
+        /action-intent/classify call."""
+        if not settings.OPENROUTER_API_KEY:
+            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": ""}
+
+        base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
+        # Append structured output schema after the base prompt
+        combined_prompt = f"{base_prompt}\n\n{STRUCTURED_OUTPUT_SCHEMA}"
+
+        messages = self._build_messages(
+            user_message=user_message,
+            context=context,
+            history=history or [],
+            system_prompt=combined_prompt,
+            customer_context=customer_context,
+            conversation_summary=conversation_summary,
+        )
+
+        raw = ""
+        try:
+            response = await self._client().chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=1200,
+                temperature=0.2,
+            )
+            raw = response.choices[0].message.content or ""
+        except Exception as e:
+            logger.warning(f"generate_structured LLM call failed: {e}")
+            return {"reply": "", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": ""}
+
+        parsed = self._extract_json_object(raw)
+        if not parsed:
+            # Fallback: treat the whole response as the reply
+            return {"reply": raw.strip(), "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": ""}
+
+        action_type = str(parsed.get("action_type") or "NONE").strip().upper()
+        if action_type not in ACTION_TYPE_VALUES:
+            action_type = "NONE"
+
+        try:
+            intent_confidence = float(parsed.get("intent_confidence") or 0.0)
+            intent_confidence = max(0.0, min(1.0, intent_confidence))
+        except (TypeError, ValueError):
+            intent_confidence = 0.0
+
+        return {
+            "reply": str(parsed.get("reply") or "").strip(),
+            "should_resolve": bool(parsed.get("should_resolve")),
+            "action_type": action_type,
+            "intent_confidence": intent_confidence,
+            "intent_summary": str(parsed.get("intent_summary") or "").strip(),
+            "conversation_summary": str(parsed.get("conversation_summary") or "").strip(),
+        }
 
     async def complete(
         self,

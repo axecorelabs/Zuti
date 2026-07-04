@@ -265,6 +265,8 @@ model Bot {
   bookings Booking[]
   salesOrders SalesOrder[]
   technicalIssues TechnicalIssue[]
+
+  @@unique([organizationId, name])
 }
 
 enum BotTemplate {

@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown, MessageCircle, ShoppingCart } from 'lucide-react';
+import { Bot, Plus, Webhook, Trash2, Copy, Check, Settings, Zap, ZapOff, ExternalLink, ChevronRight, ChevronLeft, Sparkles, Globe, Mail, ChevronDown, MessageCircle, ShoppingCart, TrendingUp, Calendar, Headphones, Wrench } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { botsApi, orgsApi, commerceApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
@@ -579,6 +579,112 @@ function PresetDropdown({
   );
 }
 
+type BotTemplateKey = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
+
+const BOT_TEMPLATE_OPTIONS: Array<{
+  key: BotTemplateKey;
+  label: string;
+  description: string;
+  accentClass: string;
+  selectedBorderClass: string;
+  selectedBgClass: string;
+  selectedIconBgClass: string;
+  selectedTextClass: string;
+  badgeClass: string;
+  icon: React.ElementType;
+  coreSkills: BotSkill[];
+  forwardingLocked: boolean;
+}> = [
+  {
+    key: 'GENERAL',
+    label: 'General Bot',
+    description: 'All-purpose chat, support, and routing. Enable skills in settings.',
+    accentClass: 'blue',
+    selectedBorderClass: 'border-blue-500/40',
+    selectedBgClass: 'bg-blue-500/10',
+    selectedIconBgClass: 'bg-blue-600/20',
+    selectedTextClass: 'text-blue-300',
+    badgeClass: 'bg-blue-500/15 text-blue-400 border-blue-500/20',
+    icon: Bot,
+    coreSkills: [],
+    forwardingLocked: false,
+  },
+  {
+    key: 'SALES',
+    label: 'Sales Bot',
+    description: 'Lead capture, consultations, and order intake with team alerts.',
+    accentClass: 'violet',
+    selectedBorderClass: 'border-violet-500/40',
+    selectedBgClass: 'bg-violet-500/10',
+    selectedIconBgClass: 'bg-violet-600/20',
+    selectedTextClass: 'text-violet-300',
+    badgeClass: 'bg-violet-500/15 text-violet-400 border-violet-500/20',
+    icon: TrendingUp,
+    coreSkills: ['SALES', 'FORWARDING'],
+    forwardingLocked: true,
+  },
+  {
+    key: 'BOOKING',
+    label: 'Booking Bot',
+    description: 'Meeting requests and scheduling with automatic forwarding.',
+    accentClass: 'sky',
+    selectedBorderClass: 'border-sky-500/40',
+    selectedBgClass: 'bg-sky-500/10',
+    selectedIconBgClass: 'bg-sky-600/20',
+    selectedTextClass: 'text-sky-300',
+    badgeClass: 'bg-sky-500/15 text-sky-400 border-sky-500/20',
+    icon: Calendar,
+    coreSkills: ['BOOKING', 'FORWARDING'],
+    forwardingLocked: true,
+  },
+  {
+    key: 'SUPPORT',
+    label: 'Support Bot',
+    description: 'Customer support with issue tracking and escalation.',
+    accentClass: 'amber',
+    selectedBorderClass: 'border-amber-500/40',
+    selectedBgClass: 'bg-amber-500/10',
+    selectedIconBgClass: 'bg-amber-600/20',
+    selectedTextClass: 'text-amber-300',
+    badgeClass: 'bg-amber-500/15 text-amber-400 border-amber-500/20',
+    icon: Headphones,
+    coreSkills: ['SUPPORT', 'FORWARDING'],
+    forwardingLocked: true,
+  },
+  {
+    key: 'TECHNICAL',
+    label: 'Technical Support',
+    description: 'Technical issue intake and incident forwarding to your team.',
+    accentClass: 'orange',
+    selectedBorderClass: 'border-orange-500/40',
+    selectedBgClass: 'bg-orange-500/10',
+    selectedIconBgClass: 'bg-orange-600/20',
+    selectedTextClass: 'text-orange-300',
+    badgeClass: 'bg-orange-500/15 text-orange-400 border-orange-500/20',
+    icon: Wrench,
+    coreSkills: ['TECHNICAL', 'FORWARDING'],
+    forwardingLocked: true,
+  },
+  {
+    key: 'ECOMMERCE',
+    label: 'E-commerce Bot',
+    description: 'Sells products, takes orders, sends payment links.',
+    accentClass: 'emerald',
+    selectedBorderClass: 'border-emerald-500/40',
+    selectedBgClass: 'bg-emerald-500/10',
+    selectedIconBgClass: 'bg-emerald-600/20',
+    selectedTextClass: 'text-emerald-300',
+    badgeClass: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
+    icon: ShoppingCart,
+    coreSkills: ['SALES', 'FORWARDING'],
+    forwardingLocked: true,
+  },
+];
+
+function getCoreSkillsForTemplate(template: string | undefined): BotSkill[] {
+  return BOT_TEMPLATE_OPTIONS.find((t) => t.key === template)?.coreSkills ?? [];
+}
+
 interface BotRecord {
   id: string;
   name: string;
@@ -658,8 +764,8 @@ function BotsPageContent() {
   const [createPrimaryChannel, setCreatePrimaryChannel] = useState<'TELEGRAM' | 'WEB_WIDGET' | 'EMAIL'>('TELEGRAM');
   const [createTelegramToken, setCreateTelegramToken] = useState('');
   const [createWidgetDomains, setCreateWidgetDomains] = useState('');
-  const [createActionForwardingEnabled, setCreateActionForwardingEnabled] = useState(true);
-  const [createBotType, setCreateBotType] = useState<'GENERAL' | 'ECOMMERCE'>('GENERAL');
+  const [createEmailLocalPart, setCreateEmailLocalPart] = useState('');
+  const [createBotType, setCreateBotType] = useState<BotTemplateKey>('GENERAL');
   const [createCommerceStoreId, setCreateCommerceStoreId] = useState('');
   const [orgCommerceStores, setOrgCommerceStores] = useState<{ id: string; name: string }[]>([]);
   const [editCommerceStoreId, setEditCommerceStoreId] = useState('');
@@ -979,7 +1085,7 @@ function BotsPageContent() {
     setCreatePrimaryChannel('TELEGRAM');
     setCreateTelegramToken('');
     setCreateWidgetDomains('');
-    setCreateActionForwardingEnabled(true);
+    setCreateEmailLocalPart('');
     setCreateBotType('GENERAL');
     setCreateCommerceStoreId('');
     setShowCreate(true);
@@ -1000,18 +1106,32 @@ function BotsPageContent() {
         .map((domain) => domain.trim())
         .filter(Boolean);
 
-      const isEcommerce = createBotType === 'ECOMMERCE';
+      const templateConfig = BOT_TEMPLATE_OPTIONS.find((t) => t.key === createBotType)!;
+      const isSkillBot = createBotType !== 'GENERAL';
       const payload = {
         name: createName,
         primaryChannel: createPrimaryChannel,
-        skills: (isEcommerce || createActionForwardingEnabled) ? (['FORWARDING'] as BotSkill[]) : ([] as BotSkill[]),
-        actionForwardingEnabled: isEcommerce ? true : createActionForwardingEnabled,
-        ...(isEcommerce ? { template: 'ECOMMERCE' as const } : {}),
-        ...(isEcommerce && createCommerceStoreId ? { commerceStoreId: createCommerceStoreId } : {}),
+        template: createBotType,
+        skills: isSkillBot
+          ? (templateConfig.coreSkills as BotSkill[])
+          : (['FORWARDING'] as BotSkill[]),
+        actionForwardingEnabled: true,
+        ...(createBotType === 'ECOMMERCE' && createCommerceStoreId ? { commerceStoreId: createCommerceStoreId } : {}),
         ...(createPrimaryChannel === 'TELEGRAM' ? { telegramToken: createTelegramToken } : {}),
         ...(createPrimaryChannel === 'WEB_WIDGET' ? { webWidgetAllowedDomains: createAllowedDomains } : {}),
       };
-      await botsApi.create(orgId, payload);
+      const created = await botsApi.create(orgId, payload);
+      const newBotId = (created.data as { id?: string })?.id;
+      if (createPrimaryChannel === 'EMAIL' && createEmailLocalPart.trim() && newBotId) {
+        try {
+          await botsApi.enableEmail(orgId, newBotId, createEmailLocalPart.trim());
+        } catch (emailErr: unknown) {
+          try { await botsApi.delete(orgId, newBotId); } catch { /* ignore */ }
+          const emailMsg = (emailErr as { response?: { data?: { message?: string } } })?.response?.data?.message ?? 'Invalid email address';
+          toast.error(Array.isArray(emailMsg) ? emailMsg[0] : emailMsg);
+          return;
+        }
+      }
       const refreshed = await botsApi.list(orgId);
       setBots(refreshed.data);
       closeCreateModal();
@@ -1019,8 +1139,8 @@ function BotsPageContent() {
       setCreatePrimaryChannel('TELEGRAM');
       setCreateTelegramToken('');
       setCreateWidgetDomains('');
-      setCreateActionForwardingEnabled(true);
-      setCreateBotType('GENERAL');
+      setCreateEmailLocalPart('');
+      setCreateBotType('GENERAL' as BotTemplateKey);
       setCreateCommerceStoreId('');
       toast.success('Bot created');
     } catch (err: unknown) {
@@ -1038,7 +1158,8 @@ function BotsPageContent() {
     (createStep === 2
       && createName.trim().length > 0
       && (createPrimaryChannel !== 'TELEGRAM' || createTelegramToken.trim().length > 0)
-      && (createPrimaryChannel !== 'WEB_WIDGET' || createWidgetDomains.split(/\n|,/).map((d) => d.trim()).filter(Boolean).length > 0));
+      && (createPrimaryChannel !== 'WEB_WIDGET' || createWidgetDomains.split(/\n|,/).map((d) => d.trim()).filter(Boolean).length > 0)
+      && (createPrimaryChannel !== 'EMAIL' || createEmailLocalPart.trim().length > 0));
 
   const handleSetWebhook = async (bot: BotRecord) => {
     if (!orgId) return;
@@ -2031,86 +2152,99 @@ onBeforeUnmount(() => {
           <div className="xl:col-span-2 space-y-5">
             {settingsTab === 'skills' && (
               <div className="card p-6 border border-zinc-800 space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-white">Bot Skills</h2>
-                    <p className="text-xs text-zinc-500 font-light">
-                      {settingsBot?.template === 'ECOMMERCE'
-                        ? 'E-commerce bots have fixed skills optimised for selling and order capture.'
-                        : 'Turn skills on or off any time. You can enable multiple skills on one bot.'}
-                    </p>
-                  </div>
-                  {settingsBot?.template !== 'ECOMMERCE' && (
-                    <div className="flex items-center gap-2">
-                      <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
-                        Enabled: <span className="text-white font-medium">{editSkills.length}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleSaveSkillsOnly}
-                        disabled={!hasUnsavedSkillChanges || skillsSaving}
-                        className="text-[11px] px-2.5 py-1 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        {skillsSaving ? 'Saving...' : 'Save skill changes'}
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {settingsBot?.template === 'ECOMMERCE' && (
-                  <div className="rounded-xl border border-emerald-500/25 bg-emerald-500/8 px-3 py-2.5">
-                    <p className="text-[11px] text-emerald-300">Action Forwarding and Sales are always on for E-commerce bots and cannot be changed. Booking, Support, and Technical skills are not available for this bot type.</p>
-                  </div>
-                )}
-
-                {settingsBot?.template !== 'ECOMMERCE' && hasUnsavedSkillChanges && (
-                  <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
-                    <p className="text-[11px] text-amber-300">You have unsaved skill changes. Click "Save skill changes" to persist.</p>
-                  </div>
-                )}
-
-                <div className="space-y-2">
-                  {BOT_SKILL_OPTIONS
-                    .filter((s) => settingsBot?.template !== 'ECOMMERCE' || s.skill === 'FORWARDING' || s.skill === 'SALES')
-                    .map((skill) => {
-                      const isEcommerceBot = settingsBot?.template === 'ECOMMERCE';
-                      const intakeKey = intakeKeyForSkillCard(skill.skill);
-                      const skillEnabled = isEcommerceBot ? true : editSkills.includes(skill.skill);
-                      return (
-                      <div
-                        key={skill.skill}
-                        className={`rounded-xl border px-3 py-3 transition-all duration-200 ${
-                          skillEnabled
-                            ? 'border-blue-500/50 bg-blue-500/10 text-white shadow-[0_0_0_1px_rgba(59,130,246,0.12)]'
-                            : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <div className="text-sm font-semibold text-white leading-none">{skill.name}</div>
-                              {isEcommerceBot && <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">Always on</span>}
-                            </div>
-                            <div className="mt-1 text-[11px] leading-4 text-zinc-500">{skill.description}</div>
-                          </div>
-                          <button
-                            type="button"
-                            aria-label={`${skillEnabled ? 'Disable' : 'Enable'} ${skill.name} skill`}
-                            onClick={() => !isEcommerceBot && toggleSkill(skill.skill)}
-                            disabled={isEcommerceBot}
-                            className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                              skillEnabled ? 'bg-blue-600' : 'bg-zinc-700'
-                            } ${isEcommerceBot ? 'opacity-60 cursor-not-allowed' : ''}`}
-                          >
-                            <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${skillEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                          </button>
+                {(() => {
+                  const coreSkills = getCoreSkillsForTemplate(settingsBot?.template);
+                  const isSkillBot = coreSkills.length > 0;
+                  const tmplConfig = BOT_TEMPLATE_OPTIONS.find((t) => t.key === settingsBot?.template);
+                  return (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h2 className="text-sm font-semibold text-white">Bot Skills</h2>
+                          <p className="text-xs text-zinc-500 font-light">
+                            {isSkillBot
+                              ? `${tmplConfig?.label ?? 'Skill'} bots have their core skill and action forwarding always enabled.`
+                              : 'Turn skills on or off any time. You can enable multiple skills on one bot.'}
+                          </p>
                         </div>
-
-                        {!isEcommerceBot && intakeKey && skillEnabled && renderSkillIntakePanel(intakeKey)}
+                        {!isSkillBot && (
+                          <div className="flex items-center gap-2">
+                            <div className="text-[11px] px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400">
+                              Enabled: <span className="text-white font-medium">{editSkills.length}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleSaveSkillsOnly}
+                              disabled={!hasUnsavedSkillChanges || skillsSaving}
+                              className="text-[11px] px-2.5 py-1 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {skillsSaving ? 'Saving...' : 'Save skill changes'}
+                            </button>
+                          </div>
+                        )}
                       </div>
-                      );
-                  })}
-                </div>
+
+                      {isSkillBot && tmplConfig && (
+                        <div className={`rounded-xl border px-3 py-2.5 ${tmplConfig.selectedBorderClass} ${tmplConfig.selectedBgClass}`}>
+                          <p className={`text-[11px] ${tmplConfig.selectedTextClass}`}>
+                            Core skills for this bot type are locked. You can still enable additional skills to extend its capabilities.
+                          </p>
+                        </div>
+                      )}
+
+                      {!isSkillBot && hasUnsavedSkillChanges && (
+                        <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-3 py-2">
+                          <p className="text-[11px] text-amber-300">You have unsaved skill changes. Click "Save skill changes" to persist.</p>
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        {BOT_SKILL_OPTIONS
+                          .filter((s) => settingsBot?.template !== 'ECOMMERCE' || s.skill === 'FORWARDING' || s.skill === 'SALES')
+                          .map((skill) => {
+                            const isCoreLocked = coreSkills.includes(skill.skill);
+                            const intakeKey = intakeKeyForSkillCard(skill.skill);
+                            const skillEnabled = isCoreLocked ? true : editSkills.includes(skill.skill);
+                            return (
+                              <div
+                                key={skill.skill}
+                                className={`rounded-xl border px-3 py-3 transition-all duration-200 ${
+                                  skillEnabled
+                                    ? 'border-blue-500/50 bg-blue-500/10 text-white shadow-[0_0_0_1px_rgba(59,130,246,0.12)]'
+                                    : 'border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-700'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <div className="text-sm font-semibold text-white leading-none">{skill.name}</div>
+                                      {isCoreLocked && tmplConfig && (
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded border ${tmplConfig.badgeClass}`}>Always on</span>
+                                      )}
+                                    </div>
+                                    <div className="mt-1 text-[11px] leading-4 text-zinc-500">{skill.description}</div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    aria-label={`${skillEnabled ? 'Disable' : 'Enable'} ${skill.name} skill`}
+                                    onClick={() => !isCoreLocked && toggleSkill(skill.skill)}
+                                    disabled={isCoreLocked}
+                                    className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
+                                      skillEnabled ? 'bg-blue-600' : 'bg-zinc-700'
+                                    } ${isCoreLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                  >
+                                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${skillEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                                  </button>
+                                </div>
+
+                                {!isCoreLocked && intakeKey && skillEnabled && renderSkillIntakePanel(intakeKey)}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    </>
+                  );
+                })()}
 
               </div>
             )}
@@ -3420,41 +3554,34 @@ onBeforeUnmount(() => {
                   {/* Bot type selector */}
                   <div>
                     <label className="block text-xs text-zinc-400 mb-2 font-medium">Bot type</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setCreateBotType('GENERAL')}
-                        className={`flex flex-col items-start gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${
-                          createBotType === 'GENERAL'
-                            ? 'border-blue-500/40 bg-blue-500/10'
-                            : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
-                        }`}
-                      >
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${createBotType === 'GENERAL' ? 'bg-blue-600/20' : 'bg-zinc-800'}`}>
-                          <Bot className={`w-4 h-4 ${createBotType === 'GENERAL' ? 'text-blue-400' : 'text-zinc-500'}`} />
-                        </div>
-                        <div>
-                          <p className={`text-sm font-medium ${createBotType === 'GENERAL' ? 'text-blue-300' : 'text-zinc-300'}`}>General Bot</p>
-                          <p className="text-[11px] text-zinc-500 mt-0.5">Chat, support, bookings. Enable skills in settings.</p>
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setCreateBotType('ECOMMERCE')}
-                        className={`flex flex-col items-start gap-2 rounded-xl border px-4 py-3 text-left transition-colors ${
-                          createBotType === 'ECOMMERCE'
-                            ? 'border-emerald-500/40 bg-emerald-500/10'
-                            : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
-                        }`}
-                      >
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${createBotType === 'ECOMMERCE' ? 'bg-emerald-600/20' : 'bg-zinc-800'}`}>
-                          <ShoppingCart className={`w-4 h-4 ${createBotType === 'ECOMMERCE' ? 'text-emerald-400' : 'text-zinc-500'}`} />
-                        </div>
-                        <div>
-                          <p className={`text-sm font-medium ${createBotType === 'ECOMMERCE' ? 'text-emerald-300' : 'text-zinc-300'}`}>E-commerce Bot</p>
-                          <p className="text-[11px] text-zinc-500 mt-0.5">Sells products, takes orders, sends payment links.</p>
-                        </div>
-                      </button>
+                    <div className="grid grid-cols-2 gap-2.5">
+                      {BOT_TEMPLATE_OPTIONS.map((tmpl) => {
+                        const selected = createBotType === tmpl.key;
+                        const Icon = tmpl.icon;
+                        return (
+                          <button
+                            key={tmpl.key}
+                            type="button"
+                            onClick={() => setCreateBotType(tmpl.key)}
+                            className={`flex flex-col items-start gap-2 rounded-xl border px-3 py-3 text-left transition-colors ${
+                              selected
+                                ? `${tmpl.selectedBorderClass} ${tmpl.selectedBgClass}`
+                                : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'
+                            }`}
+                          >
+                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${selected ? tmpl.selectedIconBgClass : 'bg-zinc-800'}`}>
+                              <Icon className={`w-3.5 h-3.5 ${selected ? tmpl.selectedTextClass : 'text-zinc-500'}`} />
+                            </div>
+                            <div>
+                              <p className={`text-xs font-semibold ${selected ? tmpl.selectedTextClass : 'text-zinc-300'}`}>{tmpl.label}</p>
+                              <p className="text-[10px] text-zinc-500 mt-0.5 leading-relaxed">{tmpl.description}</p>
+                            </div>
+                            {tmpl.forwardingLocked && (
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded border ${tmpl.badgeClass}`}>Action forwarding on</span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -3477,59 +3604,14 @@ onBeforeUnmount(() => {
                     </div>
                   )}
 
-                  {createBotType === 'GENERAL' && (
-                    <>
-                      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-3 flex items-center justify-between gap-4">
-                        <div>
-                          <p className="text-sm text-zinc-200 font-medium">Action forwarding</p>
-                          <p className="text-[11px] text-zinc-500 mt-0.5">Forward actionable intents to owner or team contacts.</p>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            if (createActionForwardingEnabled) {
-                              setCreateActionForwardingEnabled(false);
-                              return;
-                            }
-                            try {
-                              const hasConfig = await hasOrgForwardingConfiguration();
-                              if (!hasConfig) {
-                                redirectToForwardingSettings('Set up forwarding endpoints and default policy first.');
-                                return;
-                              }
-                              setCreateActionForwardingEnabled(true);
-                            } catch {
-                              toast.error('Unable to verify forwarding settings right now.');
-                            }
-                          }}
-                          className={`relative inline-flex h-7 w-12 items-center rounded-full transition-colors ${
-                            createActionForwardingEnabled ? 'bg-blue-600' : 'bg-zinc-700'
-                          }`}
-                        >
-                          <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${createActionForwardingEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                        </button>
+                  {(() => {
+                    const tmpl = BOT_TEMPLATE_OPTIONS.find((t) => t.key === createBotType)!;
+                    return (
+                      <div className={`rounded-xl border px-3 py-2.5 text-[11px] ${tmpl.selectedBorderClass} ${tmpl.selectedBgClass} ${tmpl.selectedTextClass}`}>
+                        Action forwarding is always enabled — actionable customer intents will be forwarded to your team automatically.
                       </div>
-
-                      {!createActionForwardingEnabled && (
-                        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 flex items-center justify-between gap-3">
-                          <p className="text-[11px] text-zinc-500">Want forwarding enabled? Configure endpoints first for a smooth setup.</p>
-                          <button
-                            type="button"
-                            onClick={() => redirectToForwardingSettings('Opening forwarding settings...')}
-                            className="inline-flex items-center gap-1 text-[11px] text-blue-400 hover:text-blue-300"
-                          >
-                            Configure now <ExternalLink className="w-3 h-3" />
-                          </button>
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {createBotType === 'ECOMMERCE' && (
-                    <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/30 px-3 py-2.5 text-[11px] text-emerald-600">
-                      Action forwarding is always enabled for E-commerce bots — orders are routed automatically.
-                    </div>
-                  )}
+                    );
+                  })()}
                 </div>
               )}
 
@@ -3616,9 +3698,25 @@ onBeforeUnmount(() => {
                         <p className="mt-1.5 text-[11px] text-zinc-500">Add one domain per line (or comma-separated). The widget will be blocked on unlisted domains.</p>
                       </div>
                     </div>
+                  ) : createPrimaryChannel === 'EMAIL' ? (
+                    <div>
+                      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">Email address</label>
+                      <div className="flex items-center gap-0">
+                        <input
+                          type="text"
+                          required
+                          value={createEmailLocalPart}
+                          onChange={(e) => setCreateEmailLocalPart(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 32))}
+                          className="flex-1 min-w-0 bg-zinc-900 border border-zinc-800 rounded-l-xl px-4 py-3 text-sm text-zinc-200 font-mono placeholder-zinc-700 focus:outline-none focus:border-blue-600/50 transition-colors"
+                          placeholder="support"
+                        />
+                        <span className="bg-zinc-800 border border-l-0 border-zinc-700 rounded-r-xl px-3 py-3 text-sm text-zinc-500 font-mono whitespace-nowrap">@….bords.app</span>
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-zinc-500">Customers can email this address and messages will appear as conversations.</p>
+                    </div>
                   ) : (
                     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
-                      Bot will be created with no channels active. Go to Settings later to connect email or Telegram.
+                      Bot will be created with no channels active. Go to Settings later to configure a channel.
                     </div>
                   )}
                 </div>
@@ -3626,48 +3724,51 @@ onBeforeUnmount(() => {
 
               {createStep === 3 && (
                 <div className="space-y-4">
-                  <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-xs text-zinc-500 uppercase tracking-[0.2em]">Bot type</p>
-                        <p className="text-sm text-white font-medium mt-1">{createBotType === 'ECOMMERCE' ? 'E-commerce Bot' : 'General Bot'}</p>
-                        <p className="text-xs text-zinc-500 mt-1">
-                          {createBotType === 'ECOMMERCE'
-                            ? 'Takes product orders and sends payment links automatically.'
-                            : 'Skills can be enabled in bot settings after creation.'}
-                        </p>
-                      </div>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
-                        createBotType === 'ECOMMERCE'
-                          ? 'bg-emerald-900/40 text-emerald-400'
-                          : 'bg-zinc-800 text-zinc-400'
-                      }`}>
-                        {createBotType === 'ECOMMERCE' ? 'Forwarding always on' : (createActionForwardingEnabled ? 'Forwarding enabled' : 'Forwarding disabled')}
-                      </span>
-                    </div>
-                    <div className="grid gap-2 text-sm text-zinc-300">
-                      <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
-                        <span className="text-zinc-500">Bot name</span>
-                        <span className="text-white font-medium">{createName.trim() || 'Untitled bot'}</span>
-                      </div>
-                      <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
-                        <span className="text-zinc-500">Primary channel</span>
-                        <span className="text-white font-medium">{createPrimaryChannel.replace('_', ' ')}</span>
-                      </div>
-                      {createBotType === 'ECOMMERCE' && createCommerceStoreId && (
-                        <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
-                          <span className="text-zinc-500">Commerce store</span>
-                          <span className="text-white font-medium">{orgCommerceStores.find((s) => s.id === createCommerceStoreId)?.name ?? createCommerceStoreId}</span>
+                  {(() => {
+                    const tmpl = BOT_TEMPLATE_OPTIONS.find((t) => t.key === createBotType)!;
+                    return (
+                      <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-4 space-y-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-xs text-zinc-500 uppercase tracking-[0.2em]">Bot type</p>
+                            <p className="text-sm text-white font-medium mt-1">{tmpl.label}</p>
+                            <p className="text-xs text-zinc-500 mt-1">{tmpl.description}</p>
+                          </div>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium border ${tmpl.badgeClass}`}>
+                            Forwarding always on
+                          </span>
                         </div>
-                      )}
-                      {createPrimaryChannel === 'WEB_WIDGET' ? (
-                        <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
-                          <span className="text-zinc-500">Allowed domains</span>
-                          <span className="text-white font-medium">{createWidgetDomains.split(/\n|,/).map((d) => d.trim()).filter(Boolean).length}</span>
+                        <div className="grid gap-2 text-sm text-zinc-300">
+                          <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                            <span className="text-zinc-500">Bot name</span>
+                            <span className="text-white font-medium">{createName.trim() || 'Untitled bot'}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                            <span className="text-zinc-500">Primary channel</span>
+                            <span className="text-white font-medium">{createPrimaryChannel.replace('_', ' ')}</span>
+                          </div>
+                          {createBotType === 'ECOMMERCE' && createCommerceStoreId && (
+                            <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                              <span className="text-zinc-500">Commerce store</span>
+                              <span className="text-white font-medium">{orgCommerceStores.find((s) => s.id === createCommerceStoreId)?.name ?? createCommerceStoreId}</span>
+                            </div>
+                          )}
+                          {createPrimaryChannel === 'WEB_WIDGET' && (
+                            <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                              <span className="text-zinc-500">Allowed domains</span>
+                              <span className="text-white font-medium">{createWidgetDomains.split(/\n|,/).map((d) => d.trim()).filter(Boolean).length}</span>
+                            </div>
+                          )}
+                          {createPrimaryChannel === 'EMAIL' && createEmailLocalPart.trim() && (
+                            <div className="flex items-center justify-between gap-3 rounded-xl bg-zinc-950/60 px-3 py-2">
+                              <span className="text-zinc-500">Email address</span>
+                              <span className="text-white font-medium font-mono">{createEmailLocalPart.trim()}@….bords.app</span>
+                            </div>
+                          )}
                         </div>
-                      ) : null}
-                    </div>
-                  </div>
+                      </div>
+                    );
+                  })()}
                   <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-500">
                     Review the summary and create the bot. You can adjust skills, channel, and forwarding settings later.
                   </div>
@@ -3763,19 +3864,27 @@ onBeforeUnmount(() => {
 
                 {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <h3 className="text-sm font-medium text-white">{bot.name}</h3>
                     {bot.telegramUsername && (
                       <span className="text-xs text-zinc-600">@{bot.telegramUsername}</span>
                     )}
                     <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-400">
-                      {bot.primaryChannel === 'TELEGRAM' ? 'Telegram' : 'Website Widget'}
+                      {bot.primaryChannel === 'TELEGRAM' ? 'Telegram'
+                        : bot.primaryChannel === 'WEB_WIDGET' ? 'Widget'
+                        : bot.primaryChannel === 'EMAIL' ? 'Email'
+                        : bot.primaryChannel === 'WHATSAPP' ? 'WhatsApp'
+                        : bot.primaryChannel}
                     </span>
-                    {bot.template === 'ECOMMERCE' && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-emerald-900/40 text-emerald-400">
-                        E-commerce
-                      </span>
-                    )}
+                    {(() => {
+                      const tmpl = BOT_TEMPLATE_OPTIONS.find((t) => t.key === (bot.template as BotTemplateKey));
+                      if (!tmpl || tmpl.key === 'GENERAL') return null;
+                      return (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium border ${tmpl.badgeClass}`}>
+                          {tmpl.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
@@ -3783,17 +3892,26 @@ onBeforeUnmount(() => {
                     }`}>
                       {bot.isActive ? 'Active' : 'Inactive'}
                     </span>
-                    {bot.telegramToken ? (
+                    {bot.telegramToken && (
                       <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium ${
-                        bot.webhookSet
-                          ? 'bg-zinc-800 text-zinc-500'
-                          : 'bg-orange-500/15 text-orange-400'
+                        bot.webhookSet ? 'bg-zinc-800 text-zinc-500' : 'bg-orange-500/15 text-orange-400'
                       }`}>
                         {bot.webhookSet ? 'Webhook ready' : '⚠ No webhook'}
                       </span>
-                    ) : (
+                    )}
+                    {bot.webWidgetEnabled && (
                       <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-500">
                         Widget enabled
+                      </span>
+                    )}
+                    {bot.emailEnabled && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-500">
+                        Email enabled
+                      </span>
+                    )}
+                    {bot.whatsappEnabled && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-500">
+                        WhatsApp enabled
                       </span>
                     )}
                     {bot.aiConfig?.systemPrompt && (

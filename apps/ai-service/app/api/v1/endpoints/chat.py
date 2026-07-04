@@ -21,7 +21,10 @@ class ChatRequest(BaseModel):
     bot_name: str = "Assistant"
     org_name: str | None = None
     system_prompt: str | None = None
-    customer_context: str | None = None  # summaries of previous conversations with this customer
+    customer_context: str | None = None
+    action_forwarding_enabled: bool = False
+    conversation_summary: str | None = None
+    # Legacy operational truth fields — kept for backward compat, no longer used
     forwarding_status: str | None = None
     forwarding_reason: str | None = None
     action_task_id: str | None = None
@@ -44,6 +47,11 @@ class ChatResponse(BaseModel):
     confidence: float = 0.5
     should_escalate: bool = False
     escalation_topic: str | None = None
+    # Unified intent + summary fields (populated when action_forwarding_enabled=True)
+    action_type: str = "NONE"
+    intent_confidence: float = 0.0
+    intent_summary: str = ""
+    conversation_summary: str = ""
 
 
 @router.post("", response_model=ChatResponse)
@@ -52,7 +60,7 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
-        reply, sources, assessment = await rag_service.chat(
+        reply, sources, assessment, chat_meta = await rag_service.chat(
             organization_id=request.organization_id,
             bot_id=request.bot_id,
             conversation_id=request.conversation_id,
@@ -62,6 +70,8 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             org_name=request.org_name,
             system_prompt=request.system_prompt,
             customer_context=request.customer_context,
+            action_forwarding_enabled=request.action_forwarding_enabled,
+            conversation_summary=request.conversation_summary,
             forwarding_status=request.forwarding_status,
             forwarding_reason=request.forwarding_reason,
             action_task_id=request.action_task_id,
@@ -74,9 +84,15 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             risk_profile=request.risk_profile,
             needs_verifier=request.needs_verifier,
         )
-        # Strip [RESOLVED] token from the reply text; surface it as a flag
-        should_resolve = re.search(r'\[\s*resolved\s*\]', reply, re.IGNORECASE) is not None
+        # In structured mode, should_resolve comes from chat_meta; in standard mode, detect the tag
+        # Always strip [RESOLVED] tag — in structured mode should_resolve comes from JSON,
+        # but the AI may still emit the tag inside the reply field per RESOLUTION_TAG_INSTRUCTION.
         clean_reply = re.sub(r'\[\s*resolved\s*\]', '', reply, flags=re.IGNORECASE).rstrip()
+        if request.action_forwarding_enabled:
+            should_resolve = bool(chat_meta.get("should_resolve"))
+        else:
+            should_resolve = re.search(r'\[\s*resolved\s*\]', reply, re.IGNORECASE) is not None
+
         return ChatResponse(
             reply=clean_reply,
             conversation_id=request.conversation_id,
@@ -86,6 +102,10 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             confidence=assessment.get("confidence", 0.5),
             should_escalate=assessment.get("should_escalate", False),
             escalation_topic=assessment.get("escalation_topic"),
+            action_type=chat_meta.get("action_type") or "NONE",
+            intent_confidence=chat_meta.get("intent_confidence") or 0.0,
+            intent_summary=chat_meta.get("intent_summary") or "",
+            conversation_summary=chat_meta.get("conversation_summary") or "",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

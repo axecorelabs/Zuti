@@ -302,10 +302,6 @@ export function sanitizeOperationalClaims(
     sanitized = dedupedSentences.join(' ').trim();
   }
 
-  if (sanitized !== text && !/cannot confirm operational actions as completed/i.test(sanitized)) {
-    sanitized = `${sanitized}\n\nI cannot confirm operational actions as completed until the system confirms them.`;
-  }
-
   return sanitized;
 }
 

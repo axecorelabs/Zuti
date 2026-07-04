@@ -586,6 +586,12 @@ export class BotsService {
           }
         : {};
 
+    const nameConflict = await this.prisma.bot.findFirst({
+      where: { organizationId, name: { equals: dto.name, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    if (nameConflict) throw new BadRequestException('A bot with this name already exists in your organization');
+
     if (actionForwardingEnabled) {
       const hasRoute = await this.hasForwardingRouteConfiguration(organizationId);
       if (!hasRoute) this.throwForwardingConfigurationRequired();
@@ -689,6 +695,14 @@ export class BotsService {
       where: { id: botId, organizationId },
     });
     if (!existing) throw new NotFoundException('Bot not found');
+
+    if (dto.name !== undefined && dto.name.trim().toLowerCase() !== existing.name.trim().toLowerCase()) {
+      const nameConflict = await this.prisma.bot.findFirst({
+        where: { organizationId, name: { equals: dto.name, mode: 'insensitive' }, id: { not: botId } },
+        select: { id: true },
+      });
+      if (nameConflict) throw new BadRequestException('A bot with this name already exists in your organization');
+    }
 
     const enableWidget = dto.webWidgetEnabled === true;
     const currentAllowedDomains = Array.from(new Set(

@@ -49,11 +49,14 @@ export class ActionForwardingProcessor {
     const bookingReason = typeof payload.bookingReason === 'string' ? payload.bookingReason : null;
     const companyName = typeof payload.companyName === 'string' ? payload.companyName : null;
     const consultationPurpose = typeof payload.consultationPurpose === 'string' ? payload.consultationPurpose : null;
+    const intentSummary = typeof payload.intentSummary === 'string' ? payload.intentSummary : null;
+    const conversationContext = typeof payload.conversationContext === 'string' ? payload.conversationContext : null;
 
     const parts = [
       `Topic: ${action.actionType}`,
       `Urgency: ${action.priority}`,
       `Request summary: ${action.summary}`,
+      intentSummary ? `What the customer needs: ${intentSummary}` : null,
       customerName ? `Customer name: ${customerName}` : null,
       customerEmail ? `Customer email: ${customerEmail}` : null,
       customerPhone ? `Customer phone: ${customerPhone}` : null,
@@ -65,6 +68,7 @@ export class ActionForwardingProcessor {
       preferredDatetime ? `Preferred time: ${preferredDatetime}` : null,
       bookingId ? `Booking reference: ${bookingId}` : null,
       messageText ? `Customer message: ${messageText}` : null,
+      conversationContext ? `Conversation summary: ${conversationContext}` : null,
       `Reference id: ${action.id}`,
     ].filter(Boolean);
 
@@ -247,6 +251,8 @@ export class ActionForwardingProcessor {
         issueDetails: typeof payload.issueDetails === 'string' ? payload.issueDetails : null,
         preferredDatetime: typeof payload.preferredDatetime === 'string' ? payload.preferredDatetime : null,
         messageText: typeof payload.messageText === 'string' ? payload.messageText : null,
+        intentSummary: typeof payload.intentSummary === 'string' ? payload.intentSummary : null,
+        conversationContext: typeof payload.conversationContext === 'string' ? payload.conversationContext : null,
         actionTaskId: action.id,
       }),
     );

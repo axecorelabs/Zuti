@@ -43,6 +43,8 @@ interface InboundActionSignalInput {
   customerName?: string | null;
   customerEmail?: string | null;
   actionForwardingEnabled?: boolean;
+  skipAiClassification?: boolean;
+  conversationContext?: string | null;
 }
 
 type SkillKey = 'SALES' | 'BOOKING' | 'TECHNICAL';
@@ -464,11 +466,13 @@ export class ActionForwardingService {
       'urgent for owner', 'escalate this to owner',
     ];
 
+    const snippet = text.trim().slice(0, 300);
+
     if (meetingPhrases.some((p) => normalized.includes(p))) {
       return {
         actionType: 'MEETING_REQUEST',
         confidence: 0.72,
-        summary: 'Customer requested a meeting with owner or team member.',
+        summary: `Customer requested a meeting. Message: "${snippet}"`,
       };
     }
 
@@ -476,7 +480,7 @@ export class ActionForwardingService {
       return {
         actionType: 'CONSULTATION_REQUEST',
         confidence: 0.74,
-        summary: 'Customer requested a consultation or sales follow-up.',
+        summary: `Customer requested a consultation or sales follow-up. Message: "${snippet}"`,
       };
     }
 
@@ -484,7 +488,7 @@ export class ActionForwardingService {
       return {
         actionType: 'SALES_ORDER_REQUEST',
         confidence: 0.7,
-        summary: 'Customer expressed order/purchase intent.',
+        summary: `Customer expressed order/purchase intent. Message: "${snippet}"`,
       };
     }
 
@@ -492,7 +496,7 @@ export class ActionForwardingService {
       return {
         actionType: 'TECHNICAL_ISSUE',
         confidence: 0.68,
-        summary: 'Customer reported a technical issue that requires follow-up.',
+        summary: `Customer reported a technical issue. Message: "${snippet}"`,
       };
     }
 
@@ -500,7 +504,7 @@ export class ActionForwardingService {
       return {
         actionType: 'OWNER_ATTENTION_NEEDED',
         confidence: 0.74,
-        summary: 'Customer requested explicit owner/management attention.',
+        summary: `Customer requested owner/management attention. Message: "${snippet}"`,
       };
     }
 
@@ -1046,7 +1050,10 @@ export class ActionForwardingService {
     }
   }
 
-  async detectAndQueue(input: InboundActionSignalInput): Promise<ActionForwardingResult> {
+  async detectAndQueue(
+    input: InboundActionSignalInput,
+    preClassifiedDetected?: { actionType: ActionType; confidence: number; summary: string },
+  ): Promise<ActionForwardingResult> {
     if (!input.actionForwardingEnabled) {
       return this.buildForwardingResult({
         status: 'DISABLED',
@@ -1054,11 +1061,13 @@ export class ActionForwardingService {
       });
     }
 
-    let detected: { actionType: ActionType; confidence: number; summary: string } | null = null;
-    try {
-      detected = await this.detectActionWithAi(input.messageText);
-    } catch {
-      detected = null;
+    let detected: { actionType: ActionType; confidence: number; summary: string } | null = preClassifiedDetected ?? null;
+    if (!detected && !input.skipAiClassification) {
+      try {
+        detected = await this.detectActionWithAi(input.messageText);
+      } catch {
+        detected = null;
+      }
     }
     if (!detected) {
       detected = this.detectActionByKeywords(input.messageText);
@@ -1763,6 +1772,22 @@ export class ActionForwardingService {
       });
     }
 
+    if (detected.actionType === 'OWNER_ATTENTION_NEEDED') {
+      await prismaAny.actionTask.update({
+        where: { id: task.id },
+        data: {
+          payload: {
+            channel: input.channel,
+            messageText: input.messageText,
+            customerName: input.customerName ?? null,
+            customerEmail: input.customerEmail ?? null,
+            intentSummary: detected.summary,
+            conversationContext: input.conversationContext ?? null,
+          },
+        },
+      });
+    }
+
     if (task.status === 'QUEUED') {
       const notification = buildQueuedActionNotification(task.actionType, collectedFields, input);
       await this.notifications.createOrgNotification(
@@ -2067,6 +2092,16 @@ export class ActionForwardingService {
 
       const quantity = salesOrder.quantity ?? 1;
       const lineTotal = unitPriceMinor * quantity;
+
+      // Idempotency guard: if a CommerceOrder already exists for this actionTaskId, use it.
+      const existingOrder = await prismaAny.commerceOrder.findFirst({
+        where: { metadata: { path: ['actionTaskId'], equals: options.actionTaskId } },
+        select: { id: true, status: true },
+      });
+      if (existingOrder) {
+        this.logger.warn(`bridgeToCommerceOrder: order already exists for task ${options.actionTaskId} (${existingOrder.id}), skipping duplicate`);
+        return;
+      }
 
       const order = await prismaAny.commerceOrder.create({
         data: {

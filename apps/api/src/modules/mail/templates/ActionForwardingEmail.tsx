@@ -23,6 +23,8 @@ interface ActionForwardingEmailProps {
   issueDetails?: string | null;
   preferredDatetime?: string | null;
   messageText?: string | null;
+  intentSummary?: string | null;
+  conversationContext?: string | null;
   actionTaskId: string;
 }
 
@@ -50,6 +52,8 @@ export function ActionForwardingEmail({
   issueDetails,
   preferredDatetime,
   messageText,
+  intentSummary,
+  conversationContext,
   actionTaskId,
 }: ActionForwardingEmailProps) {
   return (
@@ -66,6 +70,7 @@ export function ActionForwardingEmail({
             <Row label="Topic" value={actionType} />
             <Row label="Urgency" value={priority} />
             <Row label="Request summary" value={summary} />
+            <Row label="What the customer needs" value={intentSummary} />
             <Row label="Customer name" value={customerName} />
             <Row label="Customer email" value={customerEmail} />
             <Row label="Customer phone" value={customerPhone} />
@@ -82,6 +87,13 @@ export function ActionForwardingEmail({
             <Section style={messageCard}>
               <Text style={messageTitle}>Customer Message</Text>
               <Text style={messageTextStyle}>{messageText}</Text>
+            </Section>
+          ) : null}
+
+          {conversationContext ? (
+            <Section style={messageCard}>
+              <Text style={messageTitle}>Conversation Summary</Text>
+              <Text style={messageTextStyle}>{conversationContext}</Text>
             </Section>
           ) : null}
 

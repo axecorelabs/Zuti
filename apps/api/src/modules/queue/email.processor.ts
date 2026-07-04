@@ -165,7 +165,7 @@ export class EmailProcessor {
     const {
       botId, organizationId, toAddress,
       fromEmail, fromName, subject,
-      bodyText, messageId, inReplyTo,
+      bodyText, messageId,
       hasAttachments, attachments,
     } = job.data;
 
@@ -410,6 +410,7 @@ export class EmailProcessor {
       customerName: conversation.customerName,
       customerEmail: conversation.customerEmail,
       actionForwardingEnabled: bot.actionForwardingEnabled === true,
+      skipAiClassification: true,
     }).then((result) => {
       forwardingResult = result;
     }).catch((err: unknown) => {
@@ -438,7 +439,6 @@ export class EmailProcessor {
     // CSAT collection: if conversation is awaiting satisfaction response, handle it
     const existingMeta = (conversation as any).metadata as Record<string, unknown> | undefined;
     if (conversation.status === 'PENDING' && existingMeta?.awaitingCsat === true) {
-      const aiConfig2 = (bot.aiConfig as Record<string, string>) ?? {};
       const lastAssistantMessage = await this.prisma.message.findFirst({
         where: { conversationId: conversation.id, role: 'ASSISTANT' },
         orderBy: { createdAt: 'desc' },
@@ -634,8 +634,14 @@ export class EmailProcessor {
     });
     const latestMetadata = latestConversation?.metadata;
 
+    const storedMeta = asObject(latestMetadata);
+    const storedConversationSummary = typeof storedMeta.conversationSummary === 'string' && storedMeta.conversationSummary.trim()
+      ? storedMeta.conversationSummary
+      : null;
+    const cappedPriorForAi = storedConversationSummary ? priorForAi.slice(0, 8) : priorForAi;
+
     // Build customer context from previous email conversations — only on first message.
-    const emailConv = priorForAi.length === 0
+    const emailConv = cappedPriorForAi.length === 0
       ? await this.prisma.conversation.findUnique({
           where: { id: conversation.id },
           select: { customerEmail: true },
@@ -696,7 +702,7 @@ export class EmailProcessor {
           },
         },
       },
-      priorMessages: priorForAi,
+      priorMessages: cappedPriorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
       userMessage: userText,
@@ -773,6 +779,8 @@ export class EmailProcessor {
             org_name: orgName,
             system_prompt: effectiveSystemPrompt,
             customer_context: effectiveCustomerContext,
+            action_forwarding_enabled: aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED',
+            conversation_summary: storedConversationSummary ?? null,
             forwarding_status: forwardingResult.status,
             forwarding_reason: forwardingResult.reason,
             action_task_id: forwardingResult.actionTaskId ?? null,
@@ -791,6 +799,46 @@ export class EmailProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
+
+      const returnedSummary: string | null = typeof response.data?.conversation_summary === 'string' && response.data.conversation_summary.trim()
+        ? response.data.conversation_summary.trim()
+        : null;
+      if (returnedSummary) {
+        this.prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { metadata: { ...storedMeta, conversationSummary: returnedSummary } as Prisma.InputJsonValue },
+        }).catch(() => null);
+      }
+
+      const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
+      const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
+      if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && forwardingResult.status === 'NO_INTENT') {
+        this.actionForwarding.detectAndQueue(
+          {
+            organizationId,
+            botId,
+            conversationId: conversation.id,
+            messageId: inboundMessageId ?? conversation.id,
+            messageText: userText,
+            channel: 'EMAIL',
+            customerName: null,
+            customerEmail: customerEmail ?? null,
+            actionForwardingEnabled: true,
+            skipAiClassification: true,
+            conversationContext: returnedSummary ?? storedConversationSummary ?? null,
+          },
+          {
+            actionType: chatActionType as any,
+            confidence: chatIntentConfidence,
+            summary: typeof response.data?.intent_summary === 'string' && response.data.intent_summary.trim()
+              ? response.data.intent_summary.trim()
+              : userText.slice(0, 300),
+          },
+        ).catch((err: unknown) => {
+          this.logger.warn(`Post-chat action queuing failed (email): ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+
       const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
       const completionTokens = estimateTokens(aiText);
 
@@ -800,6 +848,7 @@ export class EmailProcessor {
         promptTokens,
         completionTokens,
         idempotencyKey: `email:${inboundMessageId ?? conversation.id}`,
+
         metadata: {
           channel: 'EMAIL',
           conversationId: conversation.id,

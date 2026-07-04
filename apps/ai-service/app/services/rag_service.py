@@ -42,6 +42,9 @@ class RagService:
         org_name: str | None = None,
         system_prompt: str | None = None,
         customer_context: str | None = None,
+        action_forwarding_enabled: bool = False,
+        conversation_summary: str | None = None,
+        # Legacy params kept for API compat — no longer used internally
         forwarding_status: str | None = None,
         forwarding_reason: str | None = None,
         action_task_id: str | None = None,
@@ -53,76 +56,92 @@ class RagService:
         operational_truth: dict[str, Any] | None = None,
         risk_profile: dict[str, Any] | None = None,
         needs_verifier: bool | None = None,
-    ) -> tuple[str, list[dict], dict[str, Any]]:
-        # 1. Try RAG (embed + Qdrant search) — degrade gracefully if unavailable
+    ) -> tuple[str, list[dict], dict[str, Any], dict[str, Any]]:
+        # 1. Try RAG (embed + Qdrant search) — skip for short purely conversational turns
+        # (greetings, acknowledgements, simple yes/no) that don't need knowledge retrieval.
         sources: list[dict] = []
         context = ""
-        try:
-            query_vector = await embedding_service.embed(message)
-
-            from qdrant_client import AsyncQdrantClient
-            client = AsyncQdrantClient(
-                url=settings.QDRANT_URL,
-                api_key=settings.QDRANT_API_KEY or None,
-            )
-            collection = _collection(organization_id)
-            bot_scope = f"bot_{bot_id}"
-
-            response = await client.query_points(
-                collection_name=collection,
-                query=query_vector,
-                limit=max(top_k * 4, top_k),
-                score_threshold=0.5,
-            )
-
-            allowed_scopes = {"", "__shared__", bot_scope}
-            for hit in response.points:
-                payload = hit.payload or {}
-                point_scope = str(payload.get("bot_scope") or "")
-                point_bot_id = str(payload.get("bot_id") or "")
-                # Backward compatible: unscoped legacy chunks are treated as shared.
-                if point_scope not in allowed_scopes and point_bot_id not in {"", bot_id}:
-                    continue
-                sources.append({"content": payload.get("content", ""), "score": hit.score})
-                if len(sources) >= top_k:
-                    break
-
-            context = "\n\n".join(s["content"] for s in sources)
-        except Exception as e:
-            logger.warning(f"RAG search failed (continuing without context): {e}")
-
-        # 2. Generate reply
-        reply = await llm_service.generate(
-            user_message=message,
-            context=context,
-            conversation_id=conversation_id,
-            history=history or [],
-            bot_name=bot_name,
-            org_name=org_name,
-            system_prompt_override=system_prompt,
-            customer_context=customer_context,
+        msg_lower = message.lower().strip()
+        _needs_retrieval = (
+            len(msg_lower) > 60
+            or any(kw in msg_lower for kw in (
+                "?", "how", "what", "why", "when", "where", "who", "which",
+                "help", "issue", "problem", "error", "price", "cost",
+                "buy", "order", "book", "schedule", "refund", "cancel",
+                "feature", "plan", "support", "technical", "integrate",
+            ))
         )
+        if _needs_retrieval:
+            try:
+                query_vector = await embedding_service.embed(message)
 
-        # 3. Semantic integrity pass: validate/rewrite operational claims against runtime truth.
-        reply = await llm_service.enforce_operational_integrity(
-            draft_reply=reply,
-            operational_truth={
-                **(operational_truth or {}),
-                "forwarding_status": forwarding_status,
-                "forwarding_reason": forwarding_reason,
-                "action_task_id": action_task_id,
-                "can_claim_completed": can_claim_completed,
-                "missing_fields": missing_fields or [],
-                "blocked_capability": blocked_capability,
-                "claim_level": claim_level,
-                "delivery_status": delivery_status,
-                "risk_profile": risk_profile or {},
-            },
-            force=bool(needs_verifier),
-        )
+                from qdrant_client import AsyncQdrantClient
+                client = AsyncQdrantClient(
+                    url=settings.QDRANT_URL,
+                    api_key=settings.QDRANT_API_KEY or None,
+                )
+                collection = _collection(organization_id)
+                bot_scope = f"bot_{bot_id}"
+
+                response = await client.query_points(
+                    collection_name=collection,
+                    query=query_vector,
+                    limit=max(top_k * 4, top_k),
+                    score_threshold=0.5,
+                )
+
+                allowed_scopes = {"", "__shared__", bot_scope}
+                for hit in response.points:
+                    payload = hit.payload or {}
+                    point_scope = str(payload.get("bot_scope") or "")
+                    point_bot_id = str(payload.get("bot_id") or "")
+                    if point_scope not in allowed_scopes and point_bot_id not in {"", bot_id}:
+                        continue
+                    sources.append({"content": payload.get("content", ""), "score": hit.score})
+                    if len(sources) >= top_k:
+                        break
+
+                context = "\n\n".join(s["content"] for s in sources)
+            except Exception as e:
+                logger.warning(f"RAG search failed (continuing without context): {e}")
+
+        # 2. Generate reply (+ optional unified intent classification and conversation summary)
+        chat_meta: dict[str, Any] = {}
+        if action_forwarding_enabled:
+            result = await llm_service.generate_structured(
+                user_message=message,
+                context=context,
+                conversation_id=conversation_id,
+                history=history or [],
+                bot_name=bot_name,
+                org_name=org_name,
+                system_prompt_override=system_prompt,
+                customer_context=customer_context,
+                conversation_summary=conversation_summary,
+            )
+            reply = result.get("reply") or ""
+            chat_meta = {
+                "action_type": result.get("action_type") or "NONE",
+                "intent_confidence": result.get("intent_confidence") or 0.0,
+                "intent_summary": result.get("intent_summary") or "",
+                "conversation_summary": result.get("conversation_summary") or "",
+                "should_resolve": bool(result.get("should_resolve")),
+            }
+        else:
+            reply = await llm_service.generate(
+                user_message=message,
+                context=context,
+                conversation_id=conversation_id,
+                history=history or [],
+                bot_name=bot_name,
+                org_name=org_name,
+                system_prompt_override=system_prompt,
+                customer_context=customer_context,
+                conversation_summary=conversation_summary,
+            )
 
         assessment = self._assess_answerability(message, reply, sources)
-        return reply, sources, assessment
+        return reply, sources, assessment, chat_meta
 
     def _assess_answerability(
         self,

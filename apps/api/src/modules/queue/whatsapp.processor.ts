@@ -590,6 +590,7 @@ export class WhatsAppProcessor {
       customerName,
       customerEmail: null,
       actionForwardingEnabled: bot.actionForwardingEnabled === true,
+      skipAiClassification: true,
     }).then((result) => {
       forwardingResult = result;
     }).catch((err: unknown) => {
@@ -690,6 +691,12 @@ export class WhatsAppProcessor {
     const latestConversation = await this.prisma.conversation.findUnique({ where: { id: conversationId } });
     if (!latestConversation) return;
 
+    const storedMeta = asObject(latestConversation.metadata);
+    const storedConversationSummary = typeof storedMeta.conversationSummary === 'string' && storedMeta.conversationSummary.trim()
+      ? storedMeta.conversationSummary
+      : null;
+    const cappedPriorForAi = storedConversationSummary ? priorForAi.slice(0, 8) : priorForAi;
+
     const previousCustomerContextKey = latestConversation.whatsappPhoneNumber
       ? `whatsapp:${latestConversation.whatsappPhoneNumber}`
       : latestConversation.whatsappUserId
@@ -761,7 +768,7 @@ export class WhatsAppProcessor {
 
     const aiContext = buildCompactAiContext({
       conversation: conversationForContext,
-      priorMessages: priorForAi,
+      priorMessages: cappedPriorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
       userMessage: userText,
@@ -832,6 +839,8 @@ export class WhatsAppProcessor {
             org_name: org?.name ?? null,
             system_prompt: effectiveSystemPrompt,
             customer_context: effectiveCustomerContext,
+            action_forwarding_enabled: (aiConfig as Record<string, unknown>).actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED',
+            conversation_summary: storedConversationSummary ?? null,
             forwarding_status: forwardingResult.status,
             forwarding_reason: forwardingResult.reason,
             action_task_id: forwardingResult.actionTaskId ?? null,
@@ -850,6 +859,46 @@ export class WhatsAppProcessor {
 
       const aiText = String(response.data?.reply ?? 'I am unable to respond right now.');
       const shouldResolve = response.data?.should_resolve === true;
+
+      const returnedSummary: string | null = typeof response.data?.conversation_summary === 'string' && response.data.conversation_summary.trim()
+        ? response.data.conversation_summary.trim()
+        : null;
+      if (returnedSummary) {
+        this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { metadata: { ...asObject(storedMeta), conversationSummary: returnedSummary } as Prisma.InputJsonValue },
+        }).catch(() => null);
+      }
+
+      const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
+      const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
+      if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && forwardingResult.status === 'NO_INTENT') {
+        this.actionForwarding.detectAndQueue(
+          {
+            organizationId,
+            botId: bot.id,
+            conversationId,
+            messageId: inboundMessageId ?? conversationId,
+            messageText: userText,
+            channel: 'WHATSAPP',
+            customerName: null,
+            customerEmail: null,
+            actionForwardingEnabled: true,
+            skipAiClassification: true,
+            conversationContext: returnedSummary ?? storedConversationSummary ?? null,
+          },
+          {
+            actionType: chatActionType as any,
+            confidence: chatIntentConfidence,
+            summary: typeof response.data?.intent_summary === 'string' && response.data.intent_summary.trim()
+              ? response.data.intent_summary.trim()
+              : userText.slice(0, 300),
+          },
+        ).catch((err: unknown) => {
+          this.logger.warn(`Post-chat action queuing failed (whatsapp): ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+
       const completionTokens = estimateTokens(aiText);
 
       await this.billing.debitUsageCredits({

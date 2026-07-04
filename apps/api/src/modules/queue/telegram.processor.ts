@@ -595,6 +595,8 @@ export class TelegramProcessor {
         evidenceIds: [],
       },
     };
+    // Pre-check: keyword detection + capability checks only. AI classification is deferred
+    // to the unified chat call, which returns action_type alongside the reply.
     await this.actionForwarding.detectAndQueue({
       organizationId,
       botId,
@@ -605,6 +607,7 @@ export class TelegramProcessor {
       customerName: conversation.customerName,
       customerEmail: null,
       actionForwardingEnabled: bot?.actionForwardingEnabled === true,
+      skipAiClassification: true,
     }).then((result) => {
       forwardingResult = result;
     }).catch((err: unknown) => {
@@ -860,8 +863,16 @@ export class TelegramProcessor {
     });
     if (!latestConversation) return;
 
+    // Use stored conversation summary to cap history: once a summary exists we only need
+    // the last 8 turns for recency context — older turns are captured in the summary.
+    const storedMeta = asObject(latestConversation.metadata);
+    const storedConversationSummary = typeof storedMeta.conversationSummary === 'string' && storedMeta.conversationSummary.trim()
+      ? storedMeta.conversationSummary
+      : null;
+    const cappedPriorForAi = storedConversationSummary ? priorForAi.slice(0, 8) : priorForAi;
+
     // Build customer context from previous Telegram conversations — only on first message.
-    const conv = priorForAi.length === 0
+    const conv = cappedPriorForAi.length === 0
       ? await this.prisma.conversation.findUnique({
           where: { id: conversationId },
           select: { telegramChatId: true },
@@ -922,7 +933,7 @@ export class TelegramProcessor {
     };
     const aiContext = buildCompactAiContext({
       conversation: conversationForContext,
-      priorMessages: priorForAi,
+      priorMessages: cappedPriorForAi,
       forwarding: forwardingResult,
       previousCustomerContext,
       userMessage: userText,
@@ -999,6 +1010,8 @@ export class TelegramProcessor {
             org_name: orgName,
             system_prompt: effectiveSystemPrompt,
             customer_context: effectiveCustomerContext,
+            action_forwarding_enabled: aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED',
+            conversation_summary: storedConversationSummary ?? null,
             forwarding_status: forwardingResult.status,
             forwarding_reason: forwardingResult.reason,
             action_task_id: forwardingResult.actionTaskId ?? null,
@@ -1017,6 +1030,52 @@ export class TelegramProcessor {
 
       const aiText: string = response.data?.reply ?? 'I am unable to respond right now.';
       const shouldResolve: boolean = response.data?.should_resolve === true;
+
+      // Store conversation summary returned by the unified chat call.
+      const returnedSummary: string | null = typeof response.data?.conversation_summary === 'string' && response.data.conversation_summary.trim()
+        ? response.data.conversation_summary.trim()
+        : null;
+      if (returnedSummary) {
+        this.prisma.conversation.update({
+          where: { id: conversationId },
+          data: { metadata: { ...asObject(storedMeta), conversationSummary: returnedSummary } as Prisma.InputJsonValue },
+        }).catch(() => null);
+      }
+
+      // If the unified call classified an intent the keyword pre-check missed, queue it now.
+      const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
+      const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
+      if (
+        chatActionType !== 'NONE' &&
+        chatIntentConfidence >= 0.6 &&
+        forwardingResult.status === 'NO_INTENT'
+      ) {
+        this.actionForwarding.detectAndQueue(
+          {
+            organizationId,
+            botId,
+            conversationId,
+            messageId: inboundMessageId ?? conversationId,
+            messageText: userText,
+            channel: 'TELEGRAM',
+            customerName: null,
+            customerEmail: null,
+            actionForwardingEnabled: true,
+            skipAiClassification: true,
+            conversationContext: returnedSummary ?? storedConversationSummary ?? null,
+          },
+          {
+            actionType: chatActionType as any,
+            confidence: chatIntentConfidence,
+            summary: typeof response.data?.intent_summary === 'string' && response.data.intent_summary.trim()
+              ? response.data.intent_summary.trim()
+              : userText.slice(0, 300),
+          },
+        ).catch((err: unknown) => {
+          this.logger.warn(`Post-chat action queuing failed (telegram): ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+
       const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });
       const completionTokens = estimateTokens(aiText);
 

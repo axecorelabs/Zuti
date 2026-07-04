@@ -105,10 +105,6 @@ function asStructuredText(value: unknown): string {
   return String(value);
 }
 
-function getValueAtPath(row: any, path: string): unknown {
-  return path.split('.').reduce((current: any, part) => (current && typeof current === 'object' ? current[part] : undefined), row);
-}
-
 function buildFieldRow(label: string, value: unknown, formatter: (input: unknown) => string = asStructuredText): StructuredFieldRow {
   return { label, value: formatter(value) };
 }
@@ -120,6 +116,14 @@ function buildStructuredDetailSections(tab: OperationsTab, row: any): Structured
     .map(([key, value]) => buildFieldRow(key.replace(/_/g, ' '), value));
 
   if (tab === 'ACTION_TASKS') {
+    const p = asObject(row.payload);
+    const payloadRows = [
+      buildFieldRow('What the customer needs', p?.intentSummary),
+      buildFieldRow('Customer message', p?.messageText),
+      buildFieldRow('Conversation summary', p?.conversationContext),
+      buildFieldRow('Customer name (payload)', p?.customerName),
+      buildFieldRow('Customer email (payload)', p?.customerEmail),
+    ].filter((r) => r.value !== '—');
     return [
       {
         title: 'Core fields',
@@ -138,6 +142,7 @@ function buildStructuredDetailSections(tab: OperationsTab, row: any): Structured
           buildFieldRow('Dedupe key', row.dedupeKey),
         ],
       },
+      ...(payloadRows.length > 0 ? [{ title: 'Customer context', rows: payloadRows }] : []),
       {
         title: 'Delivery evidence',
         rows: [
@@ -243,11 +248,6 @@ function buildStructuredDetailSections(tab: OperationsTab, row: any): Structured
   ];
 }
 
-function buildStructuredViewRows(tab: OperationsTab, row: any): StructuredFieldRow[] {
-  const sections = buildStructuredDetailSections(tab, row);
-  return sections.flatMap((section) => section.rows);
-}
-
 function collectCustomFieldKeys(rows: any[]): string[] {
   const keys = new Set<string>();
   rows.forEach((row) => {
@@ -282,7 +282,6 @@ function getExtraMetadataText(row: any, knownCustomKeys: string[]): string {
 
 function buildStructuredTableColumns(tab: OperationsTab, rows: any[]): StructuredTableColumn[] {
   const customKeys = collectCustomFieldKeys(rows);
-  const extraKeyList = customKeys;
 
   const schemas: Record<OperationsTab, StructuredTableColumn[]> = {
     ACTION_TASKS: [
@@ -291,6 +290,7 @@ function buildStructuredTableColumns(tab: OperationsTab, rows: any[]): Structure
       { key: 'actionType', label: 'Action type', getValue: (row) => formatKnownValue(row.actionType) },
       { key: 'status', label: 'Status', getValue: (row) => formatKnownValue(row.status) },
       { key: 'summary', label: 'Summary', getValue: (row) => formatKnownValue(row.summary), className: 'min-w-[260px]' },
+      { key: 'intentSummary', label: 'What customer needs', getValue: (row) => formatKnownValue(asObject(row.payload)?.intentSummary), className: 'min-w-[280px]' },
       { key: 'conversation', label: 'Conversation', getValue: (row) => formatKnownValue(row.conversation?.id) },
       { key: 'customerName', label: 'Customer name', getValue: (row) => formatKnownValue(row.conversation?.customerName) },
       { key: 'customerEmail', label: 'Customer email', getValue: (row) => formatKnownValue(row.conversation?.customerEmail) },
@@ -493,12 +493,16 @@ function buildRowPresentation(tab: OperationsTab, row: any): RowPresentation {
                 row.budget ? `budget: ${row.budget}` : null,
                 row.notes ? `notes: ${row.notes}` : null,
               ].filter(Boolean)
-            : [
-                row.conversation?.customerEmail ? `email: ${row.conversation.customerEmail}` : null,
-                row.assignedEndpoint?.destination ? `endpoint: ${row.assignedEndpoint.destination}` : null,
-                row.actionType ? `action: ${row.actionType}` : null,
-                row.dedupeKey ? `dedupe: ${row.dedupeKey}` : null,
-              ].filter(Boolean);
+            : (() => {
+                const p = asObject(row.payload);
+                return [
+                  typeof p?.intentSummary === 'string' && p.intentSummary ? `needs: ${p.intentSummary}` : null,
+                  row.conversation?.customerEmail ? `email: ${row.conversation.customerEmail}` : null,
+                  typeof p?.messageText === 'string' && p.messageText ? `message: ${p.messageText}` : null,
+                  row.assignedEndpoint?.destination ? `endpoint: ${row.assignedEndpoint.destination}` : null,
+                  row.actionType ? `action: ${row.actionType}` : null,
+                ].filter(Boolean);
+              })();
 
   return { summary, status: rowStatus, detailLines: detailLines as string[] };
 }

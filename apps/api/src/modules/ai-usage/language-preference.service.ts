@@ -118,7 +118,11 @@ export class LanguagePreferenceService {
     const currentCode = normalizeLanguageCode(currentPreference.code);
     const currentConfirmed = currentPreference.confirmed === true;
 
-    const classifier = await this.classifyWithAi(input.userMessage, currentCode);
+    // Skip the AI call when a language is already known — the local fallback is sufficient
+    // to catch explicit switch requests ("speak to me in French"), and re-detecting on every
+    // turn is the dominant source of wasted LLM calls per message.
+    const skipAiClassification = Boolean(currentCode);
+    const classifier = skipAiClassification ? {} : await this.classifyWithAi(input.userMessage, currentCode);
     const detectedCode = normalizeLanguageCode(classifier.detected_language_code) ?? detectLanguageFallback(input.userMessage);
     const requestedCode = normalizeLanguageCode(classifier.requested_language_code)
       ?? detectExplicitLanguagePreferenceFallback(input.userMessage);
