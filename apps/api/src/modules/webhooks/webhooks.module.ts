@@ -15,6 +15,7 @@ import { BillingModule } from '../billing/billing.module';
 import { CommerceModule } from '../commerce/commerce.module';
 import { ActivityModule } from '../activity/activity.module';
 import { ActionForwardingModule } from '../action-forwarding/action-forwarding.module';
+import { RegistrationsModule } from '../registrations/registrations.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { ActionForwardingModule } from '../action-forwarding/action-forwarding.m
     CommerceModule,
     ActivityModule,
     ActionForwardingModule,
+    RegistrationsModule,
   ],
   controllers: [WebhooksController],
   providers: [TelegramProcessor, EmailProcessor, WhatsAppProcessor],

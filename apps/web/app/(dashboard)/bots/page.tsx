@@ -3904,9 +3904,14 @@ onBeforeUnmount(() => {
                         Widget enabled
                       </span>
                     )}
-                    {bot.emailEnabled && (
-                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-zinc-800 text-zinc-500">
-                        Email enabled
+                    {bot.emailEnabled && bot.emailAddress && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-teal-500/15 text-teal-400 border border-teal-500/20">
+                        {bot.emailAddress}
+                      </span>
+                    )}
+                    {bot.emailEnabled && !bot.emailAddress && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-lg font-medium bg-teal-500/15 text-teal-400 border border-teal-500/20">
+                        Email
                       </span>
                     )}
                     {bot.whatsappEnabled && (

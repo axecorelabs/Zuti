@@ -6,6 +6,7 @@ export const TELEGRAM_QUEUE = 'telegram-messages';
 export const EMAIL_QUEUE = 'email-messages';
 export const WHATSAPP_QUEUE = 'whatsapp-messages';
 export const ACTION_FORWARDING_QUEUE = 'action-forwarding';
+export const RECEIPTS_QUEUE = 'receipts';
 
 @Global()
 @Module({
@@ -21,6 +22,7 @@ export const ACTION_FORWARDING_QUEUE = 'action-forwarding';
     BullModule.registerQueue({ name: EMAIL_QUEUE }),
     BullModule.registerQueue({ name: WHATSAPP_QUEUE }),
     BullModule.registerQueue({ name: ACTION_FORWARDING_QUEUE }),
+    BullModule.registerQueue({ name: RECEIPTS_QUEUE }),
   ],
   exports: [BullModule],
 })

@@ -31,6 +31,7 @@ import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } f
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
+import { buildRegistrationContextBlock } from '../../common/utils/registration-grounding';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -979,15 +980,14 @@ export class TelegramProcessor {
       ),
     ].filter(Boolean).join('\n\n');
 
-    const commerceGrounding = await buildCommerceGroundingContextBlock({
-      prisma: this.prisma,
-      organizationId,
-      aiConfig,
-      userText,
-    });
+    const [commerceGrounding, registrationContext] = await Promise.all([
+      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, aiConfig, userText }),
+      buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId }),
+    ]);
     const effectiveCustomerContext = [
       customerContext,
       commerceGrounding,
+      registrationContext,
       await this.cannedResponses.buildPromptBlock(organizationId),
     ].filter(Boolean).join('\n\n') || null;
 
@@ -1045,6 +1045,7 @@ export class TelegramProcessor {
       // If the unified call classified an intent the keyword pre-check missed, queue it now.
       const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
       const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
+      const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
       if (
         chatActionType !== 'NONE' &&
         chatIntentConfidence >= 0.6 &&
@@ -1063,6 +1064,7 @@ export class TelegramProcessor {
             actionForwardingEnabled: true,
             skipAiClassification: true,
             conversationContext: returnedSummary ?? storedConversationSummary ?? null,
+            registrationProductId: chatRegistrationProductId || undefined,
           },
           {
             actionType: chatActionType as any,
@@ -1289,6 +1291,16 @@ export class TelegramProcessor {
           this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
             chat_id: telegramChatId,
             text: 'I am connecting you with a human agent who will follow up shortly.',
+          }),
+        );
+      }
+
+      // If a registration payment link was generated, send it as a follow-up
+      if (forwardingResult.registrationPaymentUrl) {
+        await firstValueFrom(
+          this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
+            chat_id: telegramChatId,
+            text: `To complete your registration, please make payment via the link below:\n\n${forwardingResult.registrationPaymentUrl}`,
           }),
         );
       }

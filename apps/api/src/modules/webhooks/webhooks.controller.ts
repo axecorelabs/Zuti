@@ -2,7 +2,7 @@ import {
   Controller, Post, Param, Body, Headers, Get, Query,
   Logger, HttpCode, HttpStatus, UseInterceptors, Req, ForbiddenException, UploadedFiles,
 } from '@nestjs/common';
-import { createHash, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, timingSafeEqual } from 'crypto';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
@@ -16,6 +16,7 @@ import { EmailMessageJob } from '../queue/email.processor';
 import { WhatsAppMessageJob } from '../queue/whatsapp.processor';
 import { BillingService } from '../billing/billing.service';
 import { CommerceService } from '../commerce/commerce.service';
+import { RegistrationsService } from '../registrations/registrations.service';
 import { ConfigService } from '@nestjs/config';
 import { extractWhatsAppConfig, verifyMetaWebhookSignature, verifyTwilioWebhookSignature } from '../../common/utils/whatsapp';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
@@ -54,6 +55,18 @@ export class WebhooksController {
     const expectedDigest = createHash('sha256').update(expected).digest();
     const actualDigest = createHash('sha256').update(actual).digest();
     return timingSafeEqual(expectedDigest, actualDigest);
+  }
+
+  private isPaystackSignatureValid(signature: string | undefined, rawBody: Buffer): boolean {
+    const secret = this.config.get<string>('PAYSTACK_SECRET_KEY');
+    if (!secret) return false;
+    if (!signature || !rawBody?.length) return false;
+    if (!/^[a-fA-F0-9]{128}$/.test(signature)) return false;
+    const digest = createHmac('sha512', secret).update(rawBody).digest('hex').toLowerCase();
+    const digestBuf = Buffer.from(digest, 'utf8');
+    const sigBuf = Buffer.from(signature.toLowerCase(), 'utf8');
+    if (digestBuf.length !== sigBuf.length) return false;
+    return timingSafeEqual(digestBuf, sigBuf);
   }
 
   private async scanInboundFiles(files: Array<Express.Multer.File>): Promise<void> {
@@ -126,6 +139,7 @@ export class WebhooksController {
     @InjectQueue(WHATSAPP_QUEUE) private readonly whatsappQueue: Queue,
     private readonly billing: BillingService,
     private readonly commerce: CommerceService,
+    private readonly registrations: RegistrationsService,
     private readonly config: ConfigService,
   ) {}
 
@@ -568,6 +582,23 @@ export class WebhooksController {
     const body = rawBody ?? Buffer.from('');
     await this.billing.handlePaystackWebhook(signature, body, payload);
     await this.commerce.handlePaystackWebhook(signature, body, payload);
+
+    // Handle registration payments — verify signature independently before acting
+    if (payload?.event === 'charge.success' && payload?.data?.metadata?.source === 'zuti-registration') {
+      if (!this.isPaystackSignatureValid(signature, body)) {
+        this.logger.warn('Ignoring registration Paystack webhook with invalid signature');
+      } else {
+        const reference = payload?.data?.reference;
+        if (typeof reference === 'string' && reference) {
+          try {
+            await this.registrations.handlePaymentConfirmed(reference);
+          } catch (err) {
+            this.logger.warn(`Registration payment confirmation failed for reference ${reference}: ${String(err)}`);
+          }
+        }
+      }
+    }
+
     return { ok: true };
   }
 }

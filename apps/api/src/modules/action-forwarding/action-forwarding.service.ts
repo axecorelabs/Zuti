@@ -8,6 +8,7 @@ import { firstValueFrom } from 'rxjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RegistrationsService } from '../registrations/registrations.service';
 import { sendWhatsAppText } from '../../common/utils/whatsapp';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
@@ -45,6 +46,7 @@ interface InboundActionSignalInput {
   actionForwardingEnabled?: boolean;
   skipAiClassification?: boolean;
   conversationContext?: string | null;
+  registrationProductId?: string;
 }
 
 type SkillKey = 'SALES' | 'BOOKING' | 'TECHNICAL';
@@ -155,6 +157,20 @@ const ACTION_CAPABILITY_REGISTRY: ActionCapabilityRegistry = {
         forbidSystemLookupClaimWithoutLookupId: true,
       },
     },
+    REGISTRATION_REQUEST: {
+      actionType: 'REGISTRATION_REQUEST',
+      capabilityKey: 'FORWARDING',
+      requiredFields: ['customer_name', 'customer_email'],
+      allowedChannels: ['WIDGET', 'EMAIL', 'TELEGRAM', 'WHATSAPP'],
+      executor: {
+        kind: 'ACTION_TASK',
+        enabled: true,
+      },
+      claimRules: {
+        requiresActionTaskIdToConfirm: true,
+        forbidSystemLookupClaimWithoutLookupId: true,
+      },
+    },
   },
 };
 
@@ -170,6 +186,9 @@ const ACTION_CONTRACTS: Partial<Record<ActionType, ActionContractDefinition>> = 
   },
   TECHNICAL_ISSUE: {
     requiredFields: ACTION_CAPABILITY_REGISTRY.actions.TECHNICAL_ISSUE.requiredFields as ContractFieldKey[],
+  },
+  REGISTRATION_REQUEST: {
+    requiredFields: ['customer_name', 'customer_email'],
   },
 };
 
@@ -301,6 +320,8 @@ function shouldContinuePendingContract(actionType: ActionType, messageText: stri
       return hasConsultationOrOnboardingSignals(text);
     case 'SALES_ORDER_REQUEST':
       return /(order|buy|purchase|quantity|unit|product)/i.test(text);
+    case 'REGISTRATION_REQUEST':
+      return true;
     default:
       return true;
   }
@@ -340,6 +361,10 @@ function buildPendingWorkflowSummary(actionType: ActionType, messageText: string
       return snippet
         ? `Customer provided additional details for owner review: ${snippet}`
         : 'Customer provided additional details for owner review.';
+    case 'REGISTRATION_REQUEST':
+      return snippet
+        ? `Customer provided registration details: ${snippet}`
+        : 'Customer provided additional registration details.';
     default:
       return snippet
         ? `Customer provided additional details: ${snippet}`
@@ -385,6 +410,12 @@ function buildQueuedActionNotification(
         title: 'New owner attention request captured',
         body: `${customerName} requested owner or management attention. Review the request in Operations.`,
       };
+    case 'REGISTRATION_REQUEST':
+      return {
+        type: 'registration_requested',
+        title: 'New registration captured',
+        body: `${customerName} registered${fields.registration_product_name ? ` for "${fields.registration_product_name}"` : ''}. Review in Events.`,
+      };
     default:
       return {
         type: 'action_task_queued',
@@ -403,6 +434,7 @@ export class ActionForwardingService {
     private readonly http: HttpService,
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
+    private readonly registrationsService: RegistrationsService,
     @InjectQueue(ACTION_FORWARDING_QUEUE) private readonly queue: Queue,
   ) {}
 
@@ -717,6 +749,7 @@ export class ActionForwardingService {
         return 'SALES';
       case 'TECHNICAL_ISSUE':
         return 'TECHNICAL';
+      case 'REGISTRATION_REQUEST':
       default:
         return null;
     }
@@ -818,6 +851,8 @@ export class ActionForwardingService {
         return capabilities.canCreateTechnicalIssue === true || skills.SUPPORT === true || skills.TECHNICAL === true;
       case 'OWNER_ATTENTION_NEEDED':
         return capabilities.canNotifyOwner === true || capabilities.canNotifyTeam === true || skills.FORWARDING === true;
+      case 'REGISTRATION_REQUEST':
+        return capabilities.canCreateRegistration === true || skills.FORWARDING === true;
       default:
         return false;
     }
@@ -847,7 +882,7 @@ export class ActionForwardingService {
     if (!contracts) return null;
 
     let best: { actionType: ActionType; updatedAt: number } | null = null;
-    const candidateActionTypes: ActionType[] = ['MEETING_REQUEST', 'CONSULTATION_REQUEST', 'SALES_ORDER_REQUEST', 'TECHNICAL_ISSUE'];
+    const candidateActionTypes: ActionType[] = ['MEETING_REQUEST', 'CONSULTATION_REQUEST', 'SALES_ORDER_REQUEST', 'TECHNICAL_ISSUE', 'REGISTRATION_REQUEST'];
 
     for (const actionType of candidateActionTypes) {
       const contract = contracts[actionType] as Record<string, unknown> | undefined;
@@ -1054,6 +1089,9 @@ export class ActionForwardingService {
     input: InboundActionSignalInput,
     preClassifiedDetected?: { actionType: ActionType; confidence: number; summary: string },
   ): Promise<ActionForwardingResult> {
+    let registrationProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; fields: unknown } | null = null;
+    let registrationPaymentUrl: string | null = null;
+
     if (!input.actionForwardingEnabled) {
       return this.buildForwardingResult({
         status: 'DISABLED',
@@ -1165,9 +1203,33 @@ export class ActionForwardingService {
     if (contract) {
       const aiConfig = ((bot?.aiConfig as BotAiConfig | null) ?? {});
       const customContract = this.getCustomIntakeFields(aiConfig, detected.actionType);
+
+      // For REGISTRATION_REQUEST, fetch the product and overlay its fields dynamically.
+      let registrationProductFields: SkillIntakeFieldConfig[] = [];
+      let registrationProductRequiredKeys: string[] = [];
+      if (detected.actionType === 'REGISTRATION_REQUEST' && input.registrationProductId) {
+        const product = await prismaAny.registrationProduct.findFirst({
+          where: { id: input.registrationProductId, orgId: input.organizationId },
+        });
+        if (product) {
+          registrationProduct = product as typeof registrationProduct;
+          const fields = (Array.isArray(product.fields) ? product.fields : []) as { key: string; label: string; required: boolean }[];
+          registrationProductFields = fields.map((f) => ({
+            key: f.key,
+            label: f.label,
+            required: f.required,
+            aliases: [] as string[],
+          }));
+          registrationProductRequiredKeys = fields
+            .filter((f) => f.required)
+            .map((f) => normalizeFieldKey(f.key));
+        }
+      }
+
       const requiredFieldKeys = Array.from(new Set<string>([
         ...contract.requiredFields,
         ...customContract.requiredKeys,
+        ...registrationProductRequiredKeys,
       ]));
 
       const conversation = await this.prisma.conversation.findUnique({
@@ -1188,7 +1250,7 @@ export class ActionForwardingService {
         detected.actionType,
         input.messageText,
         input,
-        customContract.fields,
+        [...customContract.fields, ...registrationProductFields],
       );
       collectedFields = {
         ...normalizedPrevious,
@@ -1497,6 +1559,22 @@ export class ActionForwardingService {
               },
             },
           });
+        } else if (detected.actionType === 'REGISTRATION_REQUEST') {
+          await prismaAny.actionTask.update({
+            where: { id: existingTask.id },
+            data: {
+              summary: buildPendingWorkflowSummary(detected.actionType, input.messageText),
+              payload: {
+                ...existingPayload,
+                channel: input.channel,
+                messageText: input.messageText,
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                registrationProductId: input.registrationProductId ?? (existingPayload.registrationProductId as string | null) ?? null,
+                followUpMissingFields: currentFollowUpMissingFields,
+              },
+            },
+          });
         }
 
         if (currentFollowUpMissingFields.length === 0 && existingTask.status === 'PENDING_CONFIRMATION') {
@@ -1788,6 +1866,60 @@ export class ActionForwardingService {
       });
     }
 
+    if (task.actionType === 'REGISTRATION_REQUEST' && followUpMissingFields.length === 0) {
+      const productId = input.registrationProductId;
+      const product = productId
+        ? (registrationProduct ?? await prismaAny.registrationProduct.findFirst({
+            where: { id: productId, orgId: input.organizationId },
+          }))
+        : null;
+
+      if (product) {
+        const atCapacity = await this.registrationsService.isAtCapacity(product.id, product.capacity);
+        if (!atCapacity) {
+          const entry = await this.registrationsService.createEntry({
+            productId: product.id,
+            orgId: input.organizationId,
+            botId: input.botId,
+            conversationId: input.conversationId,
+            actionTaskId: task.id,
+            customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
+            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
+            collectedFields,
+            isFree: product.isFree,
+            requiresApproval: product.requiresApproval,
+          });
+
+          await prismaAny.actionTask.update({
+            where: { id: task.id },
+            data: {
+              payload: {
+                channel: input.channel,
+                messageText: input.messageText,
+                customerName: collectedFields.customer_name ?? input.customerName ?? null,
+                customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
+                registrationProductId: product.id,
+                registrationProductName: product.name,
+                registrationEntryId: entry.id,
+                followUpMissingFields,
+              },
+            },
+          });
+
+          if (!product.isFree && entry.customerEmail) {
+            try {
+              const { paymentUrl } = await this.registrationsService.initializePayment(entry.id, input.organizationId);
+              registrationPaymentUrl = paymentUrl;
+            } catch (payErr) {
+              this.logger.warn(`Failed to initialize Paystack payment for entry ${entry.id}: ${String(payErr)}`);
+            }
+          }
+        } else {
+          this.logger.warn(`Registration product ${product.id} is at capacity — entry not created`);
+        }
+      }
+    }
+
     if (task.status === 'QUEUED') {
       const notification = buildQueuedActionNotification(task.actionType, collectedFields, input);
       await this.notifications.createOrgNotification(
@@ -1853,7 +1985,7 @@ export class ActionForwardingService {
       });
     }
 
-    return this.enrichWithDeliveryEvidence(input.organizationId, this.buildForwardingResult({
+    const finalResult = await this.enrichWithDeliveryEvidence(input.organizationId, this.buildForwardingResult({
       status: 'QUEUED',
       reason: 'QUEUED_ACTION',
       actionType: detected.actionType,
@@ -1861,6 +1993,10 @@ export class ActionForwardingService {
       actionTaskId: task.id,
       missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
     }));
+    if (registrationPaymentUrl) {
+      return { ...finalResult, registrationPaymentUrl };
+    }
+    return finalResult;
   }
 
   async handleInboundDeliveryEvent(input: {

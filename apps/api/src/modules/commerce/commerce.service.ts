@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable, InternalServerErrorException, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
+import { RECEIPTS_QUEUE } from '../queue/queue.module';
+import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import {
   CommerceOrderStatus,
   CommercePaymentStatus,
@@ -77,7 +81,20 @@ export class CommerceService {
     private readonly configService: ConfigService,
     private readonly activity: ActivityService,
     private readonly notifications: NotificationsService,
+    @InjectQueue(RECEIPTS_QUEUE) private readonly receiptsQueue: Queue,
   ) {}
+
+  private async enqueueEcommerceReceipt(orderId: string, orgId: string) {
+    try {
+      await this.receiptsQueue.add(
+        RECEIPT_JOB.ECOMMERCE,
+        { orderId, orgId },
+        RECEIPT_JOB_OPTIONS,
+      );
+    } catch (err) {
+      this.logger.error(`Failed to enqueue ecommerce receipt job for order ${orderId}: ${String(err)}`);
+    }
+  }
 
   private async recordMutation(
     orgId: string,
@@ -1400,7 +1417,7 @@ export class CommerceService {
     if (verified && amountMatches && currencyMatches) {
       const paidAt = response.data.data?.paid_at ? new Date(response.data.data.paid_at) : new Date();
 
-      await this.prisma.$transaction([
+      const [, orderUpdateResult] = await this.prisma.$transaction([
         this.prisma.commercePayment.update({
           where: { id: payment.id },
           data: {
@@ -1412,14 +1429,21 @@ export class CommerceService {
             } as Prisma.InputJsonValue,
           },
         }),
-        this.prisma.commerceOrder.update({
-          where: { id: order.id },
+        // Conditional update: only rows not already PAID are affected. This makes the
+        // "did THIS call perform the transition" check atomic instead of a racy pre-read,
+        // so concurrent webhook/manual-verify calls can't both enqueue a duplicate receipt.
+        this.prisma.commerceOrder.updateMany({
+          where: { id: order.id, status: { not: CommerceOrderStatus.PAID } },
           data: {
             status: CommerceOrderStatus.PAID,
             paymentStatus: CommercePaymentStatus.SUCCESS,
           },
         }),
       ]);
+
+      if (orderUpdateResult.count > 0) {
+        await this.enqueueEcommerceReceipt(order.id, orgId);
+      }
 
       return {
         orderId: order.id,

@@ -31,6 +31,7 @@ import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } f
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
+import { buildRegistrationContextBlock } from '../../common/utils/registration-grounding';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -809,15 +810,14 @@ export class WhatsAppProcessor {
       data: { metadata: mergedMetadataPatch as Prisma.InputJsonValue },
     }).catch(() => null);
 
-    const commerceGrounding = await buildCommerceGroundingContextBlock({
-      prisma: this.prisma,
-      organizationId,
-      aiConfig,
-      userText,
-    });
+    const [commerceGrounding, registrationContext] = await Promise.all([
+      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, aiConfig, userText }),
+      buildRegistrationContextBlock({ prisma: this.prisma, botId: bot.id, orgId: organizationId }),
+    ]);
     const effectiveCustomerContext = [
       aiContext.customerContext,
       commerceGrounding,
+      registrationContext,
       await this.cannedResponses.buildPromptBlock(organizationId),
     ].filter(Boolean).join('\n\n') || null;
 
@@ -872,6 +872,7 @@ export class WhatsAppProcessor {
 
       const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
       const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
+      const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
       if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && forwardingResult.status === 'NO_INTENT') {
         this.actionForwarding.detectAndQueue(
           {
@@ -886,6 +887,7 @@ export class WhatsAppProcessor {
             actionForwardingEnabled: true,
             skipAiClassification: true,
             conversationContext: returnedSummary ?? storedConversationSummary ?? null,
+            registrationProductId: chatRegistrationProductId || undefined,
           },
           {
             actionType: chatActionType as any,
@@ -1028,6 +1030,15 @@ export class WhatsAppProcessor {
           phoneNumber: bot.whatsappPhoneNumber,
           config: bot.whatsappConfig,
         }, replyTarget, 'I am connecting you with a human agent who will follow up shortly.');
+      }
+
+      if (forwardingResult.registrationPaymentUrl) {
+        await sendWhatsAppText(this.http, {
+          provider: bot.whatsappProvider,
+          channelIdentifier: bot.whatsappChannelIdentifier,
+          phoneNumber: bot.whatsappPhoneNumber,
+          config: bot.whatsappConfig,
+        }, replyTarget, `To complete your registration, please make payment via the link below:\n\n${forwardingResult.registrationPaymentUrl}`);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

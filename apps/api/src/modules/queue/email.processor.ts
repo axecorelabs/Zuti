@@ -33,6 +33,7 @@ import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
+import { buildRegistrationContextBlock } from '../../common/utils/registration-grounding';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -731,15 +732,14 @@ export class EmailProcessor {
       },
     }).catch(() => null);
 
-    const commerceGrounding = await buildCommerceGroundingContextBlock({
-      prisma: this.prisma,
-      organizationId,
-      aiConfig,
-      userText,
-    });
+    const [commerceGrounding, registrationContext] = await Promise.all([
+      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, aiConfig, userText }),
+      buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId }),
+    ]);
     const effectiveCustomerContext = [
       customerContext,
       commerceGrounding,
+      registrationContext,
       await this.cannedResponses.buildPromptBlock(organizationId),
     ].filter(Boolean).join('\n\n') || null;
 
@@ -812,6 +812,7 @@ export class EmailProcessor {
 
       const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
       const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
+      const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
       if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && forwardingResult.status === 'NO_INTENT') {
         this.actionForwarding.detectAndQueue(
           {
@@ -826,6 +827,7 @@ export class EmailProcessor {
             actionForwardingEnabled: true,
             skipAiClassification: true,
             conversationContext: returnedSummary ?? storedConversationSummary ?? null,
+            registrationProductId: chatRegistrationProductId || undefined,
           },
           {
             actionType: chatActionType as any,
@@ -1039,6 +1041,17 @@ export class EmailProcessor {
           });
           this.events.emitConversationUpdate(organizationId, { conversationId: conversation.id, status: 'PENDING' });
         }
+      }
+
+      // If a registration payment link was generated, send it as a follow-up email
+      if (forwardingResult.registrationPaymentUrl) {
+        await this.sendEmail(
+          fromAddress, toAddress, customerEmail,
+          `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
+          `To complete your registration, please make payment via the link below:\n\n${forwardingResult.registrationPaymentUrl}`,
+          conversation.emailThreadId,
+          botName, orgName ?? '',
+        );
       }
     } catch (err) {
       this.logger.error(`AI/email error for conversation ${conversation.id}: ${err}`);

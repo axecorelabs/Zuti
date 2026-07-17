@@ -10,6 +10,8 @@ import {
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 import {
   BillingTransactionKind,
   BillingTransactionStatus,
@@ -21,6 +23,8 @@ import { randomBytes, createHash, createHmac, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { PricingMarket, PricingService } from '../pricing/pricing.service';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
+import { RECEIPTS_QUEUE } from '../queue/queue.module';
+import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import {
   BASE_CREDIT_UNITS_DEFAULT,
   BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY,
@@ -108,7 +112,20 @@ export class BillingService {
     private readonly http: HttpService,
     private readonly config: ConfigService,
     private readonly activity: ActivityService,
+    @InjectQueue(RECEIPTS_QUEUE) private readonly receiptsQueue: Queue,
   ) {}
+
+  private async enqueueCreditsReceipt(transactionId: string, orgId: string) {
+    try {
+      await this.receiptsQueue.add(
+        RECEIPT_JOB.CREDITS,
+        { transactionId, orgId },
+        RECEIPT_JOB_OPTIONS,
+      );
+    } catch (err) {
+      this.logger.error(`Failed to enqueue credits receipt job for transaction ${transactionId}: ${String(err)}`);
+    }
+  }
 
   async getWallet(organizationId: string) {
     const billing = await this.ensureBilling(organizationId);
@@ -588,6 +605,9 @@ export class BillingService {
     }
 
     const applied = await this.applySuccessfulTransaction(reference, verification.data.paid_at, verification.data);
+    if (applied.credited && applied.transactionId) {
+      await this.enqueueCreditsReceipt(applied.transactionId, organizationId);
+    }
     await this.logBillingActivity(
       organizationId,
       ActivityAction.BILLING_CREDIT_APPLIED,
@@ -694,6 +714,9 @@ export class BillingService {
     }
 
     const applied = await this.applySuccessfulTransaction(reference, verification.data.paid_at, verification.data);
+    if (applied.credited && applied.transactionId) {
+      await this.enqueueCreditsReceipt(applied.transactionId, pending.organizationId);
+    }
     await this.logBillingActivity(
       pending.organizationId,
       ActivityAction.BILLING_CREDIT_APPLIED,
@@ -741,6 +764,7 @@ export class BillingService {
           amountMinor: true,
           currency: true,
           metadata: true,
+          initiatedById: true,
         },
       });
 
@@ -775,7 +799,10 @@ export class BillingService {
         if (existing.status === BillingTransactionStatus.PENDING) {
           const verification = await this.verifyPaystackTransaction(existing.reference);
           if (verification.status && verification.data.status === 'success') {
-            await this.applySuccessfulTransaction(existing.reference, verification.data.paid_at, verification.data);
+            const applied = await this.applySuccessfulTransaction(existing.reference, verification.data.paid_at, verification.data);
+            if (applied.credited && applied.transactionId) {
+              await this.enqueueCreditsReceipt(applied.transactionId, billing.organizationId);
+            }
           }
         }
         continue;
@@ -794,6 +821,9 @@ export class BillingService {
           amountMinor: latestCommitment.amountMinor,
           currency: latestCommitment.currency,
           creditsUnits: billing.committedMonthlyCreditsUnits,
+          // Carry the original committing user forward — renewals are system-initiated
+          // but the receipt still needs a recipient.
+          initiatedById: latestCommitment.initiatedById,
           metadata: {
             renewal: true,
             cycleKey,
@@ -849,7 +879,10 @@ export class BillingService {
         continue;
       }
 
-      await this.applySuccessfulTransaction(reference, charge.data.paid_at);
+      const renewalApplied = await this.applySuccessfulTransaction(reference, charge.data.paid_at);
+      if (renewalApplied.credited && renewalApplied.transactionId) {
+        await this.enqueueCreditsReceipt(renewalApplied.transactionId, billing.organizationId);
+      }
       await this.logBillingActivity(
         billing.organizationId,
         ActivityAction.BILLING_CREDIT_APPLIED,
@@ -967,7 +1000,7 @@ export class BillingService {
         },
       });
 
-      return { credited: true, alreadyApplied: false };
+      return { credited: true, alreadyApplied: false, transactionId: transaction.id };
     });
   }
 

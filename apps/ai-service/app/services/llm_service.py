@@ -22,6 +22,7 @@ ACTION_TYPE_VALUES = (
     "SALES_ORDER_REQUEST",
     "TECHNICAL_ISSUE",
     "OWNER_ATTENTION_NEEDED",
+    "REGISTRATION_REQUEST",
 )
 
 STRUCTURED_OUTPUT_SCHEMA = """\
@@ -31,10 +32,11 @@ JSON schema (all fields required):
 {
   "reply": "<complete natural customer-facing response>",
   "should_resolve": <true if the customer's issue is fully resolved, false otherwise>,
-  "action_type": "<one of: NONE | MEETING_REQUEST | CONSULTATION_REQUEST | SALES_ORDER_REQUEST | TECHNICAL_ISSUE | OWNER_ATTENTION_NEEDED>",
+  "action_type": "<one of: NONE | MEETING_REQUEST | CONSULTATION_REQUEST | SALES_ORDER_REQUEST | TECHNICAL_ISSUE | OWNER_ATTENTION_NEEDED | REGISTRATION_REQUEST>",
   "intent_confidence": <float 0.0–1.0>,
   "intent_summary": "<1–2 sentence synthesis of the customer's intent drawn from the full conversation — empty string when action_type is NONE>",
-  "conversation_summary": "<concise running summary of the conversation so far including this turn — always populated>"
+  "conversation_summary": "<concise running summary of the conversation so far including this turn — always populated>",
+  "registration_product_id": "<the ID of the registration product when action_type is REGISTRATION_REQUEST, otherwise empty string>"
 }
 
 Intent classification guide:
@@ -43,6 +45,7 @@ Intent classification guide:
 - SALES_ORDER_REQUEST: customer clearly expresses intent to buy/order.
 - OWNER_ATTENTION_NEEDED: customer explicitly requests owner or management involvement.
 - TECHNICAL_ISSUE: customer has a specific, describable technical problem that needs human follow-up. See qualification rules below.
+- REGISTRATION_REQUEST: customer wants to register for an event, session, or other registerable product listed in the available registrations. Only use this when a matching registration product exists.
 - NONE: no actionable forwarding intent, or issue is not yet specific enough to forward.
 
 TECHNICAL_ISSUE qualification — only classify as TECHNICAL_ISSUE when ALL of the following are true:
@@ -209,7 +212,7 @@ class LlmService:
         and produces a running conversation summary — eliminating the separate
         /action-intent/classify call."""
         if not settings.OPENROUTER_API_KEY:
-            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": ""}
+            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": ""}
 
         base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
         # Append structured output schema after the base prompt
@@ -235,7 +238,7 @@ class LlmService:
             raw = response.choices[0].message.content or ""
         except Exception as e:
             logger.warning(f"generate_structured LLM call failed: {e}")
-            return {"reply": "", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": ""}
+            return {"reply": "", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": ""}
 
         parsed = self._extract_json_object(raw)
         if not parsed:
@@ -259,6 +262,7 @@ class LlmService:
             "intent_confidence": intent_confidence,
             "intent_summary": str(parsed.get("intent_summary") or "").strip(),
             "conversation_summary": str(parsed.get("conversation_summary") or "").strip(),
+            "registration_product_id": str(parsed.get("registration_product_id") or "").strip(),
         }
 
     async def complete(

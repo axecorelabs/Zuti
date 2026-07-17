@@ -546,6 +546,28 @@ export const notificationsApi = {
     api.post(`/organizations/${orgId}/notifications/read-all`),
 };
 
+// ── Registrations ─────────────────────────────────────────────────────────────
+export const registrationsApi = {
+  listProducts: (orgId: string, botId?: string) =>
+    api.get(`/organizations/${orgId}/registrations`, { params: botId ? { botId } : undefined }),
+  createProduct: (orgId: string, data: Record<string, unknown>) =>
+    api.post(`/organizations/${orgId}/registrations`, data),
+  updateProduct: (orgId: string, productId: string, data: Record<string, unknown>) =>
+    api.patch(`/organizations/${orgId}/registrations/${productId}`, data),
+  deleteProduct: (orgId: string, productId: string) =>
+    api.delete(`/organizations/${orgId}/registrations/${productId}`),
+  listEntries: (orgId: string, productId: string) =>
+    api.get(`/organizations/${orgId}/registrations/${productId}/entries`),
+  updateEntryStatus: (orgId: string, entryId: string, status: string) =>
+    api.patch(`/organizations/${orgId}/registrations/entries/${entryId}`, { status }),
+  listFailedReceipts: (orgId: string) =>
+    api.get(`/organizations/${orgId}/registrations/dead-letter`),
+  retryFailedReceipt: (orgId: string, jobId: string) =>
+    api.post(`/organizations/${orgId}/registrations/dead-letter/${jobId}/retry`),
+  discardFailedReceipt: (orgId: string, jobId: string) =>
+    api.delete(`/organizations/${orgId}/registrations/dead-letter/${jobId}`),
+};
+
 // ── Activity ──────────────────────────────────────────────────────────────────
 export const activityApi = {
   list: (orgId: string, params?: { page?: number; limit?: number }) =>

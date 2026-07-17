@@ -119,7 +119,9 @@ model Organization {
   teamChatMessages TeamChatMessage[]
   escalationThreads EscalationThread[]
   knowledgeSuggestions KnowledgeSuggestion[]
-  aiUsageEvents AiUsageEvent[]
+  aiUsageEvents         AiUsageEvent[]
+  registrationProducts  RegistrationProduct[]
+  registrationEntries   RegistrationEntry[]
   knowledgeGaps KnowledgeGap[]
   creditLedgerEntries CreditLedger[]
   billingTransactions BillingTransaction[]
@@ -605,6 +607,7 @@ enum ActionType {
   SALES_ORDER_REQUEST
   OWNER_ATTENTION_NEEDED
   TECHNICAL_ISSUE
+  REGISTRATION_REQUEST
 }
 
 enum ActionTaskStatus {
@@ -1276,4 +1279,63 @@ enum AiUsageType {
   SUMMARIZATION
   MEDIA_TRANSCRIPTION
   MEDIA_VISION
+}
+
+// ─── Registrations ────────────────────────────────────────────────────────────
+
+model RegistrationProduct {
+  id                  String    @id @default(cuid())
+  orgId               String
+  botId               String?
+  name                String
+  description         String?
+  eventDate           DateTime?
+  capacity            Int?
+  isFree              Boolean   @default(true)
+  priceMinor          Int?      // price in lowest denomination (e.g. kobo)
+  currency            String    @default("NGN")
+  requiresApproval    Boolean   @default(false)
+  confirmationMessage String?
+  fields              Json      @default("[]") // [{key, label, type, required}]
+  isActive            Boolean   @default(true)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  organization        Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  entries             RegistrationEntry[]
+
+  @@index([orgId, isActive])
+  @@index([botId, isActive])
+}
+
+model RegistrationEntry {
+  id                  String                  @id @default(cuid())
+  productId           String
+  orgId               String
+  botId               String?
+  conversationId      String?
+  actionTaskId        String?
+  customerName        String?
+  customerEmail       String?
+  collectedFields     Json                    @default("{}")
+  status              RegistrationEntryStatus @default(PENDING_PAYMENT)
+  paystackReference   String?
+  paystackAccessCode  String?
+  paidAt              DateTime?
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
+
+  product             RegistrationProduct     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  organization        Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([productId, status])
+  @@index([orgId, status, createdAt(sort: Desc)])
+  @@index([paystackReference])
+}
+
+enum RegistrationEntryStatus {
+  PENDING_PAYMENT
+  AWAITING_APPROVAL
+  CONFIRMED
+  CANCELLED
 }

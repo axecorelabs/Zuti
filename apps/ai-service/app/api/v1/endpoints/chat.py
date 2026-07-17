@@ -52,6 +52,7 @@ class ChatResponse(BaseModel):
     intent_confidence: float = 0.0
     intent_summary: str = ""
     conversation_summary: str = ""
+    registration_product_id: str = ""
 
 
 @router.post("", response_model=ChatResponse)
@@ -106,6 +107,7 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             intent_confidence=chat_meta.get("intent_confidence") or 0.0,
             intent_summary=chat_meta.get("intent_summary") or "",
             conversation_summary=chat_meta.get("conversation_summary") or "",
+            registration_product_id=chat_meta.get("registration_product_id") or "",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

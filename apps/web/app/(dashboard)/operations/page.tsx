@@ -2,9 +2,9 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Download, Search, RefreshCw } from 'lucide-react';
+import { Download, Search, RefreshCw, AlertTriangle, RotateCcw, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { botsApi, conversationsApi, orgsApi } from '@/lib/api';
+import { botsApi, conversationsApi, orgsApi, registrationsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 type OperationsTab = 'ACTION_TASKS' | 'LEADS' | 'BOOKINGS' | 'SALES_ORDERS' | 'TECH_ISSUES';
@@ -25,6 +25,16 @@ interface PaginatedRecordsResponse {
   page: number;
   limit: number;
   totalPages: number;
+}
+
+interface FailedReceiptJob {
+  id: string;
+  name: string;
+  data: { entryId?: string; orgId?: string };
+  failedReason: string;
+  attemptsMade: number;
+  timestamp: number;
+  finishedOn: number | null;
 }
 
 interface RowPresentation {
@@ -586,7 +596,7 @@ function getFollowUpCustomerName(tab: OperationsTab, row: any): string | null {
 
 export default function OperationsPage() {
   const router = useRouter();
-  const { activeOrgId } = useAuthStore();
+  const { activeOrgId, getRoleForOrg } = useAuthStore();
   const [orgId, setOrgId] = useState<string | null>(null);
   const [bots, setBots] = useState<BotItem[]>([]);
   const [tab, setTab] = useState<OperationsTab>('ACTION_TASKS');
@@ -605,6 +615,59 @@ export default function OperationsPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
+
+  // ── Failed receipts (dead letter queue) — independent of the tab system above ──
+  const [showFailedReceipts, setShowFailedReceipts] = useState(false);
+  const [failedReceipts, setFailedReceipts] = useState<FailedReceiptJob[]>([]);
+  const [failedReceiptsLoading, setFailedReceiptsLoading] = useState(false);
+  const [jobActionInFlight, setJobActionInFlight] = useState<string | null>(null);
+  const canManageFailedReceipts = orgId ? ['OWNER', 'ADMIN'].includes(getRoleForOrg(orgId) ?? '') : false;
+
+  const loadFailedReceipts = async () => {
+    if (!orgId) return;
+    setFailedReceiptsLoading(true);
+    try {
+      const res = await registrationsApi.listFailedReceipts(orgId);
+      setFailedReceipts(res.data);
+    } catch {
+      toast.error('Failed to load failed receipt jobs');
+    } finally {
+      setFailedReceiptsLoading(false);
+    }
+  };
+
+  const retryReceiptJob = async (jobId: string) => {
+    if (!orgId) return;
+    setJobActionInFlight(jobId);
+    try {
+      await registrationsApi.retryFailedReceipt(orgId, jobId);
+      toast.success('Job queued for retry');
+      loadFailedReceipts();
+    } catch {
+      toast.error('Failed to retry job');
+    } finally {
+      setJobActionInFlight(null);
+    }
+  };
+
+  const discardReceiptJob = async (jobId: string) => {
+    if (!orgId || !confirm('Discard this failed job permanently?')) return;
+    setJobActionInFlight(jobId);
+    try {
+      await registrationsApi.discardFailedReceipt(orgId, jobId);
+      toast.success('Job discarded');
+      setFailedReceipts((prev) => prev.filter((j) => j.id !== jobId));
+    } catch {
+      toast.error('Failed to discard job');
+    } finally {
+      setJobActionInFlight(null);
+    }
+  };
+
+  useEffect(() => {
+    if (showFailedReceipts && orgId) loadFailedReceipts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showFailedReceipts, orgId]);
 
   const enabledSkills = useMemo(() => {
     const collected = new Set<BotSkill>();
@@ -924,6 +987,27 @@ export default function OperationsPage() {
           ))}
         </div>
 
+        {canManageFailedReceipts && (
+          <button
+            type="button"
+            onClick={() => setShowFailedReceipts((v) => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+              showFailedReceipts
+                ? 'bg-red-500/15 text-red-400 border-red-500/30'
+                : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-700'
+            }`}
+          >
+            <AlertTriangle className="w-3.5 h-3.5" />
+            Failed Receipts
+            {failedReceipts.length > 0 && (
+              <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-red-500/20 text-red-400 text-[10px] font-semibold">
+                {failedReceipts.length}
+              </span>
+            )}
+          </button>
+        )}
+
+        {!showFailedReceipts && (
         <div className="ml-auto inline-flex items-center rounded-lg border border-zinc-800 bg-zinc-950/80 p-1 text-[11px] text-zinc-400 backdrop-blur">
           <button
             type="button"
@@ -940,7 +1024,90 @@ export default function OperationsPage() {
             All details table
           </button>
         </div>
+        )}
       </div>
+
+      {showFailedReceipts ? (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-950/60">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
+            <div>
+              <h2 className="text-sm font-semibold text-white">Failed receipt & ticket deliveries</h2>
+              <p className="text-xs text-zinc-500 mt-0.5">
+                Jobs that exhausted all automatic retries. Retry manually once the underlying issue is fixed, or discard to drop permanently.
+              </p>
+            </div>
+            <button
+              onClick={loadFailedReceipts}
+              className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="p-5">
+            {failedReceiptsLoading ? (
+              <div className="flex items-center justify-center py-16 text-zinc-600 text-sm">Loading…</div>
+            ) : failedReceipts.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <AlertTriangle className="w-10 h-10 text-zinc-700 mb-3" />
+                <p className="text-sm font-medium text-zinc-400">No failed jobs</p>
+                <p className="text-xs text-zinc-600 mt-1">Every receipt and ticket delivery has succeeded or is still retrying.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-zinc-800">
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Job type</th>
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Entry ID</th>
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Failure reason</th>
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Attempts</th>
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Last failed</th>
+                      <th className="py-2 px-3" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/50">
+                    {failedReceipts.map((job) => (
+                      <tr key={job.id} className="hover:bg-zinc-900/40 transition-colors">
+                        <td className="py-3 px-3 text-zinc-300 font-medium capitalize">{job.name}</td>
+                        <td className="py-3 px-3 text-zinc-500 font-mono text-xs">{job.data.entryId ?? '—'}</td>
+                        <td className="py-3 px-3 text-red-400/80 text-xs max-w-xs truncate" title={job.failedReason}>
+                          {job.failedReason || '—'}
+                        </td>
+                        <td className="py-3 px-3 text-zinc-400">{job.attemptsMade}</td>
+                        <td className="py-3 px-3 text-zinc-500 text-xs whitespace-nowrap">
+                          {job.finishedOn ? new Date(job.finishedOn).toLocaleString() : '—'}
+                        </td>
+                        <td className="py-3 px-3">
+                          <div className="flex items-center gap-1 justify-end">
+                            <button
+                              disabled={jobActionInFlight === job.id}
+                              onClick={() => retryReceiptJob(job.id)}
+                              title="Retry"
+                              className="p-1.5 rounded text-blue-400 hover:bg-blue-500/15 transition-colors disabled:opacity-40"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                            </button>
+                            <button
+                              disabled={jobActionInFlight === job.id}
+                              onClick={() => discardReceiptJob(job.id)}
+                              title="Discard"
+                              className="p-1.5 rounded text-zinc-500 hover:text-red-400 hover:bg-red-500/15 transition-colors disabled:opacity-40"
+                            >
+                              <XCircle className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+      <>
 
       {tableViewMode === 'STRUCTURED' && (
         <div className="mb-4 rounded-lg border border-zinc-800 bg-zinc-950/80 px-4 py-3 text-xs text-zinc-400 backdrop-blur">
@@ -1357,6 +1524,8 @@ export default function OperationsPage() {
             </div>
           </aside>
         </div>
+      )}
+      </>
       )}
     </div>
   );

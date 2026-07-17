@@ -10,6 +10,8 @@ import { createPasswordChangedEmail } from './templates/PasswordChangedEmail';
 import { createOwnershipTransferEmail } from './templates/OwnershipTransferEmail';
 import { createInvitationStatusEmail } from './templates/InvitationStatusEmail';
 import { createWorkspaceSetupRequestEmail } from './templates/WorkspaceSetupRequestEmail';
+import { createEventTicketEmail, EventTicketEmailProps } from './templates/EventTicketEmail';
+import { createPaymentReceiptEmail, PaymentReceiptEmailProps } from './templates/PaymentReceiptEmail';
 
 @Injectable()
 export class MailService {
@@ -533,6 +535,74 @@ export class MailService {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to send setup request status email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendEventTicket(opts: Omit<EventTicketEmailProps, 'appName' | 'brandFooter' | 'primaryHex'> & {
+    to: string; appName?: string; brandFooter?: string; primaryHex?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    if (!apiKey) {
+      this.logger.warn(`[MailService] ZEPTOMAIL_API_KEY not set — skipping ticket email to ${opts.to}`);
+      return;
+    }
+    try {
+      const html = await this.renderEmailTemplate(createEventTicketEmail({
+        ...opts,
+        appName: opts.appName ?? brand.appName,
+        brandFooter: opts.brandFooter ?? brand.appFooter,
+        primaryHex: opts.primaryHex ?? brand.primaryHex,
+      }));
+      await firstValueFrom(
+        this.http.post('https://api.zeptomail.com/v1.1/email', {
+          from: { address: brand.fromAddress, name: brand.fromName },
+          to: [{ email_address: { address: opts.to } }],
+          subject: `Your ticket for ${opts.eventName}`,
+          htmlbody: html,
+        }, {
+          headers: { Authorization: `Zoho-enczapikey ${apiKey}`, 'Content-Type': 'application/json' },
+        }),
+      );
+      this.logger.log(`Event ticket email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send event ticket email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
+
+  async sendPaymentReceipt(opts: Omit<PaymentReceiptEmailProps, 'appName' | 'brandFooter' | 'primaryHex'> & {
+    to: string; appName?: string; brandFooter?: string; primaryHex?: string;
+  }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    if (!apiKey) {
+      this.logger.warn(`[MailService] ZEPTOMAIL_API_KEY not set — skipping receipt email to ${opts.to}`);
+      return;
+    }
+    try {
+      const html = await this.renderEmailTemplate(createPaymentReceiptEmail({
+        ...opts,
+        appName: opts.appName ?? brand.appName,
+        brandFooter: opts.brandFooter ?? brand.appFooter,
+        primaryHex: opts.primaryHex ?? brand.primaryHex,
+      }));
+      await firstValueFrom(
+        this.http.post('https://api.zeptomail.com/v1.1/email', {
+          from: { address: brand.fromAddress, name: brand.fromName },
+          to: [{ email_address: { address: opts.to } }],
+          subject: `Payment receipt — ${opts.receiptNumber}`,
+          htmlbody: html,
+        }, {
+          headers: { Authorization: `Zoho-enczapikey ${apiKey}`, 'Content-Type': 'application/json' },
+        }),
+      );
+      this.logger.log(`Payment receipt email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send payment receipt email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
       throw err;
     }
   }

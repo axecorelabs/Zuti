@@ -3,7 +3,8 @@ export type ActionType =
   | 'CONSULTATION_REQUEST'
   | 'SALES_ORDER_REQUEST'
   | 'OWNER_ATTENTION_NEEDED'
-  | 'TECHNICAL_ISSUE';
+  | 'TECHNICAL_ISSUE'
+  | 'REGISTRATION_REQUEST';
 
 export type CapabilityKey = 'BOOKING' | 'SALES' | 'TECHNICAL' | 'FORWARDING';
 
@@ -94,6 +95,7 @@ export interface ActionForwardingResult {
   operationalTruth: ActionOperationalTruth;
   missingFields?: ActionForwardingMissingField[];
   blockedCapability?: string;
+  registrationPaymentUrl?: string;
 }
 
 export type ContactChannel = 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
