@@ -817,6 +817,9 @@ export class EmailProcessor {
       const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
       const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
       const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
+      const chatCollectedFields: Record<string, string> = (response.data?.collected_fields && typeof response.data.collected_fields === 'object' && !Array.isArray(response.data.collected_fields))
+        ? response.data.collected_fields as Record<string, string>
+        : {};
       // Registration re-queues must NOT require forwardingResult.status !== 'NO_INTENT' — the
       // keyword-only pre-check returns NO_INTENT for virtually every registration turn (no
       // keyword signal), which is exactly the case this branch exists to handle.
@@ -838,6 +841,7 @@ export class EmailProcessor {
             skipAiClassification: true,
             conversationContext: returnedSummary ?? storedConversationSummary ?? null,
             registrationProductId: chatRegistrationProductId || undefined,
+            aiCollectedFields: chatCollectedFields,
           },
           {
             actionType: chatActionType as any,

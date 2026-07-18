@@ -126,6 +126,9 @@ class RagService:
                 "intent_summary": result.get("intent_summary") or "",
                 "conversation_summary": result.get("conversation_summary") or "",
                 "should_resolve": bool(result.get("should_resolve")),
+                # Previously dropped here — without these, registrations could never complete.
+                "registration_product_id": result.get("registration_product_id") or "",
+                "collected_fields": result.get("collected_fields") or {},
             }
         else:
             reply = await llm_service.generate(

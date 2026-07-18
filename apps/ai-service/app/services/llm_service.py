@@ -36,7 +36,8 @@ JSON schema (all fields required):
   "intent_confidence": <float 0.0–1.0>,
   "intent_summary": "<1–2 sentence synthesis of the customer's intent drawn from the full conversation — empty string when action_type is NONE>",
   "conversation_summary": "<concise running summary of the conversation so far including this turn — always populated>",
-  "registration_product_id": "<the ID of the registration product when action_type is REGISTRATION_REQUEST, otherwise empty string>"
+  "registration_product_id": "<the ID of the registration product when action_type is REGISTRATION_REQUEST, otherwise empty string>",
+  "collected_fields": <object mapping field keys to the values gathered so far when action_type is REGISTRATION_REQUEST — see registration rules below; empty object {} otherwise>
 }
 
 Intent classification guide:
@@ -47,6 +48,14 @@ Intent classification guide:
 - TECHNICAL_ISSUE: customer has a specific, describable technical problem that needs human follow-up. See qualification rules below.
 - REGISTRATION_REQUEST: customer wants to register for an event, session, or other registerable product listed in the available registrations. Only use this when a matching registration product exists.
 - NONE: no actionable forwarding intent, or issue is not yet specific enough to forward.
+
+REGISTRATION_REQUEST field collection — CRITICAL for completing registrations:
+- When action_type is REGISTRATION_REQUEST, set registration_product_id to the exact "ID:" value shown for the matching product in the available registrations context.
+- Populate collected_fields with every registration value the customer has provided across the ENTIRE conversation so far — not just this turn. Each product lists its fields with a "(key: <field_key>)" marker; use that exact field_key as the JSON key.
+- Always include the standard keys "customer_name" and "customer_email" when the customer has given them, plus every product-specific field key.
+- Extract values regardless of how the customer phrased them: bare ("Olaiya Oluwasomidotun"), labeled ("Name: Olaiya", "Number: 08025738429"), or inline ("my email is x@y.com"). You are the extractor — do not rely on any downstream parsing.
+- Only include a key once you actually have a real value for it; omit keys you are still waiting on. Never invent, guess, or auto-complete values (e.g. do not append a domain to a partial email).
+- Keep collected_fields populated on every REGISTRATION_REQUEST turn, cumulatively, so the backend always sees the full known set.
 
 TECHNICAL_ISSUE qualification — only classify as TECHNICAL_ISSUE when ALL of the following are true:
 1. The specific feature, page, or action that is broken is clearly identified.
@@ -212,7 +221,7 @@ class LlmService:
         and produces a running conversation summary — eliminating the separate
         /action-intent/classify call."""
         if not settings.OPENROUTER_API_KEY:
-            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": ""}
+            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": "", "collected_fields": {}}
 
         base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
         # Append structured output schema after the base prompt
@@ -238,12 +247,12 @@ class LlmService:
             raw = response.choices[0].message.content or ""
         except Exception as e:
             logger.warning(f"generate_structured LLM call failed: {e}")
-            return {"reply": "", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": ""}
+            return {"reply": "", "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": "", "collected_fields": {}}
 
         parsed = self._extract_json_object(raw)
         if not parsed:
             # Fallback: treat the whole response as the reply
-            return {"reply": raw.strip(), "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": ""}
+            return {"reply": raw.strip(), "should_resolve": False, "action_type": "NONE", "intent_confidence": 0.0, "intent_summary": "", "conversation_summary": "", "registration_product_id": "", "collected_fields": {}}
 
         action_type = str(parsed.get("action_type") or "NONE").strip().upper()
         if action_type not in ACTION_TYPE_VALUES:
@@ -255,6 +264,19 @@ class LlmService:
         except (TypeError, ValueError):
             intent_confidence = 0.0
 
+        # Normalize collected_fields into a flat {str: str} map — the model may return
+        # nested/non-string values, so coerce defensively and drop empties.
+        raw_collected = parsed.get("collected_fields")
+        collected_fields: dict[str, str] = {}
+        if isinstance(raw_collected, dict):
+            for k, v in raw_collected.items():
+                if v is None:
+                    continue
+                key = str(k).strip()
+                val = str(v).strip()
+                if key and val:
+                    collected_fields[key] = val[:200]
+
         return {
             "reply": str(parsed.get("reply") or "").strip(),
             "should_resolve": bool(parsed.get("should_resolve")),
@@ -263,6 +285,7 @@ class LlmService:
             "intent_summary": str(parsed.get("intent_summary") or "").strip(),
             "conversation_summary": str(parsed.get("conversation_summary") or "").strip(),
             "registration_product_id": str(parsed.get("registration_product_id") or "").strip(),
+            "collected_fields": collected_fields,
         }
 
     async def complete(

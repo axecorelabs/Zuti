@@ -47,6 +47,8 @@ interface InboundActionSignalInput {
   skipAiClassification?: boolean;
   conversationContext?: string | null;
   registrationProductId?: string;
+  /** Fields the AI already extracted from the conversation (source of truth for registration). */
+  aiCollectedFields?: Record<string, string>;
 }
 
 type SkillKey = 'SALES' | 'BOOKING' | 'TECHNICAL';
@@ -1256,6 +1258,19 @@ export class ActionForwardingService {
         input,
         [...customContract.fields, ...registrationProductFields],
       );
+
+      // AI-extracted fields are the source of truth (the model saw the whole conversation and
+      // the field keys), layered on top of the saved draft and regex extraction as fallbacks.
+      // Regex/draft still fill anything the AI missed, but the AI's value wins on conflict.
+      const aiCollected: Record<string, string> = {};
+      if (input.aiCollectedFields && typeof input.aiCollectedFields === 'object') {
+        for (const [key, value] of Object.entries(input.aiCollectedFields)) {
+          if (typeof value === 'string' && value.trim().length > 0) {
+            aiCollected[normalizeFieldKey(key)] = value.trim();
+          }
+        }
+      }
+
       collectedFields = {
         ...normalizedPrevious,
         ...Object.fromEntries(
@@ -1263,6 +1278,7 @@ export class ActionForwardingService {
             .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
             .map(([key, value]) => [key, value!.trim()]),
         ),
+        ...aiCollected,
       };
 
       const correctness = this.applyFieldCorrectnessChecks(detected.actionType, collectedFields);

@@ -53,6 +53,7 @@ class ChatResponse(BaseModel):
     intent_summary: str = ""
     conversation_summary: str = ""
     registration_product_id: str = ""
+    collected_fields: dict = Field(default_factory=dict)
 
 
 @router.post("", response_model=ChatResponse)
@@ -108,6 +109,7 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             intent_summary=chat_meta.get("intent_summary") or "",
             conversation_summary=chat_meta.get("conversation_summary") or "",
             registration_product_id=chat_meta.get("registration_product_id") or "",
+            collected_fields=chat_meta.get("collected_fields") or {},
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
