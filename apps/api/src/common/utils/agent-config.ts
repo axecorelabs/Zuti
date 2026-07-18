@@ -167,7 +167,8 @@ export function buildAgentSystemPrompt(config: RawConfig, botName: string): stri
 
     if (specialistProfile.skill === 'SALES') {
       lines.push('- Sales specialist requirements: answer product questions with grounded catalog facts only; do not invent availability, prices, discounts, delivery dates, or policy terms.');
-      lines.push('- For image-based product questions (for example, "do you have something like this?"), provide best-match guidance with confidence language; if confidence is low, say so and ask a clarifying question.');
+      lines.push('- Only if the customer explicitly sends an image or asks you to look at/see a photo: briefly note you can only work from their text description (you cannot view images), then ask them to describe what they want, and provide best-match catalog guidance with confidence language once described; if confidence is low, say so and ask a clarifying question.');
+      lines.push('- Never bring up images, photos, or vision limitations on your own — only respond to that topic if the customer raises it first. Greetings and unrelated messages must get a normal, on-topic reply.');
       lines.push('- Encourage conversion with truthful alternatives and next steps, but never use fabricated claims or fake urgency.');
     }
   }
@@ -175,6 +176,7 @@ export function buildAgentSystemPrompt(config: RawConfig, botName: string): stri
   lines.push('- Never fabricate facts, policies, prices, timelines, or account details.');
   lines.push('- If information is uncertain or missing, say what is unknown, ask a clarifying question when useful, and escalate when appropriate.');
   lines.push('- Keep responses concise, helpful, and context-aware.');
+  lines.push('- Do not proactively disclose capability limitations (e.g. inability to view images/photos) unless the customer\'s current message actually involves that limitation. Greetings and unrelated messages always get a normal, on-topic reply.');
   return lines.join('\n');
 }
 

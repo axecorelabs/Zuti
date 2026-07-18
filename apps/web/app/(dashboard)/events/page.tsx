@@ -167,17 +167,9 @@ function FieldEditor({ fields, onChange }: { fields: ProductField[]; onChange: (
   );
 }
 
-// ── Product modal ─────────────────────────────────────────────────────────────
+// ── Shared product form state ──────────────────────────────────────────────────
 
-interface ProductModalProps {
-  orgId: string;
-  bots: BotOption[];
-  existing?: RegistrationProduct;
-  onSaved: () => void;
-  onClose: () => void;
-}
-
-function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalProps) {
+function useProductForm(existing?: RegistrationProduct) {
   const [name, setName] = useState(existing?.name ?? '');
   const [description, setDescription] = useState(existing?.description ?? '');
   const [eventDate, setEventDate] = useState(
@@ -188,40 +180,252 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
   const [priceMinor, setPriceMinor] = useState(
     existing?.priceMinor != null ? (existing.priceMinor / 100).toFixed(2) : '',
   );
-  const currency = 'NGN'; // Only Naira is supported for now
   const [requiresApproval, setRequiresApproval] = useState(existing?.requiresApproval ?? false);
   const [confirmationMessage, setConfirmationMessage] = useState(existing?.confirmationMessage ?? '');
   const [fields, setFields] = useState<ProductField[]>(existing?.fields ?? []);
   const [botId, setBotId] = useState(existing?.botId ?? '');
   const [isActive, setIsActive] = useState(existing?.isActive ?? true);
+
+  const buildPayload = (): Record<string, unknown> => ({
+    name: name.trim(),
+    description: description.trim() || null,
+    eventDate: eventDate || null,
+    capacity: capacity ? parseInt(capacity, 10) : null,
+    isFree,
+    priceMinor: !isFree && priceMinor ? Math.round(parseFloat(priceMinor) * 100) : null,
+    currency: 'NGN', // Only Naira is supported for now
+    requiresApproval,
+    confirmationMessage: confirmationMessage.trim() || null,
+    fields: fields.filter((f) => f.key && f.label),
+    botId: botId || null,
+    isActive,
+  });
+
+  return {
+    name, setName, description, setDescription, eventDate, setEventDate,
+    capacity, setCapacity, isFree, setIsFree, priceMinor, setPriceMinor,
+    requiresApproval, setRequiresApproval, confirmationMessage, setConfirmationMessage,
+    fields, setFields, botId, setBotId, isActive, setIsActive,
+    buildPayload,
+  };
+}
+
+type ProductFormApi = ReturnType<typeof useProductForm>;
+
+// ── Shared field inputs (used by both the create modal and the settings panel) ─
+
+function ProductFormFields({ form, bots, variant }: {
+  form: ProductFormApi;
+  bots: BotOption[];
+  variant: 'compact' | 'sectioned';
+}) {
+  const inputCls = 'w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-700 transition-colors';
+  const labelCls = 'block text-xs text-zinc-400 mb-1.5 font-medium';
+
+  const generalSection = (
+    <div className="space-y-5">
+      <div>
+        <label className={labelCls}>Event name <span className="text-zinc-600">(required)</span></label>
+        <input value={form.name} onChange={(e) => form.setName(e.target.value)} placeholder="Annual Conference 2026" className={inputCls} />
+      </div>
+      <div>
+        <label className={labelCls}>Description</label>
+        <textarea value={form.description} onChange={(e) => form.setDescription(e.target.value)} rows={2} placeholder="Brief description shown to registrants…" className={`${inputCls} resize-none`} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={labelCls}>Event date</label>
+          <input type="date" value={form.eventDate} onChange={(e) => form.setEventDate(e.target.value)} className={inputCls} />
+        </div>
+        <div>
+          <label className={labelCls}>Capacity <span className="text-zinc-600">(blank = unlimited)</span></label>
+          <input type="number" min="1" value={form.capacity} onChange={(e) => form.setCapacity(e.target.value)} placeholder="e.g. 100" className={inputCls} />
+        </div>
+      </div>
+    </div>
+  );
+
+  const pricingSection = (
+    <div>
+      <label className={labelCls}>Pricing</label>
+      <div className="flex gap-2 mb-3">
+        <button
+          type="button"
+          onClick={() => form.setIsFree(true)}
+          className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-colors ${form.isFree ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
+        >
+          Free
+        </button>
+        <button
+          type="button"
+          onClick={() => form.setIsFree(false)}
+          className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-colors ${!form.isFree ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
+        >
+          Paid
+        </button>
+      </div>
+      {!form.isFree && (
+        <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden focus-within:border-zinc-600 focus-within:ring-1 focus-within:ring-zinc-700 transition-colors">
+          <span className="px-4 py-2.5 text-sm text-zinc-500 font-medium bg-zinc-950/60 border-r border-zinc-800 shrink-0">₦</span>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={form.priceMinor}
+            onChange={(e) => form.setPriceMinor(e.target.value)}
+            placeholder="0.00"
+            className="flex-1 min-w-0 bg-transparent px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+          />
+        </div>
+      )}
+    </div>
+  );
+
+  const behaviorSection = (
+    <div className="space-y-5">
+      <div className="space-y-2">
+        <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
+          <div>
+            <p className="text-sm text-zinc-300 font-medium">Requires approval</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Entries must be manually reviewed before being confirmed</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => form.setRequiresApproval((v) => !v)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${form.requiresApproval ? 'bg-blue-600' : 'bg-zinc-700'}`}
+          >
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${form.requiresApproval ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
+          <div>
+            <p className="text-sm text-zinc-300 font-medium">Active</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Inactive events won&apos;t be offered by bots or accept new registrations</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => form.setIsActive((v) => !v)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${form.isActive ? 'bg-blue-600' : 'bg-zinc-700'}`}
+          >
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${form.isActive ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+          </button>
+        </div>
+      </div>
+
+      {bots.length > 0 && (
+        <div>
+          <label className={labelCls}>Link to bot <span className="text-zinc-600">(optional)</span></label>
+          <select value={form.botId} onChange={(e) => form.setBotId(e.target.value)} className={inputCls}>
+            <option value="">— Any bot —</option>
+            {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+        </div>
+      )}
+    </div>
+  );
+
+  const messagingSection = (
+    <div className="space-y-5">
+      <div>
+        <label className={labelCls}>Custom confirmation message</label>
+        <textarea value={form.confirmationMessage} onChange={(e) => form.setConfirmationMessage(e.target.value)} rows={2} placeholder="You're confirmed! See you there." className={`${inputCls} resize-none`} />
+      </div>
+      <div>
+        <label className={`${labelCls} mb-2`}>Custom fields</label>
+        <p className="text-xs text-zinc-600 mb-3">Additional info the bot will collect from the customer before registering them.</p>
+        <FieldEditor fields={form.fields} onChange={form.setFields} />
+      </div>
+    </div>
+  );
+
+  if (variant === 'compact') {
+    return (
+      <div className="space-y-5">
+        {generalSection}
+        {pricingSection}
+        {behaviorSection}
+        {messagingSection}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="card p-6 border border-zinc-800">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+            <CalendarDays className="w-4 h-4 text-zinc-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">General</h2>
+            <p className="text-xs text-zinc-500 font-light">Name, description, date and capacity.</p>
+          </div>
+        </div>
+        {generalSection}
+      </div>
+
+      <div className="card p-6 border border-zinc-800">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+            <DollarSign className="w-4 h-4 text-zinc-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">Pricing</h2>
+            <p className="text-xs text-zinc-500 font-light">Whether registrants pay, and how much.</p>
+          </div>
+        </div>
+        {pricingSection}
+      </div>
+
+      <div className="card p-6 border border-zinc-800">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+            <Users className="w-4 h-4 text-zinc-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">Bot & behavior</h2>
+            <p className="text-xs text-zinc-500 font-light">Which bot offers this event, and approval/visibility rules.</p>
+          </div>
+        </div>
+        {behaviorSection}
+      </div>
+
+      <div className="card p-6 border border-zinc-800">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+            <Pencil className="w-4 h-4 text-zinc-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">Confirmation & fields</h2>
+            <p className="text-xs text-zinc-500 font-light">What registrants see, and what extra info you collect.</p>
+          </div>
+        </div>
+        {messagingSection}
+      </div>
+    </div>
+  );
+}
+
+// ── Create modal (new events only — editing happens inline in the settings tab) ─
+
+interface ProductModalProps {
+  orgId: string;
+  bots: BotOption[];
+  onSaved: () => void;
+  onClose: () => void;
+}
+
+function ProductModal({ orgId, bots, onSaved, onClose }: ProductModalProps) {
+  const form = useProductForm();
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) { toast.error('Name is required'); return; }
+    if (!form.name.trim()) { toast.error('Name is required'); return; }
     setSaving(true);
     try {
-      const payload: Record<string, unknown> = {
-        name: name.trim(),
-        description: description.trim() || null,
-        eventDate: eventDate || null,
-        capacity: capacity ? parseInt(capacity, 10) : null,
-        isFree,
-        priceMinor: !isFree && priceMinor ? Math.round(parseFloat(priceMinor) * 100) : null,
-        currency,
-        requiresApproval,
-        confirmationMessage: confirmationMessage.trim() || null,
-        fields: fields.filter((f) => f.key && f.label),
-        botId: botId || null,
-        isActive,
-      };
-      if (existing) {
-        await registrationsApi.updateProduct(orgId, existing.id, payload);
-        toast.success('Event updated');
-      } else {
-        await registrationsApi.createProduct(orgId, payload);
-        toast.success('Event created');
-      }
+      await registrationsApi.createProduct(orgId, form.buildPayload());
+      toast.success('Event created');
       onSaved();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
@@ -230,9 +434,6 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
       setSaving(false);
     }
   };
-
-  const inputCls = 'w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-700 transition-colors';
-  const labelCls = 'block text-xs text-zinc-400 mb-1.5 font-medium';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
@@ -245,8 +446,8 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
               <CalendarDays className="w-4 h-4 text-blue-400" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-white">{existing ? 'Edit event' : 'Create event'}</h2>
-              <p className="text-xs text-zinc-500">{existing ? 'Update event details and registration fields' : 'Set up a new registration event for your bot'}</p>
+              <h2 className="text-sm font-semibold text-white">Create event</h2>
+              <p className="text-xs text-zinc-500">Set up a new registration event for your bot</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors">
@@ -255,119 +456,7 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
         </div>
 
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
-
-          {/* Name */}
-          <div>
-            <label className={labelCls}>Event name <span className="text-zinc-600">(required)</span></label>
-            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Annual Conference 2026" className={inputCls} />
-          </div>
-
-          {/* Description */}
-          <div>
-            <label className={labelCls}>Description</label>
-            <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} placeholder="Brief description shown to registrants…" className={`${inputCls} resize-none`} />
-          </div>
-
-          {/* Date + Capacity */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className={labelCls}>Event date</label>
-              <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} className={inputCls} />
-            </div>
-            <div>
-              <label className={labelCls}>Capacity <span className="text-zinc-600">(blank = unlimited)</span></label>
-              <input type="number" min="1" value={capacity} onChange={(e) => setCapacity(e.target.value)} placeholder="e.g. 100" className={inputCls} />
-            </div>
-          </div>
-
-          {/* Pricing */}
-          <div>
-            <label className={labelCls}>Pricing</label>
-            <div className="flex gap-2 mb-3">
-              <button
-                type="button"
-                onClick={() => setIsFree(true)}
-                className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-colors ${isFree ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
-              >
-                Free
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsFree(false)}
-                className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-colors ${!isFree ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
-              >
-                Paid
-              </button>
-            </div>
-            {!isFree && (
-              <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden focus-within:border-zinc-600 focus-within:ring-1 focus-within:ring-zinc-700 transition-colors">
-                <span className="px-4 py-2.5 text-sm text-zinc-500 font-medium bg-zinc-950/60 border-r border-zinc-800 shrink-0">₦</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={priceMinor}
-                  onChange={(e) => setPriceMinor(e.target.value)}
-                  placeholder="0.00"
-                  className="flex-1 min-w-0 bg-transparent px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Toggles */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
-              <div>
-                <p className="text-sm text-zinc-300 font-medium">Requires approval</p>
-                <p className="text-xs text-zinc-500 mt-0.5">Entries must be manually reviewed before being confirmed</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setRequiresApproval((v) => !v)}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${requiresApproval ? 'bg-blue-600' : 'bg-zinc-700'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${requiresApproval ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
-            <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
-              <div>
-                <p className="text-sm text-zinc-300 font-medium">Active</p>
-                <p className="text-xs text-zinc-500 mt-0.5">Inactive events won&apos;t be offered by bots or accept new registrations</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsActive((v) => !v)}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${isActive ? 'bg-blue-600' : 'bg-zinc-700'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
-              </button>
-            </div>
-          </div>
-
-          {/* Bot link */}
-          {bots.length > 0 && (
-            <div>
-              <label className={labelCls}>Link to bot <span className="text-zinc-600">(optional)</span></label>
-              <select value={botId} onChange={(e) => setBotId(e.target.value)} className={inputCls}>
-                <option value="">— Any bot —</option>
-                {bots.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
-            </div>
-          )}
-
-          {/* Confirmation message */}
-          <div>
-            <label className={labelCls}>Custom confirmation message</label>
-            <textarea value={confirmationMessage} onChange={(e) => setConfirmationMessage(e.target.value)} rows={2} placeholder="You're confirmed! See you there." className={`${inputCls} resize-none`} />
-          </div>
-
-          {/* Custom fields */}
-          <div>
-            <label className={`${labelCls} mb-2`}>Custom fields</label>
-            <p className="text-xs text-zinc-600 mb-3">Additional info the bot will collect from the customer before registering them.</p>
-            <FieldEditor fields={fields} onChange={setFields} />
-          </div>
+          <ProductFormFields form={form} bots={bots} variant="compact" />
 
           {/* Footer */}
           <div className="flex gap-2 pt-2 border-t border-zinc-800">
@@ -377,10 +466,91 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
               disabled={saving}
               className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-xl transition-colors"
             >
-              {saving ? 'Saving…' : existing ? 'Save changes' : 'Create event'}
+              {saving ? 'Saving…' : 'Create event'}
             </button>
           </div>
         </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Event settings tab (inline in the detail panel — replaces the old edit modal) ─
+
+interface EventSettingsTabProps {
+  orgId: string;
+  bots: BotOption[];
+  product: RegistrationProduct;
+  onSaved: (updated: RegistrationProduct) => void;
+  onDeleted: () => void;
+}
+
+function EventSettingsTab({ orgId, bots, product, onSaved, onDeleted }: EventSettingsTabProps) {
+  const form = useProductForm(product);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { toast.error('Name is required'); return; }
+    setSaving(true);
+    try {
+      const res = await registrationsApi.updateProduct(orgId, product.id, form.buildPayload());
+      toast.success('Event updated');
+      onSaved(res.data);
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { message?: unknown } } })?.response?.data?.message;
+      toast.error(typeof msg === 'string' ? msg : (Array.isArray(msg) ? msg[0] : 'Failed to save'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirm('Delete this event? All registrations will also be deleted.')) return;
+    setDeleting(true);
+    try {
+      await registrationsApi.deleteProduct(orgId, product.id);
+      toast.success('Event deleted');
+      onDeleted();
+    } catch {
+      toast.error('Failed to delete event');
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="max-w-3xl space-y-5">
+      <ProductFormFields form={form} bots={bots} variant="sectioned" />
+
+      {/* Save bar */}
+      <div className="flex justify-end gap-2 sticky bottom-0 bg-gradient-to-t from-black/40 to-transparent pt-2">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+
+      {/* Danger zone */}
+      <div className="card p-6 border border-red-500/20 bg-red-500/[0.03]">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center shrink-0">
+            <Trash2 className="w-4 h-4 text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">Danger zone</h2>
+            <p className="text-xs text-zinc-500 font-light">Deleting an event permanently removes it and all its registrations.</p>
+          </div>
+        </div>
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50 transition-colors"
+        >
+          <Trash2 className="w-3.5 h-3.5" /> {deleting ? 'Deleting…' : 'Delete event'}
+        </button>
       </div>
     </div>
   );
@@ -394,10 +564,10 @@ export default function EventsPage() {
   const [bots, setBots] = useState<BotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<RegistrationProduct | null>(null);
+  const [detailTab, setDetailTab] = useState<'registrants' | 'settings'>('registrants');
   const [entries, setEntries] = useState<RegistrationEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<RegistrationProduct | undefined>(undefined);
   const [updatingEntry, setUpdatingEntry] = useState<string | null>(null);
 
   const orgId = activeOrgId ?? '';
@@ -443,19 +613,18 @@ export default function EventsPage() {
 
   const selectProduct = (p: RegistrationProduct) => {
     setSelectedProduct(p);
+    setDetailTab('registrants');
     loadEntries(p);
   };
 
-  const handleDelete = async (productId: string) => {
-    if (!confirm('Delete this event? All registrations will also be deleted.')) return;
-    try {
-      await registrationsApi.deleteProduct(orgId, productId);
-      toast.success('Event deleted');
-      if (selectedProduct?.id === productId) setSelectedProduct(null);
-      loadProducts();
-    } catch {
-      toast.error('Failed to delete event');
-    }
+  const handleSettingsSaved = (updated: RegistrationProduct) => {
+    setSelectedProduct(updated);
+    setProducts((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
+  };
+
+  const handleSettingsDeleted = () => {
+    setSelectedProduct(null);
+    loadProducts();
   };
 
   const handleEntryStatus = async (entryId: string, status: string) => {
@@ -474,7 +643,6 @@ export default function EventsPage() {
 
   const onModalSaved = () => {
     setShowModal(false);
-    setEditingProduct(undefined);
     loadProducts();
   };
 
@@ -497,7 +665,7 @@ export default function EventsPage() {
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={() => { setEditingProduct(undefined); setShowModal(true); }}
+                onClick={() => setShowModal(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" /> New event
@@ -534,7 +702,7 @@ export default function EventsPage() {
               <p className="text-sm font-medium text-zinc-400">No events yet</p>
               <p className="text-xs text-zinc-600 mt-1">Create your first event to start taking registrations</p>
               <button
-                onClick={() => { setEditingProduct(undefined); setShowModal(true); }}
+                onClick={() => setShowModal(true)}
                 className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" /> Create event
@@ -610,37 +778,63 @@ export default function EventsPage() {
               </div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800 mr-1">
+                <button
+                  onClick={() => setDetailTab('registrants')}
+                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                    detailTab === 'registrants' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  Registrants
+                </button>
+                <button
+                  onClick={() => setDetailTab('settings')}
+                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                    detailTab === 'settings' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  Settings
+                </button>
+              </div>
+              {detailTab === 'registrants' && (
+                <>
+                  <button
+                    onClick={() => { loadEntries(selectedProduct); }}
+                    className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => exportCsv(selectedProduct, entries)}
+                    disabled={entries.length === 0}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 transition-colors disabled:opacity-40"
+                  >
+                    <Download className="w-3.5 h-3.5" /> CSV
+                  </button>
+                </>
+              )}
+              <div className="w-px h-5 bg-zinc-800 mx-0.5 hidden md:block" />
               <button
-                onClick={() => { loadEntries(selectedProduct); }}
-                className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors"
+                onClick={() => setSelectedProduct(null)}
+                title="Close"
+                className="hidden md:flex p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => exportCsv(selectedProduct, entries)}
-                disabled={entries.length === 0}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 transition-colors disabled:opacity-40"
-              >
-                <Download className="w-3.5 h-3.5" /> CSV
-              </button>
-              <button
-                onClick={() => { setEditingProduct(selectedProduct); setShowModal(true); }}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-zinc-300 bg-zinc-800 hover:bg-zinc-700 transition-colors"
-              >
-                <Pencil className="w-3.5 h-3.5" /> Edit
-              </button>
-              <button
-                onClick={() => handleDelete(selectedProduct.id)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-red-400 bg-red-500/10 hover:bg-red-500/20 transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" /> Delete
+                <X className="w-4 h-4" />
               </button>
             </div>
           </div>
 
-          {/* Entry table */}
+          {/* Panel body */}
           <div className="flex-1 overflow-auto p-5">
-            {entriesLoading ? (
+            {detailTab === 'settings' ? (
+              <EventSettingsTab
+                orgId={orgId}
+                bots={bots}
+                product={selectedProduct}
+                onSaved={handleSettingsSaved}
+                onDeleted={handleSettingsDeleted}
+              />
+            ) : entriesLoading ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -763,14 +957,13 @@ export default function EventsPage() {
         </div>
       )}
 
-      {/* Create/edit modal */}
+      {/* Create modal */}
       {showModal && (
         <ProductModal
           orgId={orgId}
           bots={bots}
-          existing={editingProduct}
           onSaved={onModalSaved}
-          onClose={() => { setShowModal(false); setEditingProduct(undefined); }}
+          onClose={() => setShowModal(false)}
         />
       )}
     </div>
