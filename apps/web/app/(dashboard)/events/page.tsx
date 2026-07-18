@@ -188,7 +188,7 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
   const [priceMinor, setPriceMinor] = useState(
     existing?.priceMinor != null ? (existing.priceMinor / 100).toFixed(2) : '',
   );
-  const [currency, setCurrency] = useState(existing?.currency ?? 'NGN');
+  const currency = 'NGN'; // Only Naira is supported for now
   const [requiresApproval, setRequiresApproval] = useState(existing?.requiresApproval ?? false);
   const [confirmationMessage, setConfirmationMessage] = useState(existing?.confirmationMessage ?? '');
   const [fields, setFields] = useState<ProductField[]>(existing?.fields ?? []);
@@ -300,11 +300,17 @@ function ProductModal({ orgId, bots, existing, onSaved, onClose }: ProductModalP
               </button>
             </div>
             {!isFree && (
-              <div className="flex gap-2">
-                <select value={currency} onChange={(e) => setCurrency(e.target.value)} className={`${inputCls} w-24`}>
-                  <option>NGN</option><option>USD</option><option>GBP</option><option>EUR</option>
-                </select>
-                <input type="number" min="0" step="0.01" value={priceMinor} onChange={(e) => setPriceMinor(e.target.value)} placeholder="0.00" className={`${inputCls} flex-1`} />
+              <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden focus-within:border-zinc-600 focus-within:ring-1 focus-within:ring-zinc-700 transition-colors">
+                <span className="px-4 py-2.5 text-sm text-zinc-500 font-medium bg-zinc-950/60 border-r border-zinc-800 shrink-0">₦</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={priceMinor}
+                  onChange={(e) => setPriceMinor(e.target.value)}
+                  placeholder="0.00"
+                  className="flex-1 min-w-0 bg-transparent px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
+                />
               </div>
             )}
           </div>
