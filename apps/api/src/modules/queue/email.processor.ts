@@ -817,8 +817,14 @@ export class EmailProcessor {
       const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
       const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
       const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
-      if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && forwardingResult.status === 'NO_INTENT') {
-        this.actionForwarding.detectAndQueue(
+      // Registration re-queues must NOT require forwardingResult.status !== 'NO_INTENT' — the
+      // keyword-only pre-check returns NO_INTENT for virtually every registration turn (no
+      // keyword signal), which is exactly the case this branch exists to handle.
+      const shouldRequeueForRegistration =
+        chatActionType === 'REGISTRATION_REQUEST' &&
+        chatRegistrationProductId.length > 0;
+      if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && (forwardingResult.status === 'NO_INTENT' || shouldRequeueForRegistration)) {
+        const reQueueCall = this.actionForwarding.detectAndQueue(
           {
             organizationId,
             botId,
@@ -840,9 +846,18 @@ export class EmailProcessor {
               ? response.data.intent_summary.trim()
               : userText.slice(0, 300),
           },
-        ).catch((err: unknown) => {
-          this.logger.warn(`Post-chat action queuing failed (email): ${err instanceof Error ? err.message : String(err)}`);
-        });
+        );
+        // For registration re-queues, await so registrationPaymentUrl is available before we
+        // send the follow-up payment message below. For all other cases, fire-and-forget.
+        if (shouldRequeueForRegistration) {
+          await reQueueCall.then((result) => { forwardingResult = result; }).catch((err: unknown) => {
+            this.logger.warn(`Post-chat registration re-queue failed (email): ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } else {
+          reQueueCall.catch((err: unknown) => {
+            this.logger.warn(`Post-chat action queuing failed (email): ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       }
 
       const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });

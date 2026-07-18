@@ -875,10 +875,14 @@ export class WhatsAppProcessor {
       const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
       // Also re-queue for REGISTRATION_REQUEST when the AI provides a productId that the keyword
       // pre-check didn't have — this is the only way the entry + payment get created in multi-turn flows.
+      // Must NOT require forwardingResult.status !== 'NO_INTENT' — the keyword-only pre-check
+      // returns NO_INTENT for virtually every registration turn (no keyword signal), which is
+      // exactly the case this branch exists to handle. Requiring the opposite meant this almost
+      // never fired, so the re-queue ran fire-and-forget and the reply was built from the stale
+      // pre-classification result (no actionType, no missingFields, no payment link) every time.
       const shouldRequeueForRegistration =
         chatActionType === 'REGISTRATION_REQUEST' &&
-        chatRegistrationProductId.length > 0 &&
-        forwardingResult.status !== 'NO_INTENT';
+        chatRegistrationProductId.length > 0;
       if (chatActionType !== 'NONE' && chatIntentConfidence >= 0.6 && (forwardingResult.status === 'NO_INTENT' || shouldRequeueForRegistration)) {
         const reQueueCall = this.actionForwarding.detectAndQueue(
           {

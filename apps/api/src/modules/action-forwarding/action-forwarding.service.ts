@@ -585,7 +585,11 @@ export class ActionForwardingService {
     const phoneMatch = text.match(/(?:\+?\d[\d\s().-]{6,}\d)/);
     if (phoneMatch?.[0]) extracted.customer_phone = phoneMatch[0].trim();
     const nameMatch = text.match(/\b(?:my name is|i am|i'm)\s+([A-Za-z][A-Za-z\s'-]{1,60})\b/i);
+    // Customers asked for several fields at once (name, email, phone) commonly reply in
+    // "Label: value" form line by line rather than conversationally — match that too.
+    const labeledNameMatch = text.match(/(?:^|\n)\s*(?:full\s*name|name)\s*[:\-]\s*([^\n]{1,80})/i);
     if (nameMatch?.[1]) extracted.customer_name = nameMatch[1].trim();
+    else if (labeledNameMatch?.[1]) extracted.customer_name = labeledNameMatch[1].trim();
     const companyMatch = text.match(/\b(?:company name|company|organisation|organization|business|startup)\s*(?:is|:)?\s*([A-Za-z0-9][A-Za-z0-9&.,'\-\s]{1,80})/i);
     if (companyMatch?.[1]) extracted.company_name = companyMatch[1].trim();
 
