@@ -221,7 +221,9 @@ export class EmailProcessor {
         bot: { id: botId, name: bot.name },
         messages: [],
       });
-    } else if (existing.status === 'RESOLVED' && (existing.metadata as Record<string, unknown> | null)?.awaitingCsat !== true) {
+    } else if (existing.status === 'RESOLVED') {
+      // Always start fresh on a resolved thread — see telegram.processor for the full rationale.
+      // awaitingCsat must not gate this or a stale-CSAT resolved thread becomes a dead thread.
       conversation = await this.prisma.conversation.create({
         data: {
           organizationId,

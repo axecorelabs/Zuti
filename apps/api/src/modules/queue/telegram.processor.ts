@@ -335,8 +335,12 @@ export class TelegramProcessor {
         bot: { id: botId, name: '' },
         messages: [],
       });
-    } else if (existing.status === 'RESOLVED' && (existing.metadata as Record<string, unknown> | null)?.awaitingCsat !== true) {
-      // Customer re-opened after resolution — create a fresh conversation
+    } else if (existing.status === 'RESOLVED') {
+      // Customer re-opened after resolution — always start a fresh conversation.
+      // A RESOLVED conversation's CSAT window is already closed, so awaitingCsat must NOT
+      // gate this: a resolved thread with a stale awaitingCsat flag (which pairs only with
+      // PENDING in the normal flow) would otherwise trap the message in a dead thread the
+      // AI never answers (especially when mode is HUMAN).
       conversation = await this.prisma.conversation.create({
         data: {
           organizationId,

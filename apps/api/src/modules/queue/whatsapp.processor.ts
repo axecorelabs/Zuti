@@ -272,12 +272,10 @@ export class WhatsAppProcessor {
               ...(phoneNumber ? [{ whatsappPhoneNumber: phoneNumber }] : []),
             ],
           },
-          {
-            OR: [
-              { status: { not: 'RESOLVED' } },
-              { status: 'RESOLVED', metadata: { path: ['awaitingCsat'], equals: true } },
-            ],
-          },
+          // Never reuse a RESOLVED conversation — a new inbound message always starts fresh.
+          // (Previously RESOLVED+awaitingCsat was reused, which trapped messages in a dead
+          // thread the AI never answered; CSAT is only ever interpreted for PENDING status.)
+          { status: { not: 'RESOLVED' } },
         ],
       },
       orderBy: { createdAt: 'desc' },
