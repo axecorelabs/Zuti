@@ -101,6 +101,7 @@ export class RegistrationsService {
         ...(dto.botId !== undefined && { botId: dto.botId || null }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
       },
+      include: { _count: { select: { entries: true } } },
     });
   }
 
