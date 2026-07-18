@@ -117,6 +117,8 @@ function buildCapabilitiesFromSkills(skills: BotSkill[]) {
     canNotifyTeam: has('FORWARDING'),
     canCreateMeetingRequest: has('BOOKING'),
     canCreateTechnicalIssue: has('SUPPORT') || has('TECHNICAL'),
+    // Registration is a general self-service capability, not tied to any one specialist skill.
+    canCreateRegistration: true,
   };
 }
 
@@ -351,6 +353,10 @@ function extractHostFromHeader(value: string | undefined): string | null {
 }
 
 function enforceReplyTrustConsistency(reply: string, forwardingResult: ActionForwardingResult): string {
+  // Registration requests are self-service and completed directly by this turn —
+  // the escalation/logging language checks below don't apply to them.
+  if (forwardingResult.actionType === 'REGISTRATION_REQUEST') return reply;
+
   const lower = reply.toLowerCase();
   const noDeliveryProof = forwardingResult.deliveryStatus !== 'DELIVERED_TO_TEAM';
 
@@ -381,6 +387,7 @@ function getTemplatePreset(template: BotTemplate) {
           canNotifyTeam: true,
           canCreateMeetingRequest: true,
           canCreateTechnicalIssue: false,
+          canCreateRegistration: true,
         },
         actionForwardingEnabled: true,
       };
@@ -393,6 +400,7 @@ function getTemplatePreset(template: BotTemplate) {
           canNotifyTeam: true,
           canCreateMeetingRequest: false,
           canCreateTechnicalIssue: true,
+          canCreateRegistration: true,
         },
         actionForwardingEnabled: true,
       };
@@ -405,6 +413,7 @@ function getTemplatePreset(template: BotTemplate) {
           canNotifyTeam: true,
           canCreateMeetingRequest: true,
           canCreateTechnicalIssue: false,
+          canCreateRegistration: true,
         },
         actionForwardingEnabled: true,
       };
@@ -417,6 +426,7 @@ function getTemplatePreset(template: BotTemplate) {
           canNotifyTeam: true,
           canCreateMeetingRequest: false,
           canCreateTechnicalIssue: true,
+          canCreateRegistration: true,
         },
         actionForwardingEnabled: true,
       };
@@ -429,6 +439,7 @@ function getTemplatePreset(template: BotTemplate) {
           canNotifyTeam: false,
           canCreateMeetingRequest: false,
           canCreateTechnicalIssue: false,
+          canCreateRegistration: true,
         },
         actionForwardingEnabled: true,
         aiConfig: {
@@ -449,6 +460,7 @@ function getTemplatePreset(template: BotTemplate) {
           canNotifyTeam: true,
           canCreateMeetingRequest: true,
           canCreateTechnicalIssue: true,
+          canCreateRegistration: true,
         },
         actionForwardingEnabled: false,
       };
@@ -2097,6 +2109,7 @@ export class BotsService {
         deliveryStatus: forwardingResult.deliveryStatus,
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
+        actionType: forwardingResult.actionType,
       });
 
       if (

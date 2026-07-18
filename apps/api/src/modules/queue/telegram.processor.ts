@@ -52,6 +52,10 @@ function shouldCollapseRepeatedReply(currentReply: string, previousAssistantRepl
 }
 
 function enforceReplyTrustConsistency(reply: string, forwardingResult: ActionForwardingResult): string {
+  // Registration requests are self-service and completed directly by this turn —
+  // the escalation/logging language checks below don't apply to them.
+  if (forwardingResult.actionType === 'REGISTRATION_REQUEST') return reply;
+
   const lower = reply.toLowerCase();
   const noDeliveryProof = forwardingResult.deliveryStatus !== 'DELIVERED_TO_TEAM';
 
@@ -1206,6 +1210,7 @@ export class TelegramProcessor {
         deliveryStatus: forwardingResult.deliveryStatus,
         missingFields: forwardingResult.missingFields,
         blockedCapability: forwardingResult.blockedCapability,
+        actionType: forwardingResult.actionType,
       });
       const deterministicFollowUp = buildDeterministicFollowUpMessage({
         actionType: forwardingResult.actionType,

@@ -8,7 +8,9 @@ export async function buildRegistrationContextBlock(params: {
   orgId: string;
 }): Promise<string | null> {
   const products = await params.prisma.registrationProduct.findMany({
-    where: { botId: params.botId, orgId: params.orgId, isActive: true },
+    // botId is null for events created with "— Any bot —" — an exact-equality filter would
+    // exclude those from every bot's context, so org-wide events must be OR'd in explicitly.
+    where: { orgId: params.orgId, isActive: true, OR: [{ botId: params.botId }, { botId: null }] },
     orderBy: { createdAt: 'asc' },
   });
   if (products.length === 0) return null;

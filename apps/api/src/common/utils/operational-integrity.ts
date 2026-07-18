@@ -22,6 +22,7 @@ interface OperationalClaimGuardOptions {
   deliveryStatus?: string;
   missingFields?: ForwardingMissingField[];
   blockedCapability?: string;
+  actionType?: string;
 }
 
 interface DeterministicFollowUpOptions {
@@ -185,6 +186,13 @@ export function sanitizeOperationalClaims(
   text: string,
   options: OperationalClaimGuardOptions = {},
 ): string {
+  // Registration requests are self-service: the entry is created directly in-system by this
+  // turn, and the AI has full, accurate product/registration state via the grounding block.
+  // The escalation/booking/lead claim patterns below are tuned for actions that only get
+  // logged for a human to review later — applying them here mangles a truthful "you're
+  // registered" confirmation into nonsensical escalation-flavored fragments.
+  if (options.actionType === 'REGISTRATION_REQUEST') return text;
+
   let sanitized = text;
   const forwardingStatus = options.forwardingStatus ?? 'UNKNOWN';
   const forwardingReason = options.forwardingReason ?? 'UNKNOWN';
@@ -380,6 +388,8 @@ export function buildDeterministicFollowUpMessage(
       ? 'order request'
     : options.actionType === 'TECHNICAL_ISSUE'
       ? 'technical issue request'
+    : options.actionType === 'REGISTRATION_REQUEST'
+      ? 'event registration'
       : 'request';
   const needed = missingFields.map(humanizeField).join(', ');
 

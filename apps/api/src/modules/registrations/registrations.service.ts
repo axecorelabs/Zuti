@@ -145,7 +145,9 @@ export class RegistrationsService {
 
   async getActiveProductsForBot(botId: string, orgId: string) {
     return this.prisma.registrationProduct.findMany({
-      where: { orgId, botId, isActive: true },
+      // botId is null for events created with "— Any bot —" — include those alongside
+      // events explicitly linked to this bot.
+      where: { orgId, isActive: true, OR: [{ botId }, { botId: null }] },
       orderBy: { createdAt: 'asc' },
     });
   }
