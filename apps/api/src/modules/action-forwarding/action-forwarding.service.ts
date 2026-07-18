@@ -1575,6 +1575,59 @@ export class ActionForwardingService {
               },
             },
           });
+
+          // Create the registration entry when all required fields are now present and no
+          // entry has been created yet. This handles the multi-turn case where the keyword
+          // pre-check created the task without a productId, and the AI now provides one.
+          if (currentFollowUpMissingFields.length === 0) {
+            const productId = input.registrationProductId ?? (existingPayload.registrationProductId as string | null) ?? null;
+            const alreadyHasEntry = typeof existingPayload.registrationEntryId === 'string' && existingPayload.registrationEntryId.length > 0;
+            if (productId && !alreadyHasEntry) {
+              const existingTaskProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; fields: unknown } | null =
+                registrationProduct ?? await prismaAny.registrationProduct.findFirst({
+                  where: { id: productId, orgId: input.organizationId },
+                });
+              if (existingTaskProduct) {
+                const atCapacity = await this.registrationsService.isAtCapacity(existingTaskProduct.id, existingTaskProduct.capacity);
+                if (!atCapacity) {
+                  const entry = await this.registrationsService.createEntry({
+                    productId: existingTaskProduct.id,
+                    orgId: input.organizationId,
+                    botId: input.botId,
+                    conversationId: input.conversationId,
+                    actionTaskId: existingTask.id,
+                    customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
+                    customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
+                    collectedFields,
+                    isFree: existingTaskProduct.isFree,
+                    requiresApproval: existingTaskProduct.requiresApproval,
+                  });
+                  await prismaAny.actionTask.update({
+                    where: { id: existingTask.id },
+                    data: {
+                      payload: {
+                        ...existingPayload,
+                        registrationProductId: existingTaskProduct.id,
+                        registrationProductName: existingTaskProduct.name,
+                        registrationEntryId: entry.id,
+                        followUpMissingFields: currentFollowUpMissingFields,
+                      },
+                    },
+                  });
+                  if (!existingTaskProduct.isFree && entry.customerEmail) {
+                    try {
+                      const { paymentUrl } = await this.registrationsService.initializePayment(entry.id, input.organizationId);
+                      registrationPaymentUrl = paymentUrl;
+                    } catch (payErr) {
+                      this.logger.warn(`Failed to initialize Paystack payment for entry ${entry.id}: ${String(payErr)}`);
+                    }
+                  }
+                } else {
+                  this.logger.warn(`Registration product ${existingTaskProduct.id} is at capacity — entry not created (existing task path)`);
+                }
+              }
+            }
+          }
         }
 
         if (currentFollowUpMissingFields.length === 0 && existingTask.status === 'PENDING_CONFIRMATION') {
@@ -1641,7 +1694,10 @@ export class ActionForwardingService {
           capabilityKey,
           actionTaskId: existingTask.id,
           missingFields: currentFollowUpMissingFields.length > 0 ? currentFollowUpMissingFields : undefined,
-        }));
+        })).then((result) => {
+          if (registrationPaymentUrl) return { ...result, registrationPaymentUrl };
+          return result;
+        });
       }
     }
 

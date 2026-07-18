@@ -1046,12 +1046,18 @@ export class TelegramProcessor {
       const chatActionType = typeof response.data?.action_type === 'string' ? response.data.action_type : 'NONE';
       const chatIntentConfidence: number = typeof response.data?.intent_confidence === 'number' ? response.data.intent_confidence : 0;
       const chatRegistrationProductId: string = typeof response.data?.registration_product_id === 'string' ? response.data.registration_product_id.trim() : '';
+      // Also re-queue for REGISTRATION_REQUEST when the AI provides a productId that the keyword
+      // pre-check didn't have — this is the only way the entry + payment get created in multi-turn flows.
+      const shouldRequeueForRegistration =
+        chatActionType === 'REGISTRATION_REQUEST' &&
+        chatRegistrationProductId.length > 0 &&
+        forwardingResult.status !== 'NO_INTENT';
       if (
         chatActionType !== 'NONE' &&
         chatIntentConfidence >= 0.6 &&
-        forwardingResult.status === 'NO_INTENT'
+        (forwardingResult.status === 'NO_INTENT' || shouldRequeueForRegistration)
       ) {
-        this.actionForwarding.detectAndQueue(
+        const reQueueCall = this.actionForwarding.detectAndQueue(
           {
             organizationId,
             botId,
@@ -1073,9 +1079,18 @@ export class TelegramProcessor {
               ? response.data.intent_summary.trim()
               : userText.slice(0, 300),
           },
-        ).catch((err: unknown) => {
-          this.logger.warn(`Post-chat action queuing failed (telegram): ${err instanceof Error ? err.message : String(err)}`);
-        });
+        );
+        // For registration re-queues, await so registrationPaymentUrl is available before we
+        // send the follow-up payment message below. For all other cases, fire-and-forget.
+        if (shouldRequeueForRegistration) {
+          await reQueueCall.then((result) => { forwardingResult = result; }).catch((err: unknown) => {
+            this.logger.warn(`Post-chat registration re-queue failed (telegram): ${err instanceof Error ? err.message : String(err)}`);
+          });
+        } else {
+          reQueueCall.catch((err: unknown) => {
+            this.logger.warn(`Post-chat action queuing failed (telegram): ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       }
 
       const promptTokens = estimateTokens({ userText, history, customerContext: effectiveCustomerContext });

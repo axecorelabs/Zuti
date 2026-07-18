@@ -435,6 +435,12 @@ export function buildTruthAwareResponseTemplate(
     if (deliveryStatus === 'SENT_TO_CHANNEL' || claimLevel === 'SENT_TO_CHANNEL') {
       return 'I can confirm this request was sent to the configured team channel. I cannot confirm a human has received or acknowledged it yet.';
     }
+    // Registration requests are self-service: the entry is created in-system and the AI
+    // has full product context from the registration grounding block. Let the AI generate
+    // the confirmation directly rather than replacing it with a generic internal-request message.
+    if (options.actionType === 'REGISTRATION_REQUEST') {
+      return null;
+    }
     if (options.canClaimCompleted) {
       return 'I have logged an internal request for review in this conversation. I cannot confirm downstream team delivery yet.';
     }
