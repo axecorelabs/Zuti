@@ -30,11 +30,13 @@ interface RegistrationProduct {
   priceMinor: number | null;
   currency: string;
   requiresApproval: boolean;
+  allowDuplicateRegistrations: boolean;
   confirmationMessage: string | null;
   fields: ProductField[];
   isActive: boolean;
   botId: string | null;
   _count: { entries: number };
+  usedSpots?: number;
   createdAt: string;
 }
 
@@ -45,6 +47,7 @@ interface RegistrationEntry {
   customerEmail: string | null;
   collectedFields: Record<string, string>;
   status: 'PENDING_PAYMENT' | 'AWAITING_APPROVAL' | 'CONFIRMED' | 'CANCELLED';
+  quantity?: number;
   paystackReference: string | null;
   paidAt: string | null;
   createdAt: string;
@@ -70,10 +73,11 @@ const STATUS_CLASS: Record<string, string> = {
 
 function exportCsv(product: RegistrationProduct, entries: RegistrationEntry[]) {
   const fieldKeys = product.fields.map((f) => f.key);
-  const headers = ['Name', 'Email', 'Status', 'Registered at', ...product.fields.map((f) => f.label)];
+  const headers = ['Name', 'Email', 'Tickets', 'Status', 'Registered at', ...product.fields.map((f) => f.label)];
   const rows = entries.map((e) => [
     e.customerName ?? '',
     e.customerEmail ?? '',
+    String(e.quantity ?? 1),
     STATUS_LABEL[e.status] ?? e.status,
     new Date(e.createdAt).toLocaleString(),
     ...fieldKeys.map((k) => e.collectedFields?.[k] ?? ''),
@@ -181,6 +185,7 @@ function useProductForm(existing?: RegistrationProduct) {
     existing?.priceMinor != null ? (existing.priceMinor / 100).toFixed(2) : '',
   );
   const [requiresApproval, setRequiresApproval] = useState(existing?.requiresApproval ?? false);
+  const [allowDuplicateRegistrations, setAllowDuplicateRegistrations] = useState(existing?.allowDuplicateRegistrations ?? false);
   const [confirmationMessage, setConfirmationMessage] = useState(existing?.confirmationMessage ?? '');
   const [fields, setFields] = useState<ProductField[]>(existing?.fields ?? []);
   const [botId, setBotId] = useState(existing?.botId ?? '');
@@ -195,6 +200,7 @@ function useProductForm(existing?: RegistrationProduct) {
     priceMinor: !isFree && priceMinor ? Math.round(parseFloat(priceMinor) * 100) : null,
     currency: 'NGN', // Only Naira is supported for now
     requiresApproval,
+    allowDuplicateRegistrations,
     confirmationMessage: confirmationMessage.trim() || null,
     fields: fields.filter((f) => f.key && f.label),
     botId: botId || null,
@@ -204,7 +210,8 @@ function useProductForm(existing?: RegistrationProduct) {
   return {
     name, setName, description, setDescription, eventDate, setEventDate,
     capacity, setCapacity, isFree, setIsFree, priceMinor, setPriceMinor,
-    requiresApproval, setRequiresApproval, confirmationMessage, setConfirmationMessage,
+    requiresApproval, setRequiresApproval, allowDuplicateRegistrations, setAllowDuplicateRegistrations,
+    confirmationMessage, setConfirmationMessage,
     fields, setFields, botId, setBotId, isActive, setIsActive,
     buildPayload,
   };
@@ -295,6 +302,19 @@ function ProductFormFields({ form, bots, variant }: {
             className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${form.requiresApproval ? 'bg-blue-600' : 'bg-zinc-700'}`}
           >
             <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${form.requiresApproval ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+          </button>
+        </div>
+        <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
+          <div>
+            <p className="text-sm text-zinc-300 font-medium">Allow duplicate registrations</p>
+            <p className="text-xs text-zinc-500 mt-0.5">When off, each email can hold only one active registration for this event</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => form.setAllowDuplicateRegistrations((v) => !v)}
+            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${form.allowDuplicateRegistrations ? 'bg-blue-600' : 'bg-zinc-700'}`}
+          >
+            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${form.allowDuplicateRegistrations ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
           </button>
         </div>
         <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
@@ -745,7 +765,7 @@ export default function EventsPage() {
                   {p.capacity && (
                     <span className="flex items-center gap-1">
                       <Tag className="w-3 h-3" />
-                      {p.capacity - p._count.entries} left
+                      {Math.max(0, p.capacity - (p.usedSpots ?? p._count.entries))} left
                     </span>
                   )}
                 </div>
@@ -771,7 +791,7 @@ export default function EventsPage() {
                 <h2 className="text-sm font-semibold text-white">{selectedProduct.name}</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">
                   {selectedProduct._count.entries} registrant{selectedProduct._count.entries !== 1 ? 's' : ''}
-                  {selectedProduct.capacity ? ` · ${selectedProduct.capacity} capacity` : ''}
+                  {selectedProduct.capacity ? ` · ${selectedProduct.usedSpots ?? selectedProduct._count.entries}/${selectedProduct.capacity} spots` : ''}
                   {selectedProduct.eventDate ? ` · ${formatDate(selectedProduct.eventDate)}` : ''}
                   {' · '}{formatPrice(selectedProduct)}
                 </p>
@@ -875,6 +895,7 @@ export default function EventsPage() {
                       {selectedProduct.fields.filter((f) => f.required).map((f) => (
                         <th key={f.key} className="text-left py-2 px-3 text-xs font-medium text-zinc-500">{f.label}</th>
                       ))}
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Tickets</th>
                       <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Status</th>
                       <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Registered</th>
                       <th className="py-2 px-3" />
@@ -890,6 +911,7 @@ export default function EventsPage() {
                             {entry.collectedFields?.[f.key] ?? '—'}
                           </td>
                         ))}
+                        <td className="py-3 px-3 text-zinc-300 font-medium">{entry.quantity ?? 1}</td>
                         <td className="py-3 px-3">
                           <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium border ${STATUS_CLASS[entry.status] ?? 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
                             {STATUS_LABEL[entry.status] ?? entry.status}

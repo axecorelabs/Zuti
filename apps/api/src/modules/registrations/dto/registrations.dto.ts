@@ -18,6 +18,7 @@ export class CreateRegistrationProductDto {
   @IsOptional() @IsInt() @Min(0) priceMinor?: number;
   @IsOptional() @IsString() currency?: string;
   @IsBoolean() requiresApproval: boolean;
+  @IsOptional() @IsBoolean() allowDuplicateRegistrations?: boolean;
   @IsOptional() @IsString() confirmationMessage?: string;
   @IsArray() @ValidateNested({ each: true }) @Type(() => RegistrationFieldDto) fields: RegistrationFieldDto[];
   @IsOptional() @IsString() botId?: string;
@@ -33,6 +34,7 @@ export class UpdateRegistrationProductDto {
   @IsOptional() @IsInt() @Min(0) priceMinor?: number;
   @IsOptional() @IsString() currency?: string;
   @IsOptional() @IsBoolean() requiresApproval?: boolean;
+  @IsOptional() @IsBoolean() allowDuplicateRegistrations?: boolean;
   @IsOptional() @IsString() confirmationMessage?: string;
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RegistrationFieldDto) fields?: RegistrationFieldDto[];
   @IsOptional() @IsString() botId?: string;

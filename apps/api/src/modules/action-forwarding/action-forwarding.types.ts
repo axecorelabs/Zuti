@@ -96,6 +96,8 @@ export interface ActionForwardingResult {
   missingFields?: ActionForwardingMissingField[];
   blockedCapability?: string;
   registrationPaymentUrl?: string;
+  /** Customer-facing notice for registration dedup / capacity outcomes (already registered, full). */
+  registrationNotice?: string;
 }
 
 export type ContactChannel = 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';

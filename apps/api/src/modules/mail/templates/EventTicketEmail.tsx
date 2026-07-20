@@ -9,6 +9,7 @@ export interface EventTicketEmailProps {
   status: 'CONFIRMED' | 'AWAITING_APPROVAL';
   qrDataUrl: string;
   ticketUrl: string;
+  quantity?: number;
   appName?: string;
   brandFooter?: string;
   primaryHex?: string;
@@ -22,11 +23,13 @@ export function EventTicketEmail({
   status,
   qrDataUrl,
   ticketUrl,
+  quantity = 1,
   appName = 'Zuti',
   brandFooter = '© 2026 axecorelabs',
   primaryHex = '#2563eb',
 }: EventTicketEmailProps) {
   const isConfirmed = status === 'CONFIRMED';
+  const admitsLabel = quantity > 1 ? `Admits ${quantity}` : 'Admits 1';
 
   return (
     <Html lang="en">
@@ -58,11 +61,12 @@ export function EventTicketEmail({
             <Text style={attendeeName}>{customerName ?? 'Guest'}</Text>
           </Section>
 
-          {/* Status badge */}
+          {/* Status + admits badge */}
           <Section style={{ textAlign: 'center' as const, marginBottom: '20px' }}>
             <Text style={statusBadge(isConfirmed)}>
               {isConfirmed ? '✓ Confirmed' : '⏳ Pending Approval'}
             </Text>
+            <Text style={admitsBadge}>{admitsLabel}</Text>
           </Section>
 
           {/* QR code */}
@@ -205,6 +209,18 @@ const statusBadge = (confirmed: boolean): React.CSSProperties => ({
   padding: '4px 14px',
   margin: '0',
 });
+
+const admitsBadge: React.CSSProperties = {
+  display: 'inline-block',
+  fontSize: '12px',
+  fontWeight: '600',
+  color: '#a1a1aa',
+  backgroundColor: 'rgba(161,161,170,0.10)',
+  border: '1px solid rgba(161,161,170,0.25)',
+  borderRadius: '20px',
+  padding: '4px 14px',
+  margin: '8px 0 0 0',
+};
 
 const qrSection: React.CSSProperties = {
   textAlign: 'center',

@@ -1032,6 +1032,17 @@ export class EmailProcessor {
         `Operational truth (email): status=${forwardingResult.status} reason=${forwardingResult.reason} claimLevel=${forwardingResult.claimLevel} delivery=${forwardingResult.deliveryStatus} canClaimCompleted=${forwardingResult.canClaimCompleted}`,
       );
 
+      // Fold the registration payment link into the AI reply (persisted + in inbox); a pending
+      // payment also means the conversation is not resolved.
+      const hasPendingPayment = Boolean(forwardingResult.registrationPaymentUrl);
+      if (forwardingResult.registrationNotice) {
+        finalAiText = `${finalAiText}\n\n${forwardingResult.registrationNotice}`;
+      }
+      if (hasPendingPayment) {
+        finalAiText = `${finalAiText}\n\nTo complete your registration, please make payment via this secure link:\n${forwardingResult.registrationPaymentUrl}`;
+      }
+      const effectiveShouldResolve = shouldResolve && !hasPendingPayment;
+
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
         data: { conversationId: conversation.id, role: 'ASSISTANT', content: finalAiText },
@@ -1057,7 +1068,7 @@ export class EmailProcessor {
 
       // Auto-resolve: AI signalled done and no escalation is needed.
       // Keep in PENDING awaiting CSAT so the next reply is classified on this thread.
-      if (shouldResolve) {
+      if (effectiveShouldResolve) {
         if (!shouldEscalate) {
           const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversation.id }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
           const { csatRating, ...metaWithoutCstatRating } = currentMeta;
@@ -1069,16 +1080,7 @@ export class EmailProcessor {
         }
       }
 
-      // If a registration payment link was generated, send it as a follow-up email
-      if (forwardingResult.registrationPaymentUrl) {
-        await this.sendEmail(
-          fromAddress, toAddress, customerEmail,
-          `Re: ${conversation.emailSubject ?? 'Your enquiry'}`,
-          `To complete your registration, please make payment via the link below:\n\n${forwardingResult.registrationPaymentUrl}`,
-          conversation.emailThreadId,
-          botName, orgName ?? '',
-        );
-      }
+      // (Registration payment link is folded into the AI reply above — persisted and in inbox.)
     } catch (err) {
       this.logger.error(`AI/email error for conversation ${conversation.id}: ${err}`);
     }

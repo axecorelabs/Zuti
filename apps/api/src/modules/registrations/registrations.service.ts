@@ -54,6 +54,7 @@ export class RegistrationsService {
         priceMinor: dto.isFree ? null : (dto.priceMinor ?? null),
         currency: dto.currency ?? 'NGN',
         requiresApproval: dto.requiresApproval,
+        allowDuplicateRegistrations: dto.allowDuplicateRegistrations ?? false,
         confirmationMessage: dto.confirmationMessage ?? null,
         fields: (dto.fields ?? []) as any,
         isActive: dto.isActive ?? true,
@@ -62,11 +63,16 @@ export class RegistrationsService {
   }
 
   async listProducts(orgId: string, botId?: string) {
-    return this.prisma.registrationProduct.findMany({
+    const products = await this.prisma.registrationProduct.findMany({
       where: { orgId, ...(botId ? { botId } : {}) },
       orderBy: { createdAt: 'desc' },
       include: { _count: { select: { entries: true } } },
     });
+    // Attach usedSpots (SUM of ticket quantities across non-cancelled entries) for capacity display.
+    return Promise.all(products.map(async (p) => ({
+      ...p,
+      usedSpots: await this.getUsedSpots(p.id),
+    })));
   }
 
   async getProduct(orgId: string, productId: string) {
@@ -75,7 +81,7 @@ export class RegistrationsService {
       include: { _count: { select: { entries: true } } },
     });
     if (!product) throw new NotFoundException('Registration product not found');
-    return product;
+    return { ...product, usedSpots: await this.getUsedSpots(product.id) };
   }
 
   async updateProduct(orgId: string, productId: string, dto: UpdateRegistrationProductDto) {
@@ -96,6 +102,7 @@ export class RegistrationsService {
         ...(dto.priceMinor !== undefined && { priceMinor: dto.priceMinor }),
         ...(dto.currency !== undefined && { currency: dto.currency }),
         ...(dto.requiresApproval !== undefined && { requiresApproval: dto.requiresApproval }),
+        ...(dto.allowDuplicateRegistrations !== undefined && { allowDuplicateRegistrations: dto.allowDuplicateRegistrations }),
         ...(dto.confirmationMessage !== undefined && { confirmationMessage: dto.confirmationMessage }),
         ...(dto.fields !== undefined && { fields: dto.fields as any }),
         ...(dto.botId !== undefined && { botId: dto.botId || null }),
@@ -158,10 +165,34 @@ export class RegistrationsService {
     });
   }
 
-  async getEntryCount(productId: string): Promise<number> {
-    return this.prisma.registrationEntry.count({ where: { productId, status: { not: 'CANCELLED' } } });
+  private normalizeEmail(email: string | null | undefined): string | null {
+    const trimmed = (email ?? '').trim().toLowerCase();
+    return trimmed.length > 0 ? trimmed : null;
   }
 
+  /** Spots consumed by an event = SUM of quantities across non-cancelled entries. */
+  async getUsedSpots(productId: string, tx?: any): Promise<number> {
+    const client = tx ?? this.prisma;
+    const agg = await client.registrationEntry.aggregate({
+      where: { productId, status: { not: 'CANCELLED' } },
+      _sum: { quantity: true },
+    });
+    return agg._sum.quantity ?? 0;
+  }
+
+  /** True when the event is full for the requested quantity. */
+  async isAtCapacity(productId: string, capacity: number | null, requestedQty = 1): Promise<boolean> {
+    if (capacity === null) return false;
+    const used = await this.getUsedSpots(productId);
+    return used + requestedQty > capacity;
+  }
+
+  /**
+   * Create a registration entry with atomic capacity reservation and per-event dedup.
+   * Serializes concurrent registrations on the product row (FOR UPDATE) so capacity cannot
+   * be oversold, and (unless the event allows duplicates) collapses repeat registrations
+   * for the same email onto the existing entry instead of creating a second one.
+   */
   async createEntry(data: {
     productId: string;
     orgId: string;
@@ -173,32 +204,76 @@ export class RegistrationsService {
     collectedFields: Record<string, string>;
     isFree: boolean;
     requiresApproval: boolean;
-  }) {
+    quantity?: number;
+    priceMinor?: number | null;
+    capacity?: number | null;
+    allowDuplicateRegistrations?: boolean;
+  }): Promise<{ outcome: 'CREATED' | 'ALREADY_REGISTERED' | 'PENDING_EXISTS' | 'AT_CAPACITY'; entry?: any; spotsLeft?: number }> {
+    const quantity = Math.max(1, Math.min(50, Math.floor(data.quantity ?? 1)));
+    const normalizedEmail = this.normalizeEmail(data.customerEmail);
     const status = data.isFree
       ? (data.requiresApproval ? 'AWAITING_APPROVAL' : 'CONFIRMED')
       : 'PENDING_PAYMENT';
+    const amountMinor = data.isFree ? 0 : (data.priceMinor ?? 0) * quantity;
 
-    const entry = await this.prisma.registrationEntry.create({
-      data: {
-        productId: data.productId,
-        orgId: data.orgId,
-        botId: data.botId ?? null,
-        conversationId: data.conversationId ?? null,
-        actionTaskId: data.actionTaskId ?? null,
-        customerName: data.customerName ?? null,
-        customerEmail: data.customerEmail ?? null,
-        collectedFields: data.collectedFields as any,
-        status: status as any,
-      },
-      include: { product: true },
+    const result = await this.prisma.$transaction(async (tx) => {
+      const txAny = tx as any;
+      // Serialize registrations for this product so the capacity check-and-reserve is atomic.
+      await tx.$queryRawUnsafe(`SELECT id FROM "RegistrationProduct" WHERE id = $1 FOR UPDATE`, data.productId);
+
+      // Dedup: unless the event allows duplicates, one active entry per email.
+      if (!data.allowDuplicateRegistrations && normalizedEmail) {
+        const existing = await txAny.registrationEntry.findFirst({
+          where: {
+            productId: data.productId,
+            status: { not: 'CANCELLED' },
+            customerEmail: { equals: normalizedEmail, mode: 'insensitive' },
+          },
+          orderBy: { createdAt: 'desc' },
+          include: { product: true },
+        });
+        if (existing) {
+          if (existing.status === 'PENDING_PAYMENT') {
+            return { outcome: 'PENDING_EXISTS' as const, entry: existing };
+          }
+          return { outcome: 'ALREADY_REGISTERED' as const, entry: existing };
+        }
+      }
+
+      // Atomic capacity reserve.
+      if (data.capacity !== null && data.capacity !== undefined) {
+        const used = await this.getUsedSpots(data.productId, txAny);
+        if (used + quantity > data.capacity) {
+          return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.capacity - used) };
+        }
+      }
+
+      const entry = await txAny.registrationEntry.create({
+        data: {
+          productId: data.productId,
+          orgId: data.orgId,
+          botId: data.botId ?? null,
+          conversationId: data.conversationId ?? null,
+          actionTaskId: data.actionTaskId ?? null,
+          customerName: data.customerName ?? null,
+          // Store the normalized email so dedup and receipts are consistent.
+          customerEmail: normalizedEmail,
+          collectedFields: data.collectedFields as any,
+          status: status as any,
+          quantity,
+          amountMinor,
+        },
+        include: { product: true },
+      });
+      return { outcome: 'CREATED' as const, entry };
     });
 
-    // Free events skip payment entirely — send the ticket (no receipt) as soon as the entry is confirmed
-    if (data.isFree && (status === 'CONFIRMED' || status === 'AWAITING_APPROVAL')) {
-      await this.enqueueRegistrationReceipt(entry.id, data.orgId);
+    // Free events skip payment entirely — send the ticket as soon as the entry is confirmed.
+    if (result.outcome === 'CREATED' && data.isFree && (status === 'CONFIRMED' || status === 'AWAITING_APPROVAL')) {
+      await this.enqueueRegistrationReceipt(result.entry.id, data.orgId);
     }
 
-    return entry;
+    return result;
   }
 
   private async enqueueRegistrationReceipt(entryId: string, orgId: string) {
@@ -238,12 +313,28 @@ export class RegistrationsService {
 
     // Use pure random bytes — no timestamp to avoid millisecond collisions
     const reference = `zuti_reg_${randomBytes(16).toString('hex')}`;
+
+    // Chat-based registrants never return to a Zuti web page, so we cannot rely on a
+    // frontend "verify" call the way billing does. We set a callback_url that Paystack
+    // redirects the customer's browser to after payment — that endpoint confirms the
+    // registration server-side and forwards to the ticket page. The webhook remains a
+    // backstop (both hit the same idempotent handlePaymentConfirmed).
+    const apiBase = (this.config.get<string>('API_URL') ?? 'http://localhost:3001').replace(/\/$/, '');
+    const callbackUrl = `${apiBase}/api/public/tickets/payment/callback`;
+
+    // Charge the entry's total (unit price × quantity), captured at entry creation. Fall back
+    // to unit price × quantity if amountMinor was not stored (legacy entries).
+    const chargeAmount = (entry.amountMinor && entry.amountMinor > 0)
+      ? entry.amountMinor
+      : (entry.product.priceMinor ?? 0) * (entry.quantity ?? 1);
+
     const response = await firstValueFrom(
       this.http.post<PaystackInitResponse>('https://api.paystack.co/transaction/initialize', {
-        amount: entry.product.priceMinor,
+        amount: chargeAmount,
         email: entry.customerEmail,
         currency: entry.product.currency,
         reference,
+        callback_url: callbackUrl,
         metadata: {
           organizationId: orgId,
           registrationEntryId: entry.id,
@@ -268,6 +359,30 @@ export class RegistrationsService {
     });
 
     return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference };
+  }
+
+  getPublicAppUrl(): string {
+    return (this.config.get<string>('APP_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
+  }
+
+  /** Public payment-return handler: validates the reference shape then confirms. Safe to call
+   *  from the unauthenticated Paystack callback — handlePaymentConfirmed re-verifies with Paystack. */
+  async confirmPaymentByReference(reference: string): Promise<{ entry: any; product: any } | null> {
+    if (!reference || !/^zuti_reg_[a-f0-9]{32}$/.test(reference)) {
+      // Tolerate legacy references (older format) by still attempting confirmation, but log it.
+      if (reference && reference.startsWith('zuti_reg_')) {
+        return this.handlePaymentConfirmed(reference).catch((err) => {
+          this.logger.warn(`confirmPaymentByReference failed for ${reference}: ${String(err)}`);
+          return null;
+        });
+      }
+      this.logger.warn(`confirmPaymentByReference: rejected malformed reference "${reference}"`);
+      return null;
+    }
+    return this.handlePaymentConfirmed(reference).catch((err) => {
+      this.logger.warn(`confirmPaymentByReference failed for ${reference}: ${String(err)}`);
+      return null;
+    });
   }
 
   async handlePaymentConfirmed(paystackReference: string): Promise<{ entry: any; product: any } | null> {
@@ -297,8 +412,12 @@ export class RegistrationsService {
       this.logger.warn(`Reference mismatch in Paystack verification response for ${paystackReference}`);
       return null;
     }
-    if (verification.data.amount !== entry.product.priceMinor) {
-      this.logger.warn(`Amount mismatch for ${paystackReference}: expected ${entry.product.priceMinor}, got ${verification.data.amount}`);
+    // Verify against the entry's charged total (unit price × quantity), not the unit price.
+    const expectedAmount = (entry.amountMinor && entry.amountMinor > 0)
+      ? entry.amountMinor
+      : (entry.product.priceMinor ?? 0) * (entry.quantity ?? 1);
+    if (verification.data.amount !== expectedAmount) {
+      this.logger.warn(`Amount mismatch for ${paystackReference}: expected ${expectedAmount}, got ${verification.data.amount}`);
       return null;
     }
 
@@ -340,14 +459,6 @@ export class RegistrationsService {
     }
   }
 
-  // ── Capacity check ────────────────────────────────────────────────────────
-
-  async isAtCapacity(productId: string, capacity: number | null): Promise<boolean> {
-    if (capacity === null) return false;
-    const count = await this.getEntryCount(productId);
-    return count >= capacity;
-  }
-
   // ── Public ticket verification ───────────────────────────────────────────
   // No auth — deliberately returns only what's needed to display a ticket, nothing sensitive.
 
@@ -362,6 +473,7 @@ export class RegistrationsService {
       eventDate: entry.product.eventDate,
       customerName: entry.customerName,
       status: entry.status,
+      quantity: entry.quantity ?? 1,
       reference: (entry.paystackReference ?? entry.id).slice(-12).toUpperCase(),
     };
   }

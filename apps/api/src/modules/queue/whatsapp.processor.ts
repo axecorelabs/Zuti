@@ -1018,6 +1018,17 @@ export class WhatsAppProcessor {
         finalAiText = truthTemplate;
       }
 
+      // Fold the registration payment link into the AI reply (persisted + in inbox); a pending
+      // payment also means the conversation is not resolved.
+      const hasPendingPayment = Boolean(forwardingResult.registrationPaymentUrl);
+      if (forwardingResult.registrationNotice) {
+        finalAiText = `${finalAiText}\n\n${forwardingResult.registrationNotice}`;
+      }
+      if (hasPendingPayment) {
+        finalAiText = `${finalAiText}\n\nTo complete your registration, please make payment via this secure link:\n${forwardingResult.registrationPaymentUrl}`;
+      }
+      const effectiveShouldResolve = shouldResolve && !hasPendingPayment;
+
       const aiMessage = await this.prisma.message.create({
         data: {
           conversationId,
@@ -1034,7 +1045,7 @@ export class WhatsAppProcessor {
         config: bot.whatsappConfig,
       }, replyTarget, finalAiText);
 
-      if (shouldResolve && !shouldEscalate) {
+      if (effectiveShouldResolve && !shouldEscalate) {
         const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
         const { csatRating, ...metaWithoutCsatRating } = currentMeta;
         await this.prisma.conversation.update({
@@ -1053,14 +1064,7 @@ export class WhatsAppProcessor {
         }, replyTarget, 'I am connecting you with a human agent who will follow up shortly.');
       }
 
-      if (forwardingResult.registrationPaymentUrl) {
-        await sendWhatsAppText(this.http, {
-          provider: bot.whatsappProvider,
-          channelIdentifier: bot.whatsappChannelIdentifier,
-          phoneNumber: bot.whatsappPhoneNumber,
-          config: bot.whatsappConfig,
-        }, replyTarget, `To complete your registration, please make payment via the link below:\n\n${forwardingResult.registrationPaymentUrl}`);
-      }
+      // (Registration payment link is folded into the AI reply above — persisted and in inbox.)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`AI service error for WhatsApp conversation ${conversationId}: ${msg}`);

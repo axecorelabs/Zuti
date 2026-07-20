@@ -1278,6 +1278,18 @@ export class TelegramProcessor {
         `Operational truth (telegram): status=${forwardingResult.status} reason=${forwardingResult.reason} claimLevel=${forwardingResult.claimLevel} delivery=${forwardingResult.deliveryStatus} canClaimCompleted=${forwardingResult.canClaimCompleted}`,
       );
 
+      // Registration payment link: fold it into the AI reply so it is persisted and visible
+      // in the inbox as a single coherent message (instead of an unsaved follow-up send).
+      // A pending payment also means the conversation is NOT resolved.
+      const hasPendingPayment = Boolean(forwardingResult.registrationPaymentUrl);
+      if (forwardingResult.registrationNotice) {
+        finalAiText = `${finalAiText}\n\n${forwardingResult.registrationNotice}`;
+      }
+      if (hasPendingPayment) {
+        finalAiText = `${finalAiText}\n\nTo complete your registration, please make payment via this secure link:\n${forwardingResult.registrationPaymentUrl}`;
+      }
+      const effectiveShouldResolve = shouldResolve && !hasPendingPayment;
+
       // Store AI reply
       const aiMessage = await this.prisma.message.create({
         data: {
@@ -1307,7 +1319,7 @@ export class TelegramProcessor {
 
       // Auto-resolve: AI signalled the conversation is done and no escalation is needed.
       // Keep in PENDING awaiting CSAT so the next reply is classified on this same conversation.
-      if (shouldResolve && !shouldEscalate) {
+      if (effectiveShouldResolve && !shouldEscalate) {
         const currentMeta = ((await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { metadata: true } }))?.metadata as Record<string, unknown> | null) ?? {};
         const { csatRating, ...metaWithoutCstatRating } = currentMeta;
         await this.prisma.conversation.update({
@@ -1327,15 +1339,8 @@ export class TelegramProcessor {
         );
       }
 
-      // If a registration payment link was generated, send it as a follow-up
-      if (forwardingResult.registrationPaymentUrl) {
-        await firstValueFrom(
-          this.http.post(`https://api.telegram.org/bot${telegramToken}/sendMessage`, {
-            chat_id: telegramChatId,
-            text: `To complete your registration, please make payment via the link below:\n\n${forwardingResult.registrationPaymentUrl}`,
-          }),
-        );
-      }
+      // (Registration payment link is now folded into the AI reply above, so it is persisted
+      // and visible in the inbox — no separate unsaved follow-up send.)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`AI service error for conversation ${conversationId}: ${msg}`);

@@ -38,11 +38,14 @@ export async function buildRegistrationContextBlock(params: {
     parts.push(`Required info (collect all before confirming): ${requiredFields.join(', ')}`);
     if (optionalFields.length > 0) parts.push(`Optional info: ${optionalFields.join(', ')}`);
 
-    const entryCount = await params.prisma.registrationEntry.count({
+    // Spots used = sum of ticket quantities across non-cancelled entries (not a row count).
+    const usedAgg = await params.prisma.registrationEntry.aggregate({
       where: { productId: p.id, status: { not: 'CANCELLED' } },
+      _sum: { quantity: true },
     });
+    const usedSpots = usedAgg._sum.quantity ?? 0;
     if (p.capacity !== null) {
-      const remaining = p.capacity - entryCount;
+      const remaining = p.capacity - usedSpots;
       if (remaining <= 0) {
         parts.push('Status: FULL — do not accept new registrations for this product');
       } else {
@@ -54,7 +57,22 @@ export async function buildRegistrationContextBlock(params: {
   }
 
   lines.push(
-    'When a customer wants to register: identify the matching product, set action_type to REGISTRATION_REQUEST and registration_product_id to that product\'s ID, and gather the required fields conversationally. On every registration turn, put everything gathered so far into collected_fields using each field\'s exact key shown above (e.g. customer_name, customer_email). Ask only for the fields still missing. Once all required fields are present, the registration and any payment are finalized automatically by the system — so you may confirm to the customer that they are registered.',
+    'When a customer wants to register: identify the matching product, set action_type to REGISTRATION_REQUEST and registration_product_id to that product\'s ID, and gather the required fields conversationally. On every registration turn, put everything gathered so far into collected_fields using each field\'s exact key shown above (e.g. customer_name, customer_email). Ask only for the fields still missing.',
+  );
+  lines.push(
+    'Once all required fields are present, completion depends on the product price:',
+  );
+  lines.push(
+    '- FREE product: the registration is finalized automatically — you may confirm the customer is registered and ask if they need anything else.',
+  );
+  lines.push(
+    '- PAID product: DO NOT say the customer is registered, confirmed, or complete, and DO NOT ask "is there anything else" — payment is still required. Instead say you have all their details and a secure payment link will follow (or has just been sent) which they must complete to finalize the registration. The system sends the payment link automatically; you only need to set the fields.',
+  );
+  lines.push(
+    'Ticket quantity: if the customer wants more than one ticket/spot (e.g. "3 tickets", "me and 2 friends"), set collected_fields.quantity to that number (default 1). For paid products the total charged is the price × quantity, and each ticket consumes one capacity spot.',
+  );
+  lines.push(
+    'The system enforces capacity and prevents duplicate registrations, and will append an authoritative notice if the event is full or the customer is already registered — so do not fabricate confirmations; state what you have collected and let the system finalize.',
   );
 
   return lines.join('\n');

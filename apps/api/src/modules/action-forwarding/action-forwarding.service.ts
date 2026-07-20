@@ -1091,12 +1091,95 @@ export class ActionForwardingService {
     }
   }
 
+  private parseTicketQuantity(collectedFields: Record<string, string>): number {
+    const raw = collectedFields.quantity
+      ?? collectedFields.tickets
+      ?? collectedFields.number_of_tickets
+      ?? collectedFields.ticket_quantity
+      ?? '';
+    const n = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
+    if (!Number.isFinite(n) || n < 1) return 1;
+    return Math.min(50, n);
+  }
+
+  /**
+   * Create (or reconcile) a registration entry and translate the service outcome into the
+   * customer-facing result fields: payment link (created / pending-reuse), an "already
+   * registered" or "event full" notice, and the entry id to record on the action task.
+   */
+  private async processRegistrationEntry(params: {
+    product: any;
+    orgId: string;
+    botId: string;
+    conversationId: string;
+    actionTaskId: string;
+    collectedFields: Record<string, string>;
+    inputCustomerName?: string | null;
+    inputCustomerEmail?: string | null;
+  }): Promise<{ entryId?: string; registrationPaymentUrl?: string; registrationNotice?: string }> {
+    const { product } = params;
+    const quantity = this.parseTicketQuantity(params.collectedFields);
+    const customerName = params.collectedFields.customer_name ?? params.inputCustomerName ?? undefined;
+    const customerEmail = params.collectedFields.customer_email ?? params.inputCustomerEmail ?? undefined;
+
+    const result = await this.registrationsService.createEntry({
+      productId: product.id,
+      orgId: params.orgId,
+      botId: params.botId,
+      conversationId: params.conversationId,
+      actionTaskId: params.actionTaskId,
+      customerName,
+      customerEmail,
+      collectedFields: params.collectedFields,
+      isFree: product.isFree,
+      requiresApproval: product.requiresApproval,
+      quantity,
+      priceMinor: product.priceMinor,
+      capacity: product.capacity,
+      allowDuplicateRegistrations: product.allowDuplicateRegistrations === true,
+    });
+
+    const appUrl = this.registrationsService.getPublicAppUrl();
+
+    if (result.outcome === 'AT_CAPACITY') {
+      const left = result.spotsLeft ?? 0;
+      const notice = left > 0
+        ? `Only ${left} spot${left === 1 ? '' : 's'} remain for ${product.name}, which is fewer than the ${quantity} requested. Reply with a smaller quantity to continue.`
+        : `Unfortunately ${product.name} is now fully booked, so I could not complete this registration.`;
+      return { registrationNotice: notice };
+    }
+
+    if (result.outcome === 'ALREADY_REGISTERED') {
+      const e = result.entry;
+      return {
+        entryId: e.id,
+        registrationNotice: `You're already registered for ${product.name}. You can view your ticket here: ${appUrl}/ticket/${e.id}`,
+      };
+    }
+
+    // CREATED or PENDING_EXISTS — both need a payment link for paid events (initializePayment
+    // is idempotent, so PENDING_EXISTS returns the customer's existing link).
+    const entry = result.entry;
+    let paymentUrl: string | undefined;
+    if (!product.isFree && entry.customerEmail) {
+      try {
+        const res = await this.registrationsService.initializePayment(entry.id, params.orgId);
+        paymentUrl = res.paymentUrl;
+      } catch (payErr) {
+        this.logger.warn(`Failed to initialize Paystack payment for entry ${entry.id}: ${String(payErr)}`);
+      }
+    }
+    return { entryId: entry.id, registrationPaymentUrl: paymentUrl };
+  }
+
   async detectAndQueue(
     input: InboundActionSignalInput,
     preClassifiedDetected?: { actionType: ActionType; confidence: number; summary: string },
   ): Promise<ActionForwardingResult> {
-    let registrationProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; fields: unknown } | null = null;
+    let registrationProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; priceMinor: number | null; allowDuplicateRegistrations: boolean; fields: unknown } | null = null;
     let registrationPaymentUrl: string | null = null;
+    // Human-facing notice for dedup / capacity outcomes (already registered, event full, etc.).
+    let registrationNotice: string | null = null;
 
     if (!input.actionForwardingEnabled) {
       return this.buildForwardingResult({
@@ -1603,25 +1686,24 @@ export class ActionForwardingService {
             const productId = input.registrationProductId ?? (existingPayload.registrationProductId as string | null) ?? null;
             const alreadyHasEntry = typeof existingPayload.registrationEntryId === 'string' && existingPayload.registrationEntryId.length > 0;
             if (productId && !alreadyHasEntry) {
-              const existingTaskProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; fields: unknown } | null =
+              const existingTaskProduct: any =
                 registrationProduct ?? await prismaAny.registrationProduct.findFirst({
                   where: { id: productId, orgId: input.organizationId },
                 });
               if (existingTaskProduct) {
-                const atCapacity = await this.registrationsService.isAtCapacity(existingTaskProduct.id, existingTaskProduct.capacity);
-                if (!atCapacity) {
-                  const entry = await this.registrationsService.createEntry({
-                    productId: existingTaskProduct.id,
-                    orgId: input.organizationId,
-                    botId: input.botId,
-                    conversationId: input.conversationId,
-                    actionTaskId: existingTask.id,
-                    customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
-                    customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
-                    collectedFields,
-                    isFree: existingTaskProduct.isFree,
-                    requiresApproval: existingTaskProduct.requiresApproval,
-                  });
+                const outcome = await this.processRegistrationEntry({
+                  product: existingTaskProduct,
+                  orgId: input.organizationId,
+                  botId: input.botId,
+                  conversationId: input.conversationId,
+                  actionTaskId: existingTask.id,
+                  collectedFields,
+                  inputCustomerName: input.customerName,
+                  inputCustomerEmail: input.customerEmail,
+                });
+                if (outcome.registrationPaymentUrl) registrationPaymentUrl = outcome.registrationPaymentUrl;
+                if (outcome.registrationNotice) registrationNotice = outcome.registrationNotice;
+                if (outcome.entryId) {
                   await prismaAny.actionTask.update({
                     where: { id: existingTask.id },
                     data: {
@@ -1629,21 +1711,11 @@ export class ActionForwardingService {
                         ...existingPayload,
                         registrationProductId: existingTaskProduct.id,
                         registrationProductName: existingTaskProduct.name,
-                        registrationEntryId: entry.id,
+                        registrationEntryId: outcome.entryId,
                         followUpMissingFields: currentFollowUpMissingFields,
                       },
                     },
                   });
-                  if (!existingTaskProduct.isFree && entry.customerEmail) {
-                    try {
-                      const { paymentUrl } = await this.registrationsService.initializePayment(entry.id, input.organizationId);
-                      registrationPaymentUrl = paymentUrl;
-                    } catch (payErr) {
-                      this.logger.warn(`Failed to initialize Paystack payment for entry ${entry.id}: ${String(payErr)}`);
-                    }
-                  }
-                } else {
-                  this.logger.warn(`Registration product ${existingTaskProduct.id} is at capacity — entry not created (existing task path)`);
                 }
               }
             }
@@ -1715,7 +1787,13 @@ export class ActionForwardingService {
           actionTaskId: existingTask.id,
           missingFields: currentFollowUpMissingFields.length > 0 ? currentFollowUpMissingFields : undefined,
         })).then((result) => {
-          if (registrationPaymentUrl) return { ...result, registrationPaymentUrl };
+          if (registrationPaymentUrl || registrationNotice) {
+            return {
+              ...result,
+              ...(registrationPaymentUrl ? { registrationPaymentUrl } : {}),
+              ...(registrationNotice ? { registrationNotice } : {}),
+            };
+          }
           return result;
         });
       }
@@ -1951,21 +2029,19 @@ export class ActionForwardingService {
         : null;
 
       if (product) {
-        const atCapacity = await this.registrationsService.isAtCapacity(product.id, product.capacity);
-        if (!atCapacity) {
-          const entry = await this.registrationsService.createEntry({
-            productId: product.id,
-            orgId: input.organizationId,
-            botId: input.botId,
-            conversationId: input.conversationId,
-            actionTaskId: task.id,
-            customerName: collectedFields.customer_name ?? input.customerName ?? undefined,
-            customerEmail: collectedFields.customer_email ?? input.customerEmail ?? undefined,
-            collectedFields,
-            isFree: product.isFree,
-            requiresApproval: product.requiresApproval,
-          });
-
+        const outcome = await this.processRegistrationEntry({
+          product,
+          orgId: input.organizationId,
+          botId: input.botId,
+          conversationId: input.conversationId,
+          actionTaskId: task.id,
+          collectedFields,
+          inputCustomerName: input.customerName,
+          inputCustomerEmail: input.customerEmail,
+        });
+        if (outcome.registrationPaymentUrl) registrationPaymentUrl = outcome.registrationPaymentUrl;
+        if (outcome.registrationNotice) registrationNotice = outcome.registrationNotice;
+        if (outcome.entryId) {
           await prismaAny.actionTask.update({
             where: { id: task.id },
             data: {
@@ -1976,22 +2052,11 @@ export class ActionForwardingService {
                 customerEmail: collectedFields.customer_email ?? input.customerEmail ?? null,
                 registrationProductId: product.id,
                 registrationProductName: product.name,
-                registrationEntryId: entry.id,
+                registrationEntryId: outcome.entryId,
                 followUpMissingFields,
               },
             },
           });
-
-          if (!product.isFree && entry.customerEmail) {
-            try {
-              const { paymentUrl } = await this.registrationsService.initializePayment(entry.id, input.organizationId);
-              registrationPaymentUrl = paymentUrl;
-            } catch (payErr) {
-              this.logger.warn(`Failed to initialize Paystack payment for entry ${entry.id}: ${String(payErr)}`);
-            }
-          }
-        } else {
-          this.logger.warn(`Registration product ${product.id} is at capacity — entry not created`);
         }
       }
     }
@@ -2069,8 +2134,12 @@ export class ActionForwardingService {
       actionTaskId: task.id,
       missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
     }));
-    if (registrationPaymentUrl) {
-      return { ...finalResult, registrationPaymentUrl };
+    if (registrationPaymentUrl || registrationNotice) {
+      return {
+        ...finalResult,
+        ...(registrationPaymentUrl ? { registrationPaymentUrl } : {}),
+        ...(registrationNotice ? { registrationNotice } : {}),
+      };
     }
     return finalResult;
   }

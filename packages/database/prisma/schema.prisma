@@ -1298,6 +1298,8 @@ model RegistrationProduct {
   confirmationMessage String?
   fields              Json      @default("[]") // [{key, label, type, required}]
   isActive            Boolean   @default(true)
+  // When false (default), a given email can hold only one active registration for this event.
+  allowDuplicateRegistrations Boolean @default(false)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -1319,6 +1321,11 @@ model RegistrationEntry {
   customerEmail       String?
   collectedFields     Json                    @default("{}")
   status              RegistrationEntryStatus @default(PENDING_PAYMENT)
+  // Number of tickets/spots this entry represents. Capacity consumes the sum of quantities.
+  quantity            Int                     @default(1)
+  // Total amount charged for this entry (unit priceMinor × quantity), captured at payment
+  // init so the webhook/callback can verify against the real charged amount.
+  amountMinor         Int?
   paystackReference   String?
   paystackAccessCode  String?
   paidAt              DateTime?
@@ -1331,6 +1338,7 @@ model RegistrationEntry {
   @@index([productId, status])
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([paystackReference])
+  @@index([productId, customerEmail, status])
 }
 
 enum RegistrationEntryStatus {

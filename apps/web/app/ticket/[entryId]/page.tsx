@@ -7,6 +7,7 @@ interface TicketData {
   eventDate: string | null;
   customerName: string | null;
   status: 'PENDING_PAYMENT' | 'AWAITING_APPROVAL' | 'CONFIRMED' | 'CANCELLED';
+  quantity?: number;
   reference: string;
 }
 
@@ -81,7 +82,7 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
           </p>
         </div>
 
-        <div style={{ textAlign: 'center', margin: '20px 0' }}>
+        <div style={{ textAlign: 'center', margin: '20px 0', display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
           <span
             style={{
               display: 'inline-flex',
@@ -97,6 +98,21 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
             }}
           >
             <StatusIcon style={{ width: 14, height: 14 }} /> {status.label}
+          </span>
+          <span
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              fontSize: 12,
+              fontWeight: 600,
+              color: '#a1a1aa',
+              backgroundColor: 'rgba(161,161,170,0.10)',
+              border: '1px solid rgba(161,161,170,0.25)',
+              borderRadius: 20,
+              padding: '6px 16px',
+            }}
+          >
+            Admits {ticket.quantity ?? 1}
           </span>
         </div>
 

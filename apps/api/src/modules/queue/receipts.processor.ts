@@ -8,6 +8,7 @@ import * as QRCode from 'qrcode';
 import { RECEIPTS_QUEUE } from './queue.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
+import { EventsGateway } from '../events/events.gateway';
 import { sendWhatsAppText } from '../../common/utils/whatsapp';
 
 // ── Job payloads ──────────────────────────────────────────────────────────────
@@ -52,6 +53,7 @@ export class ReceiptsProcessor {
     private readonly mail: MailService,
     private readonly http: HttpService,
     private readonly config: ConfigService,
+    private readonly events: EventsGateway,
   ) {}
 
   // ── Registration: ticket + receipt + channel message ──────────────────────
@@ -105,6 +107,9 @@ export class ReceiptsProcessor {
 
     const reference = entry.paystackReference ?? entryId;
     const receiptNumber = `REC-${reference.slice(-8).toUpperCase()}`;
+    const quantity = entry.quantity ?? 1;
+    const unitPrice = entry.product.priceMinor ?? 0;
+    const totalMinor = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : unitPrice * quantity;
 
     // 1. Event ticket email
     await this.mail.sendEventTicket({
@@ -116,6 +121,7 @@ export class ReceiptsProcessor {
       status: entry.status as 'CONFIRMED' | 'AWAITING_APPROVAL',
       qrDataUrl,
       ticketUrl,
+      quantity,
       ...brand,
     });
 
@@ -127,11 +133,11 @@ export class ReceiptsProcessor {
         receiptNumber,
         description: `${entry.product.name} — Event Registration`,
         lineItems: [{
-          label: entry.product.name,
-          amountMinor: entry.product.priceMinor ?? 0,
+          label: quantity > 1 ? `${entry.product.name} (${quantity} tickets × ${entry.product.currency ?? 'NGN'} ${(unitPrice / 100).toFixed(2)})` : entry.product.name,
+          amountMinor: totalMinor,
           currency: entry.product.currency ?? 'NGN',
         }],
-        totalMinor: entry.product.priceMinor ?? 0,
+        totalMinor,
         currency: entry.product.currency ?? 'NGN',
         reference,
         paidAt: entry.paidAt ?? new Date(),
@@ -312,6 +318,21 @@ export class ReceiptsProcessor {
       `Your ticket and payment receipt have been sent to ${entry.customerEmail}.\n\n` +
       `Ref: ${reference.slice(-8).toUpperCase()}\n` +
       `View ticket: ${appUrl}/ticket/${entry.id}`;
+
+    // Persist the confirmation as an assistant message and push it to the inbox live, so the
+    // dashboard shows the post-payment confirmation just like any other bot reply.
+    try {
+      const aiMessage = await prismaAny.message.create({
+        data: { conversationId: entry.conversationId, role: 'ASSISTANT', content: msg },
+      });
+      await prismaAny.conversation.update({
+        where: { id: entry.conversationId },
+        data: { lastMessageAt: new Date() },
+      });
+      this.events.emitNewMessage(entry.orgId, { conversationId: entry.conversationId, message: aiMessage });
+    } catch (err) {
+      this.logger.warn(`Failed to persist registration confirmation message: ${String(err)}`);
+    }
 
     if (conv.channel === 'TELEGRAM' && conv.telegramChatId && bot.telegramToken) {
       await firstValueFrom(
