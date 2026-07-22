@@ -1003,6 +1003,12 @@ export class TelegramProcessor {
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
+    // PROTOTYPE: route registration-capable bots through the agentic tool-use loop when enabled.
+    // The model calls the register_for_event tool and composes its reply from the real result,
+    // so the classic classify→re-queue→guardrail machinery is bypassed for this turn.
+    const agenticEnabled = (this.config.get<string>('REGISTRATION_AGENTIC') ?? '').trim().toLowerCase() === 'true';
+    const useTools = agenticEnabled && Boolean(registrationContext);
+
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
       const response = await firstValueFrom(
@@ -1019,6 +1025,7 @@ export class TelegramProcessor {
             system_prompt: effectiveSystemPrompt,
             customer_context: effectiveCustomerContext,
             action_forwarding_enabled: aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED',
+            use_tools: useTools,
             conversation_summary: storedConversationSummary ?? null,
             forwarding_status: forwardingResult.status,
             forwarding_reason: forwardingResult.reason,
@@ -1064,10 +1071,14 @@ export class TelegramProcessor {
       // exactly the case this branch exists to handle. Requiring the opposite meant this almost
       // never fired, so the re-queue ran fire-and-forget and the reply was built from the stale
       // pre-classification result (no actionType, no missingFields, no payment link) every time.
+      // In agentic mode the register_for_event tool already did the work — never re-queue.
+      const registrationHandledByTool = useTools && response.data?.registration_handled === true;
       const shouldRequeueForRegistration =
+        !useTools &&
         chatActionType === 'REGISTRATION_REQUEST' &&
         chatRegistrationProductId.length > 0;
       if (
+        !registrationHandledByTool &&
         chatActionType !== 'NONE' &&
         chatIntentConfidence >= 0.6 &&
         (forwardingResult.status === 'NO_INTENT' || shouldRequeueForRegistration)
@@ -1213,64 +1224,70 @@ export class TelegramProcessor {
         }).catch((err) => this.logger.warn(`Knowledge gap thread failed: ${err?.message ?? err}`));
       }
 
-      const safeAiText = sanitizeOperationalClaims(aiText, {
-        forwardingStatus: forwardingResult.status,
-        forwardingReason: forwardingResult.reason,
-        actionTaskId: forwardingResult.actionTaskId,
-        canClaimCompleted: forwardingResult.canClaimCompleted,
-        claimLevel: forwardingResult.claimLevel,
-        deliveryStatus: forwardingResult.deliveryStatus,
-        missingFields: forwardingResult.missingFields,
-        blockedCapability: forwardingResult.blockedCapability,
-        actionType: forwardingResult.actionType,
-      });
-      const deterministicFollowUp = buildDeterministicFollowUpMessage({
-        actionType: forwardingResult.actionType,
-        missingFields: forwardingResult.missingFields,
-        canClaimCompleted: forwardingResult.canClaimCompleted,
-        forwardingReason: forwardingResult.reason,
-        blockedCapability: forwardingResult.blockedCapability,
-      });
-      let finalAiText = safeAiText;
-      if (
-        deterministicFollowUp
-        && (forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS')
-        && /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified/i.test(safeAiText)
-      ) {
-        finalAiText = deterministicFollowUp;
-      }
-      finalAiText = enforceReplyTrustConsistency(finalAiText, forwardingResult);
-      const truthTemplate = buildTruthAwareResponseTemplate({
-        forwardingStatus: forwardingResult.status,
-        forwardingReason: forwardingResult.reason,
-        canClaimCompleted: forwardingResult.canClaimCompleted,
-        claimLevel: forwardingResult.claimLevel,
-        deliveryStatus: forwardingResult.deliveryStatus,
-        actionType: forwardingResult.actionType,
-        missingFields: forwardingResult.missingFields,
-        blockedCapability: forwardingResult.blockedCapability,
-      });
-      if (
-        truthTemplate
-        && (
-          Boolean(forwardingResult.actionType)
-          ||
-          forwardingResult.reason === 'SYSTEM_ERROR'
-          || forwardingResult.operationalTruth.actionResult === 'UNKNOWN'
-          || forwardingResult.operationalTruth.actionResult === 'FAILED'
-          || /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified|i\s+can\s+confirm|i\s+checked/i.test(finalAiText)
-        )
-      ) {
-        finalAiText = truthTemplate;
-      }
-      const latestAssistantReply = recentMessages.find((m) => m.role === 'ASSISTANT')?.content;
-      if (shouldCollapseRepeatedReply(finalAiText, latestAssistantReply)) {
-        const hasMissingFieldReason = forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS';
-        if (forwardingResult.canClaimCompleted) {
-          finalAiText = 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.';
-        } else if (hasMissingFieldReason) {
-          finalAiText = deterministicFollowUp
-            ?? 'I understand. I can continue helping once you share the remaining required details.';
+      // Agentic replies are already truthful by construction (the model only states what the
+      // register_for_event tool actually returned), so the classic guardrail chain is skipped
+      // entirely — this is exactly the win the tool-use loop buys us.
+      let finalAiText = aiText;
+      if (!useTools) {
+        const safeAiText = sanitizeOperationalClaims(aiText, {
+          forwardingStatus: forwardingResult.status,
+          forwardingReason: forwardingResult.reason,
+          actionTaskId: forwardingResult.actionTaskId,
+          canClaimCompleted: forwardingResult.canClaimCompleted,
+          claimLevel: forwardingResult.claimLevel,
+          deliveryStatus: forwardingResult.deliveryStatus,
+          missingFields: forwardingResult.missingFields,
+          blockedCapability: forwardingResult.blockedCapability,
+          actionType: forwardingResult.actionType,
+        });
+        const deterministicFollowUp = buildDeterministicFollowUpMessage({
+          actionType: forwardingResult.actionType,
+          missingFields: forwardingResult.missingFields,
+          canClaimCompleted: forwardingResult.canClaimCompleted,
+          forwardingReason: forwardingResult.reason,
+          blockedCapability: forwardingResult.blockedCapability,
+        });
+        finalAiText = safeAiText;
+        if (
+          deterministicFollowUp
+          && (forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS')
+          && /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified/i.test(safeAiText)
+        ) {
+          finalAiText = deterministicFollowUp;
+        }
+        finalAiText = enforceReplyTrustConsistency(finalAiText, forwardingResult);
+        const truthTemplate = buildTruthAwareResponseTemplate({
+          forwardingStatus: forwardingResult.status,
+          forwardingReason: forwardingResult.reason,
+          canClaimCompleted: forwardingResult.canClaimCompleted,
+          claimLevel: forwardingResult.claimLevel,
+          deliveryStatus: forwardingResult.deliveryStatus,
+          actionType: forwardingResult.actionType,
+          missingFields: forwardingResult.missingFields,
+          blockedCapability: forwardingResult.blockedCapability,
+        });
+        if (
+          truthTemplate
+          && (
+            Boolean(forwardingResult.actionType)
+            ||
+            forwardingResult.reason === 'SYSTEM_ERROR'
+            || forwardingResult.operationalTruth.actionResult === 'UNKNOWN'
+            || forwardingResult.operationalTruth.actionResult === 'FAILED'
+            || /logged|submitted|queued|noted|team\s+will\s+reach\s+out|owner\s+has\s+been\s+notified|i\s+can\s+confirm|i\s+checked/i.test(finalAiText)
+          )
+        ) {
+          finalAiText = truthTemplate;
+        }
+        const latestAssistantReply = recentMessages.find((m) => m.role === 'ASSISTANT')?.content;
+        if (shouldCollapseRepeatedReply(finalAiText, latestAssistantReply)) {
+          const hasMissingFieldReason = forwardingResult.reason === 'MISSING_CONTACT_INFO' || forwardingResult.reason === 'MISSING_REQUIRED_FIELDS';
+          if (forwardingResult.canClaimCompleted) {
+            finalAiText = 'I have already logged the internal request for review in this conversation. I cannot confirm downstream delivery yet.';
+          } else if (hasMissingFieldReason) {
+            finalAiText = deterministicFollowUp
+              ?? 'I understand. I can continue helping once you share the remaining required details.';
+          }
         }
       }
 

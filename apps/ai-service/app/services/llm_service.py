@@ -4,6 +4,7 @@ Uses the OpenAI-compatible SDK; swap `model` to any OpenRouter-supported model.
 """
 from __future__ import annotations
 import logging
+import httpx
 from openai import AsyncOpenAI
 from app.core.config import settings
 import json
@@ -11,6 +12,39 @@ import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ── Agentic tool definitions ────────────────────────────────────────────────────
+# The model calls these; the backend executes them and returns real results. This is
+# how the model acts on the world without hallucinating outcomes — it only states what
+# a tool actually returned.
+REGISTER_FOR_EVENT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "register_for_event",
+        "description": (
+            "Register the customer for one of the events in the available registrations context. "
+            "Call this ONLY once you have the customer's full name, email, and every required field "
+            "for the chosen event. It performs the real registration (capacity, dedup, payment) and "
+            "returns the actual result — including a payment link for paid events. Do not claim a "
+            "registration succeeded unless this tool returns a success outcome."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "string", "description": "The exact 'ID:' of the event from the available registrations context."},
+                "quantity": {"type": "integer", "description": "Number of tickets/spots the customer wants. Default 1."},
+                "customer_name": {"type": "string", "description": "The customer's full name."},
+                "customer_email": {"type": "string", "description": "The customer's email address. Never invent or auto-complete this."},
+                "fields": {
+                    "type": "object",
+                    "description": "Any additional event-specific fields, keyed by their exact field key (e.g. phone_number).",
+                    "additionalProperties": {"type": "string"},
+                },
+            },
+            "required": ["product_id", "customer_name", "customer_email"],
+        },
+    },
+}
 
 # Default model — change to any model slug on https://openrouter.ai/models
 DEFAULT_MODEL = "google/gemini-2.5-flash"
@@ -287,6 +321,139 @@ class LlmService:
             "registration_product_id": str(parsed.get("registration_product_id") or "").strip(),
             "collected_fields": collected_fields,
         }
+
+    async def _execute_register_tool(
+        self, args: dict, org_id: str, bot_id: str, conversation_id: str
+    ) -> dict:
+        """Execute the register_for_event tool by calling the NestJS backend, which does the
+        real work (capacity, dedup, entry, payment) and returns a structured result."""
+        payload = {
+            "orgId": org_id,
+            "botId": bot_id,
+            "conversationId": conversation_id,
+            "productId": str(args.get("product_id") or "").strip(),
+            "quantity": int(args.get("quantity") or 1),
+            "customerName": (args.get("customer_name") or None),
+            "customerEmail": (args.get("customer_email") or None),
+            "fields": args.get("fields") if isinstance(args.get("fields"), dict) else {},
+        }
+        headers = {"X-Internal-Key": settings.INTERNAL_API_SECRET} if settings.INTERNAL_API_SECRET else {}
+        url = f"{settings.BACKEND_URL.rstrip('/')}/api/internal/registration/register-for-event"
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(url, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning(f"register_for_event tool HTTP {resp.status_code}: {resp.text[:200]}")
+                    return {"outcome": "ERROR", "message": "The registration system is temporarily unavailable; tell the customer a teammate will follow up."}
+                return resp.json()
+        except Exception as e:
+            logger.warning(f"register_for_event tool call failed: {e}")
+            return {"outcome": "ERROR", "message": "The registration system is temporarily unavailable; tell the customer a teammate will follow up."}
+
+    async def generate_agentic(
+        self,
+        user_message: str,
+        org_id: str,
+        bot_id: str,
+        conversation_id: str,
+        context: str = "",
+        history: list[dict] | None = None,
+        model: str = DEFAULT_MODEL,
+        bot_name: str = "Assistant",
+        org_name: str | None = None,
+        system_prompt_override: str | None = None,
+        customer_context: str | None = None,
+        conversation_summary: str | None = None,
+    ) -> dict[str, Any]:
+        """Tool-use agentic loop: the model chats normally, and when it wants to register a
+        customer it calls the register_for_event tool, receives the REAL result, and composes
+        its reply from that. No post-hoc guardrails — the model can only state tool-confirmed
+        outcomes. Returns {reply, registration_handled, payment_url, should_resolve}."""
+        if not settings.OPENROUTER_API_KEY:
+            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "registration_handled": False, "payment_url": "", "should_resolve": False}
+
+        base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
+        agent_prompt = (
+            f"{base_prompt}\n\n"
+            "You can register customers for events using the register_for_event tool. "
+            "Collect the required fields (shown per event in the available registrations context) "
+            "conversationally first, then call the tool. Trust the tool's result completely: if it "
+            "returns PENDING_PAYMENT, give the customer the payment link and make clear they are NOT "
+            "registered until they pay; if AT_CAPACITY or ALREADY_REGISTERED, relay that honestly; only "
+            "say a registration is confirmed when the tool says CONFIRMED. Never invent a confirmation, "
+            "payment status, or ticket."
+        )
+
+        messages = self._build_messages(
+            user_message=user_message,
+            context=context,
+            history=history or [],
+            system_prompt=agent_prompt,
+            customer_context=customer_context,
+            conversation_summary=conversation_summary,
+        )
+
+        registration_handled = False
+        payment_url = ""
+        client = self._client()
+
+        # Bounded loop: model → (optional tool call → execute → observe) → final reply.
+        for _ in range(4):
+            try:
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=[REGISTER_FOR_EVENT_TOOL],
+                    temperature=0.3,
+                    max_tokens=1000,
+                )
+            except Exception as e:
+                logger.warning(f"generate_agentic model call failed: {e}")
+                return {"reply": "", "registration_handled": registration_handled, "payment_url": payment_url, "should_resolve": False}
+
+            msg = resp.choices[0].message
+            tool_calls = getattr(msg, "tool_calls", None)
+
+            if not tool_calls:
+                reply = (msg.content or "").strip()
+                return {
+                    "reply": reply,
+                    "registration_handled": registration_handled,
+                    "payment_url": payment_url,
+                    # A pending payment means the flow is not resolved.
+                    "should_resolve": bool(registration_handled and not payment_url),
+                }
+
+            # Record the assistant's tool-call message, then execute each tool.
+            messages.append({
+                "role": "assistant",
+                "content": msg.content or "",
+                "tool_calls": [
+                    {"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+                    for tc in tool_calls
+                ],
+            })
+            for tc in tool_calls:
+                if tc.function.name != "register_for_event":
+                    result = {"outcome": "ERROR", "message": "Unknown tool."}
+                else:
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except Exception:
+                        args = {}
+                    result = await self._execute_register_tool(args, org_id, bot_id, conversation_id)
+                    registration_handled = True
+                    if result.get("payment_url"):
+                        payment_url = result["payment_url"]
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)})
+
+        # Loop exhausted — ask once more without tools to force a final reply.
+        try:
+            final = await client.chat.completions.create(model=model, messages=messages, temperature=0.3, max_tokens=1000)
+            reply = (final.choices[0].message.content or "").strip()
+        except Exception:
+            reply = ""
+        return {"reply": reply, "registration_handled": registration_handled, "payment_url": payment_url, "should_resolve": False}
 
     async def complete(
         self,

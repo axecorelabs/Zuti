@@ -44,6 +44,7 @@ class RagService:
         customer_context: str | None = None,
         action_forwarding_enabled: bool = False,
         conversation_summary: str | None = None,
+        use_tools: bool = False,
         # Legacy params kept for API compat — no longer used internally
         forwarding_status: str | None = None,
         forwarding_reason: str | None = None,
@@ -107,7 +108,31 @@ class RagService:
 
         # 2. Generate reply (+ optional unified intent classification and conversation summary)
         chat_meta: dict[str, Any] = {}
-        if action_forwarding_enabled:
+        if use_tools:
+            # Agentic tool-use path: the model acts through real tools (register_for_event) and
+            # composes its reply from actual results — no classify-then-guardrail machinery.
+            result = await llm_service.generate_agentic(
+                user_message=message,
+                org_id=organization_id,
+                bot_id=bot_id,
+                conversation_id=conversation_id,
+                context=context,
+                history=history or [],
+                bot_name=bot_name,
+                org_name=org_name,
+                system_prompt_override=system_prompt,
+                customer_context=customer_context,
+                conversation_summary=conversation_summary,
+            )
+            reply = result.get("reply") or ""
+            chat_meta = {
+                "action_type": "NONE",
+                "should_resolve": bool(result.get("should_resolve")),
+                "registration_handled": bool(result.get("registration_handled")),
+                "payment_url": result.get("payment_url") or "",
+                "conversation_summary": conversation_summary or "",
+            }
+        elif action_forwarding_enabled:
             result = await llm_service.generate_structured(
                 user_message=message,
                 context=context,

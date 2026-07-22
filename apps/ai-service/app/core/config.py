@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # Leave blank to disable auth (development only).
     INTERNAL_API_SECRET: str = ""
 
+    # NestJS backend base URL — used by the agentic tool loop to execute tools
+    # (AI service → NestJS internal endpoints, reverse of the usual direction).
+    BACKEND_URL: str = "http://localhost:3001"
+
     # Qdrant
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: str = ""

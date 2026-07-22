@@ -288,6 +288,114 @@ export class RegistrationsService {
     }
   }
 
+  // ── Tool-use entrypoint ─────────────────────────────────────────────────────
+  // Single self-contained "register_for_event" tool the AI agent calls. It does the real work
+  // (dedup, atomic capacity reserve, entry creation, payment init) and returns a structured,
+  // truthful result the model composes its reply from — no post-hoc guardrails needed.
+
+  async executeRegistrationTool(params: {
+    orgId: string;
+    botId?: string;
+    conversationId?: string;
+    productId: string;
+    quantity?: number;
+    customerName?: string;
+    customerEmail?: string;
+    fields?: Record<string, string>;
+  }): Promise<{
+    outcome: 'PENDING_PAYMENT' | 'CONFIRMED' | 'AWAITING_APPROVAL' | 'ALREADY_REGISTERED' | 'AT_CAPACITY' | 'PRODUCT_NOT_FOUND' | 'MISSING_FIELDS';
+    message: string;
+    payment_url?: string;
+    ticket_url?: string;
+    spots_left?: number;
+    missing_fields?: string[];
+    amount?: string;
+  }> {
+    const prismaAny = this.prisma as any;
+    const product = await prismaAny.registrationProduct.findFirst({
+      where: { id: params.productId, orgId: params.orgId, isActive: true },
+    });
+    if (!product) {
+      return { outcome: 'PRODUCT_NOT_FOUND', message: 'No active event matches that id. Ask the customer which event they mean.' };
+    }
+
+    const collected: Record<string, string> = { ...(params.fields ?? {}) };
+    if (params.customerName) collected.customer_name = params.customerName.trim();
+    if (params.customerEmail) collected.customer_email = params.customerEmail.trim();
+
+    const productFields = (Array.isArray(product.fields) ? product.fields : []) as { key: string; label: string; required: boolean }[];
+    const requiredKeys = ['customer_name', 'customer_email', ...productFields.filter((f) => f.required).map((f) => f.key)];
+    const missing = requiredKeys.filter((k) => !collected[k] || String(collected[k]).trim().length === 0);
+    if (missing.length > 0) {
+      const labels = missing.map((k) => (k === 'customer_name' ? 'full name' : k === 'customer_email' ? 'email address' : (productFields.find((f) => f.key === k)?.label ?? k)));
+      return { outcome: 'MISSING_FIELDS', message: `Cannot register yet — still need: ${labels.join(', ')}. Ask the customer for these.`, missing_fields: missing };
+    }
+
+    const quantity = Math.max(1, Math.min(50, Math.floor(params.quantity ?? 1)));
+    const result = await this.createEntry({
+      productId: product.id,
+      orgId: params.orgId,
+      botId: params.botId,
+      conversationId: params.conversationId,
+      customerName: collected.customer_name,
+      customerEmail: collected.customer_email,
+      collectedFields: collected,
+      isFree: product.isFree,
+      requiresApproval: product.requiresApproval,
+      quantity,
+      priceMinor: product.priceMinor,
+      capacity: product.capacity,
+      allowDuplicateRegistrations: product.allowDuplicateRegistrations === true,
+    });
+
+    const appUrl = this.getPublicAppUrl();
+    const money = (minor: number) => `${product.currency ?? 'NGN'} ${(minor / 100).toFixed(2)}`;
+
+    if (result.outcome === 'AT_CAPACITY') {
+      const left = result.spotsLeft ?? 0;
+      return {
+        outcome: 'AT_CAPACITY',
+        spots_left: left,
+        message: left > 0
+          ? `Only ${left} spot(s) remain — fewer than the ${quantity} requested. Offer the customer the available number or a smaller quantity.`
+          : `${product.name} is fully booked. Let the customer know registration is closed.`,
+      };
+    }
+
+    if (result.outcome === 'ALREADY_REGISTERED') {
+      return {
+        outcome: 'ALREADY_REGISTERED',
+        ticket_url: `${appUrl}/ticket/${result.entry.id}`,
+        message: `This email already has an active registration for ${product.name}. Tell the customer they're already registered and share their ticket link.`,
+      };
+    }
+
+    const entry = result.entry;
+    if (!product.isFree && entry.customerEmail) {
+      try {
+        const { paymentUrl } = await this.initializePayment(entry.id, params.orgId);
+        const total = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : (product.priceMinor ?? 0) * quantity;
+        return {
+          outcome: 'PENDING_PAYMENT',
+          payment_url: paymentUrl,
+          amount: money(total),
+          message: `Details captured for ${quantity} ticket(s) to ${product.name}. Payment of ${money(total)} is required to finalize — give the customer the payment link and make clear the registration is not complete until they pay.`,
+        };
+      } catch {
+        return { outcome: 'PENDING_PAYMENT', message: 'Details captured, but the payment link could not be generated right now. Tell the customer a teammate will follow up with payment details.' };
+      }
+    }
+
+    // Free event — confirmed (or awaiting approval); ticket email already enqueued by createEntry.
+    return {
+      outcome: entry.status,
+      ticket_url: `${appUrl}/ticket/${entry.id}`,
+      message: entry.status === 'AWAITING_APPROVAL'
+        ? `Registration recorded for ${product.name}; it needs organizer approval. Tell the customer it's pending approval and their ticket has been emailed.`
+        : `Registration confirmed for ${quantity} ticket(s) to ${product.name}. Confirm to the customer and mention their ticket has been emailed.`,
+    };
+  }
+
   // ── Paystack ──────────────────────────────────────────────────────────────
 
   async initializePayment(entryId: string, orgId: string): Promise<{ paymentUrl: string; reference: string }> {
@@ -383,6 +491,49 @@ export class RegistrationsService {
       this.logger.warn(`confirmPaymentByReference failed for ${reference}: ${String(err)}`);
       return null;
     });
+  }
+
+  /**
+   * Reconciliation safety net: the webhook and browser-callback are best-effort delivery and
+   * can be missed (tab closed before redirect, webhook not configured, API restarting). This
+   * sweeps entries that are still PENDING_PAYMENT despite having a payment reference and asks
+   * Paystack directly whether each was paid, confirming any that were. It is the guarantee that
+   * a paid registration never stays stranded — webhook/callback are just the fast path.
+   *
+   * Bounded to entries between 3 minutes and 24 hours old: newer than 3 min gives the fast path
+   * a chance first; older than 24 h is treated as abandoned and no longer polled.
+   */
+  async reconcilePendingPayments(): Promise<{ checked: number; confirmed: number }> {
+    const now = Date.now();
+    const minAge = new Date(now - 3 * 60 * 1000);
+    const maxAge = new Date(now - 24 * 60 * 60 * 1000);
+
+    const stuck = await this.prisma.registrationEntry.findMany({
+      where: {
+        status: 'PENDING_PAYMENT',
+        paystackReference: { not: null },
+        createdAt: { lt: minAge, gt: maxAge },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+      select: { id: true, paystackReference: true },
+    });
+
+    let confirmed = 0;
+    for (const e of stuck) {
+      try {
+        // handlePaymentConfirmed re-verifies with Paystack and only confirms genuinely-paid entries.
+        const res = await this.handlePaymentConfirmed(e.paystackReference as string);
+        if (res?.entry?.status === 'CONFIRMED' || res?.entry?.status === 'AWAITING_APPROVAL') confirmed++;
+      } catch (err) {
+        this.logger.warn(`Payment reconciliation failed for ${e.paystackReference}: ${String(err)}`);
+      }
+    }
+
+    if (stuck.length > 0) {
+      this.logger.log(`Payment reconciliation: checked ${stuck.length} pending entr${stuck.length === 1 ? 'y' : 'ies'}, confirmed ${confirmed}`);
+    }
+    return { checked: stuck.length, confirmed };
   }
 
   async handlePaymentConfirmed(paystackReference: string): Promise<{ entry: any; product: any } | null> {
