@@ -555,12 +555,21 @@ export class MailService {
         brandFooter: opts.brandFooter ?? brand.appFooter,
         primaryHex: opts.primaryHex ?? brand.primaryHex,
       }));
+
+      // Embed the QR as a CID inline image. Email clients (Gmail especially) strip base64
+      // data: URIs, so the template references `cid:qr-code` and we attach the PNG here.
+      const qrBase64 = (opts.qrDataUrl ?? '').replace(/^data:image\/png;base64,/, '');
+      const inlineImages = qrBase64
+        ? [{ cid: 'qr-code', mime_type: 'image/png', content: qrBase64 }]
+        : undefined;
+
       await firstValueFrom(
         this.http.post('https://api.zeptomail.com/v1.1/email', {
           from: { address: brand.fromAddress, name: brand.fromName },
           to: [{ email_address: { address: opts.to } }],
           subject: `Your ticket for ${opts.eventName}`,
           htmlbody: html,
+          ...(inlineImages ? { inline_images: inlineImages } : {}),
         }, {
           headers: { Authorization: `Zoho-enczapikey ${apiKey}`, 'Content-Type': 'application/json' },
         }),

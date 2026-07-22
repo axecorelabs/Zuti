@@ -21,7 +21,7 @@ export function EventTicketEmail({
   eventDate,
   reference,
   status,
-  qrDataUrl,
+  // qrDataUrl is consumed by mail.service (as a CID attachment), not rendered here.
   ticketUrl,
   quantity = 1,
   appName = 'Zuti',
@@ -69,11 +69,12 @@ export function EventTicketEmail({
             <Text style={admitsBadge}>{admitsLabel}</Text>
           </Section>
 
-          {/* QR code */}
+          {/* QR code — referenced as a CID inline attachment (attached in mail.service),
+              because email clients strip base64 data: URIs. */}
           <Section style={qrSection}>
             <div style={qrWrapper}>
               <Img
-                src={qrDataUrl}
+                src="cid:qr-code"
                 alt="Ticket QR Code"
                 width="180"
                 height="180"
