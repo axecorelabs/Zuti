@@ -29,7 +29,7 @@ import {
   UpdateCommerceStoreDto,
   UpsertCommerceInventoryDto,
 } from './dto/commerce.dto';
-import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
+import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage, toPublicStorageUrl } from '../../common/utils/supabase-storage';
 
 type PaystackInitializeResponse = {
   status: boolean;
@@ -805,7 +805,7 @@ export class CommerceService {
         slug: product.slug,
         description: product.description,
         category: product.category,
-        imageUrl: product.imageUrl,
+        imageUrl: toPublicStorageUrl(product.imageUrl),
         tags: product.tags,
         variantCount: product.variants.length,
         variants: product.variants.map((variant) => {
@@ -830,7 +830,7 @@ export class CommerceService {
             sku: variant.sku,
             title: variant.title,
             attributes: variant.attributes,
-            imageUrl: typeof variantMetadata.imageUrl === 'string' ? variantMetadata.imageUrl : null,
+            imageUrl: typeof variantMetadata.imageUrl === 'string' ? toPublicStorageUrl(variantMetadata.imageUrl) : null,
             priceMinor: variant.priceMinor,
             currency: variant.currency,
             totalAvailable,
@@ -907,7 +907,7 @@ export class CommerceService {
         sku: variant.sku,
         title: variant.title,
         attributes: variant.attributes,
-        imageUrl: typeof variantMetadata.imageUrl === 'string' ? variantMetadata.imageUrl : null,
+        imageUrl: typeof variantMetadata.imageUrl === 'string' ? toPublicStorageUrl(variantMetadata.imageUrl) : null,
         priceMinor: variant.priceMinor,
         currency: variant.currency,
         totalAvailable: byLocation.reduce((sum, location) => sum + location.available, 0),
@@ -926,7 +926,7 @@ export class CommerceService {
       slug: product.slug,
       description: product.description,
       category: product.category,
-      imageUrl: product.imageUrl,
+      imageUrl: toPublicStorageUrl(product.imageUrl),
       tags: product.tags,
       isActive: product.isActive,
       metadata: product.metadata,

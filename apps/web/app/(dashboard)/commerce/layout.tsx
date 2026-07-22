@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { LayoutDashboard, Store, Boxes, ShoppingCart, CreditCard, Settings } from 'lucide-react';
+import { LayoutDashboard, Store, Boxes, ShoppingCart, CreditCard } from 'lucide-react';
 
 const TABS = [
   { href: '/commerce', label: 'Overview', icon: LayoutDashboard },
@@ -10,7 +10,6 @@ const TABS = [
   { href: '/commerce/catalog', label: 'Catalog', icon: Boxes },
   { href: '/commerce/orders', label: 'Orders', icon: ShoppingCart },
   { href: '/commerce/payments', label: 'Payments', icon: CreditCard },
-  { href: '/commerce/settings', label: 'Settings', icon: Settings },
 ];
 
 export default function CommerceLayout({ children }: { children: React.ReactNode }) {

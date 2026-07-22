@@ -127,3 +127,16 @@ export async function uploadBufferToSupabaseStorage(
 
   return { storageKey, publicUrl };
 }
+
+/**
+ * Convert an expiring Supabase signed object URL to its durable public form. Legacy records stored
+ * `/storage/v1/object/sign/<bucket>/<key>?token=...` URLs that expire (default 7 days) and then 404;
+ * the public URL for the same key never expires (the bucket serves public reads). No-op for URLs
+ * that are already public, empty, or not Supabase storage URLs. Idempotent — safe on every read.
+ */
+export function toPublicStorageUrl(url: string | null | undefined): string | null {
+  if (!url) return url ?? null;
+  const marker = '/storage/v1/object/sign/';
+  if (!url.includes(marker)) return url;
+  return url.split('?')[0].replace(marker, '/storage/v1/object/public/');
+}
