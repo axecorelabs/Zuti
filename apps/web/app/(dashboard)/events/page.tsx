@@ -774,6 +774,11 @@ export default function EventsPage() {
   }, [loadProducts, loadBots]);
 
   const selectProduct = (p: RegistrationProduct) => {
+    // Clicking the already-open event closes its panel; clicking another switches to it.
+    if (selectedProduct?.id === p.id) {
+      setSelectedProduct(null);
+      return;
+    }
     setSelectedProduct(p);
     setDetailTab('registrants');
     loadEntries(p);
