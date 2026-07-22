@@ -32,6 +32,7 @@ import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../
 import { callMediaProcess } from '../../common/utils/media-processing';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
 import { buildRegistrationContextBlock } from '../../common/utils/registration-grounding';
+import { isAgenticEnabled, ensurePaymentLink } from '../../common/utils/agentic';
 
 function normalizeReplyForComparison(text: string): string {
   return text
@@ -1003,11 +1004,11 @@ export class TelegramProcessor {
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
-    // PROTOTYPE: route registration-capable bots through the agentic tool-use loop when enabled.
-    // The model calls the register_for_event tool and composes its reply from the real result,
-    // so the classic classify→re-queue→guardrail machinery is bypassed for this turn.
-    const agenticEnabled = (this.config.get<string>('REGISTRATION_AGENTIC') ?? '').trim().toLowerCase() === 'true';
-    const useTools = agenticEnabled && Boolean(registrationContext);
+    // Route registration-capable bots through the agentic tool-use loop (default ON; the
+    // REGISTRATION_AGENTIC env var is a kill-switch). The model calls the register_for_event
+    // tool and composes its reply from the real result, so the classic classify→re-queue→
+    // guardrail machinery is bypassed for this turn.
+    const useTools = isAgenticEnabled(this.config) && Boolean(registrationContext);
 
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
@@ -1295,14 +1296,20 @@ export class TelegramProcessor {
         `Operational truth (telegram): status=${forwardingResult.status} reason=${forwardingResult.reason} claimLevel=${forwardingResult.claimLevel} delivery=${forwardingResult.deliveryStatus} canClaimCompleted=${forwardingResult.canClaimCompleted}`,
       );
 
-      // Registration payment link: fold it into the AI reply so it is persisted and visible
-      // in the inbox as a single coherent message (instead of an unsaved follow-up send).
-      // A pending payment also means the conversation is NOT resolved.
-      const hasPendingPayment = Boolean(forwardingResult.registrationPaymentUrl);
+      // Agentic path: the reply already came from the tool result. Safety-net the payment link
+      // in case the model composed a reply but omitted the tool-returned link.
+      if (useTools) {
+        finalAiText = ensurePaymentLink(finalAiText, response.data?.payment_url);
+      }
+
+      // Classic path: fold the registration payment link / notice into the AI reply so it is
+      // persisted and visible in the inbox. A pending payment also means the conversation is
+      // NOT resolved. (In agentic mode registrationPaymentUrl is empty, so these are no-ops.)
+      const hasPendingPayment = Boolean(forwardingResult.registrationPaymentUrl) || (useTools && Boolean(response.data?.payment_url));
       if (forwardingResult.registrationNotice) {
         finalAiText = `${finalAiText}\n\n${forwardingResult.registrationNotice}`;
       }
-      if (hasPendingPayment) {
+      if (forwardingResult.registrationPaymentUrl) {
         finalAiText = `${finalAiText}\n\nTo complete your registration, please make payment via this secure link:\n${forwardingResult.registrationPaymentUrl}`;
       }
       const effectiveShouldResolve = shouldResolve && !hasPendingPayment;
