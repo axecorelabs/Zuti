@@ -29,6 +29,8 @@ import {
   Moon,
   Globe2,
   CalendarDays,
+  ShoppingCart,
+  Package,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
@@ -77,7 +79,15 @@ const orgNavItems = [
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
   { label: 'Analytics', href: '/analytics', icon: BarChart2, agentVisible: false },
-  { label: 'Events', href: '/events', icon: CalendarDays, agentVisible: false },
+  {
+    label: 'Add-ons',
+    icon: Package,
+    agentVisible: false,
+    children: [
+      { label: 'Events', href: '/events', icon: CalendarDays },
+      { label: 'Commerce', href: '/commerce', icon: ShoppingCart },
+    ],
+  },
   { label: 'Operations', href: '/operations', icon: Briefcase, agentVisible: true },
   { label: 'Billing & Usage', href: '/billing-usage', icon: CreditCard, agentVisible: false },
   { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },
@@ -114,6 +124,7 @@ export default function Sidebar({
   const [actingToken, setActingToken] = useState<string | null>(null);
   const [orgsLoaded, setOrgsLoaded] = useState(false);
   const [setupRequestCount, setSetupRequestCount] = useState(0);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
 
   const isGlobalOverviewRoute = pathname === '/global-overview';
   const orgIdFromUrl = searchParams.get('org');
@@ -321,6 +332,49 @@ export default function Sidebar({
         if (isGlobalOverviewRoute) return true;
         return (item as { agentVisible?: boolean }).agentVisible || !isAgent;
       });
+
+  const isLeafActive = (href: string) => {
+    const hasQuery = href.includes('?');
+    const hrefPath = hasQuery ? href.split('?')[0] : href;
+    const hrefTab = hasQuery ? new URLSearchParams(href.split('?')[1]).get('tab') : null;
+    return isGlobalOverviewRoute
+      ? pathname === '/global-overview' && (hrefTab ? globalTab === hrefTab : false)
+      : pathname === hrefPath || (hrefPath !== '/dashboard' && pathname.startsWith(`${hrefPath}/`));
+  };
+
+  const renderLeaf = (item: { label: string; href: string; icon: any }, nested = false) => {
+    const { label, href, icon: Icon } = item;
+    const hasQuery = href.includes('?');
+    const finalHref = isGlobalOverviewRoute || hasQuery
+      ? href
+      : `${href}${activeOrg?.id ? `?org=${activeOrg.id}` : ''}`;
+    const isActive = isLeafActive(href);
+    const showBadge = isGlobalOverviewRoute && label === 'Setup Requests' && isManagerUser;
+
+    return (
+      <Link
+        key={label}
+        href={finalHref}
+        onClick={onClose}
+        className={`flex items-center gap-2.5 ${nested ? 'px-3 py-1.5' : 'px-3 py-2'} rounded-lg text-sm transition-all relative ${
+          isActive
+            ? (isLight ? 'bg-blue-50 text-slate-900 font-normal' : 'bg-blue-600/10 text-white font-normal')
+            : (isLight ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 font-light' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light')
+        }`}
+      >
+        {isActive && (
+          <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-blue-500 rounded-r-full" />
+        )}
+        <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-500' : isLight ? 'text-slate-400' : 'text-zinc-600'}`} />
+        <span className="flex-1">{label}</span>
+        {showBadge ? (
+          <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+            {setupRequestCount}
+          </span>
+        ) : null}
+      </Link>
+    );
+  };
 
   return (
     <>
@@ -553,43 +607,35 @@ export default function Sidebar({
               ))}
             </div>
           ) : (
-            visibleNavItems.map(({ label, href, icon: Icon }) => {
-            const hasQuery = href.includes('?');
-            const hrefPath = hasQuery ? href.split('?')[0] : href;
-            const hrefTab = hasQuery ? new URLSearchParams(href.split('?')[1]).get('tab') : null;
-            const finalHref = isGlobalOverviewRoute || hasQuery
-              ? href
-              : `${href}${activeOrg?.id ? `?org=${activeOrg.id}` : ''}`;
-
-            const isActive = isGlobalOverviewRoute
-              ? pathname === '/global-overview' && (hrefTab ? globalTab === hrefTab : false)
-              : pathname === hrefPath || (hrefPath !== '/dashboard' && pathname.startsWith(`${hrefPath}/`));
-
-            const showBadge = isGlobalOverviewRoute && label === 'Setup Requests' && isManagerUser;
-
-            return (
-              <Link
-                key={label}
-                href={finalHref}
-                onClick={onClose}
-                className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all relative ${
-                  isActive
-                    ? (isLight ? 'bg-blue-50 text-slate-900 font-normal' : 'bg-blue-600/10 text-white font-normal')
-                    : (isLight ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 font-light' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light')
-                }`}
-              >
-                {isActive && (
-                  <span className="absolute left-0 top-1/2 -translate-y-1/2 w-0.5 h-4 bg-blue-500 rounded-r-full" />
-                )}
-                <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-blue-500' : isLight ? 'text-slate-400' : 'text-zinc-600'}`} />
-                <span className="flex-1">{label}</span>
-                {showBadge ? (
-                  <span className="inline-flex min-w-[18px] items-center justify-center rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                    {setupRequestCount}
-                  </span>
-                ) : null}
-              </Link>
-            );
+            visibleNavItems.map((item) => {
+            const group = item as { label: string; icon: any; children?: { label: string; href: string; icon: any }[] };
+            if (group.children) {
+              const childActive = group.children.some((c) => isLeafActive(c.href));
+              const open = openGroups[group.label] ?? childActive;
+              const GroupIcon = group.icon;
+              return (
+                <div key={group.label}>
+                  <button
+                    onClick={() => setOpenGroups((prev) => ({ ...prev, [group.label]: !(prev[group.label] ?? childActive) }))}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm transition-all ${
+                      childActive
+                        ? (isLight ? 'text-slate-900 font-normal' : 'text-zinc-100 font-normal')
+                        : (isLight ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 font-light' : 'text-zinc-500 hover:text-zinc-200 hover:bg-zinc-900/60 font-light')
+                    }`}
+                  >
+                    <GroupIcon className={`w-4 h-4 shrink-0 ${childActive ? 'text-blue-500' : isLight ? 'text-slate-400' : 'text-zinc-600'}`} />
+                    <span className="flex-1 text-left">{group.label}</span>
+                    <ChevronDown className={`w-3.5 h-3.5 shrink-0 transition-transform ${open ? '' : '-rotate-90'} ${isLight ? 'text-slate-400' : 'text-zinc-600'}`} />
+                  </button>
+                  {open && (
+                    <div className={`mt-0.5 ml-4 pl-2 space-y-0.5 border-l ${isLight ? 'border-slate-200' : 'border-zinc-800'}`}>
+                      {group.children.map((c) => renderLeaf(c, true))}
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            return renderLeaf(item as { label: string; href: string; icon: any });
           })
           )}
         </nav>

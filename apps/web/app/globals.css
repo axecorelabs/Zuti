@@ -1123,6 +1123,45 @@ body.dashboard-theme-light .settings-canned-page p[class*='text-zinc-500'] {
   color: #334155 !important;
 }
 
+/* Commerce section light-mode pass (applies to every /commerce page via the layout wrapper).
+   Global overrides already remap bg-zinc/text/border utilities; these cover the composite
+   classes (.card, .input-base) and raw form elements those selectors don't reach. */
+body.dashboard-theme-light .commerce-page .card {
+  background: #ffffff !important;
+  border-color: #dbe3ef !important;
+}
+
+body.dashboard-theme-light .commerce-page .input-base,
+body.dashboard-theme-light .commerce-page input,
+body.dashboard-theme-light .commerce-page select,
+body.dashboard-theme-light .commerce-page textarea {
+  background: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+body.dashboard-theme-light .commerce-page .input-base::placeholder,
+body.dashboard-theme-light .commerce-page input::placeholder,
+body.dashboard-theme-light .commerce-page textarea::placeholder {
+  color: #94a3b8 !important;
+}
+
+body.dashboard-theme-light .commerce-page table th,
+body.dashboard-theme-light .commerce-page table td {
+  border-color: #e2e8f0 !important;
+}
+
+body.dashboard-theme-light .commerce-page button[class*='text-zinc-500']:hover,
+body.dashboard-theme-light .commerce-page button[class*='text-zinc-400']:hover,
+body.dashboard-theme-light .commerce-page a[class*='text-zinc-500']:hover {
+  color: #0f172a !important;
+}
+
+/* Active commerce sub-nav tab keeps its blue underline; inactive tabs read on light. */
+body.dashboard-theme-light .commerce-page a[class*='border-blue-500'] {
+  color: #0f172a !important;
+}
+
 /* Stat card visibility pass */
 body.dashboard-theme-light .overview-page .overview-stat-card,
 body.dashboard-theme-light .analytics-page .analytics-stat-card,
