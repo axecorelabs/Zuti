@@ -718,6 +718,7 @@ class LlmService:
                     has_strong_grounding=has_strong_grounding, gap_logged=gap_logged,
                     retrieved_passages=retrieved_passages, model=model, user_message=user_message,
                     org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
+                    customer_context=customer_context,
                 )
                 resolved_tag = bool(re.search(r"\[\s*resolved\s*\]", reply, re.IGNORECASE))
                 should_resolve = (resolved_tag or (action_handled and not payment_url)) and not payment_url
@@ -780,6 +781,7 @@ class LlmService:
             has_strong_grounding=has_strong_grounding, gap_logged=gap_logged,
             retrieved_passages=retrieved_passages, model=model, user_message=user_message,
             org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
+            customer_context=customer_context,
         )
         new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
         return {"reply": reply, "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": new_summary, "sources": retrieved_passages, "grounded": has_strong_grounding}
@@ -787,7 +789,7 @@ class LlmService:
     async def _postprocess_knowledge_answer(
         self, reply: str, *, knowledge_search: Any, action_handled: bool, has_strong_grounding: bool,
         gap_logged: bool, retrieved_passages: list[dict], model: str, user_message: str,
-        org_id: str, bot_id: str, conversation_id: str, channel: str,
+        org_id: str, bot_id: str, conversation_id: str, channel: str, customer_context: str | None = None,
     ) -> tuple[str, bool]:
         """For an informational answer on weak/empty grounding: (1) faithfulness-check it and override
         with a safe abstention if unsupported, then (2) deterministically log a knowledge gap when the
@@ -797,9 +799,10 @@ class LlmService:
             return reply, gap_logged
 
         # (1) Faithfulness: only for a weakly-grounded answer that isn't already declining — verify it
-        # is supported and override with a safe abstention if not. Strong grounding is trusted.
+        # is supported (by KB passages OR the approved customer context) and override with a safe
+        # abstention if not. Strong grounding is trusted.
         if not has_strong_grounding and not _looks_like_abstention(reply):
-            if not await self._verify_grounding(reply, retrieved_passages, model):
+            if not await self._verify_grounding(reply, retrieved_passages, model, customer_context):
                 logger.info("generate_agentic: unfaithful answer overridden with abstention")
                 reply = ABSTENTION_MESSAGE
 
@@ -842,19 +845,32 @@ class LlmService:
             return (result, passages, False)
         return ({"outcome": "EMPTY", "instruction": "The knowledge base has nothing on this. Tell the customer you don't have that information and offer a human follow-up. Do not guess or invent an answer. If this is a genuine on-topic question, also call report_knowledge_gap so the team can add it."}, [], False)
 
-    async def _verify_grounding(self, reply: str, passages: list[dict], model: str) -> bool:
-        """Faithfulness check: is every factual claim in `reply` supported by the retrieved passages?
-        Returns True (ok) when grounded or when the reply makes no factual claims; False when it
-        asserts facts the passages don't support. Fails open (True) on verifier error."""
-        evidence = "\n---\n".join((p.get("content") or "")[:800] for p in (passages or [])[:6]) or "(no passages were retrieved)"
+    async def _verify_grounding(self, reply: str, passages: list[dict], model: str, customer_context: str | None = None) -> bool:
+        """Faithfulness check: is every factual claim in `reply` supported by the grounding the model
+        was given? Grounding = the retrieved KB passages PLUS the approved context (registration
+        options, approved reply templates, product catalog, account details) injected for this turn —
+        a reply grounded in any of those is fine. Returns True (ok) when grounded or when the reply
+        makes no factual claims; False when it asserts unsupported facts. Fails open on error."""
+        parts: list[str] = []
+        kb = "\n---\n".join((p.get("content") or "")[:800] for p in (passages or [])[:6])
+        if kb:
+            parts.append("KNOWLEDGE BASE PASSAGES:\n" + kb)
+        ctx = (customer_context or "").strip()
+        if ctx:
+            parts.append(
+                "OTHER APPROVED CONTEXT (registration/event options, approved reply templates, "
+                "product catalog, the customer's own details):\n" + ctx[:3500]
+            )
+        evidence = "\n\n".join(parts) or "(no grounding sources were provided)"
         system = (
-            "You are a strict fact-checker for a customer-support reply. You are given SOURCE passages "
-            "and the agent's ANSWER. Greetings, offers to help, apologies, and requests for more "
-            "information are always fine. But any specific claim about the company, its products, "
-            "pricing, policies, features, dates, or numbers MUST be directly supported by the sources. "
-            "If the answer asserts such a fact that the sources do not support — or the sources are "
-            "empty and it still asserts specific facts — respond UNSUPPORTED. Otherwise respond "
-            "GROUNDED. Reply with exactly one word."
+            "You are a strict fact-checker for a customer-support reply. You are given the SOURCES the "
+            "agent was allowed to use and the agent's ANSWER. The following are ALWAYS fine and count "
+            "as GROUNDED: greetings, apologies, offers to help, asking the customer for more details, "
+            "and offering to perform or start an action the sources support (e.g. registering them for "
+            "a listed event, booking a meeting, taking an order). Only respond UNSUPPORTED when the "
+            "answer asserts a specific fact about the company, its products, pricing, policies, "
+            "features, dates, or numbers that the SOURCES do not support (or the sources are empty and "
+            "it still states such facts). Reply with exactly one word: GROUNDED or UNSUPPORTED."
         )
         user = f"SOURCES:\n{evidence}\n\nANSWER:\n{reply}\n\nVerdict (GROUNDED or UNSUPPORTED):"
         try:
