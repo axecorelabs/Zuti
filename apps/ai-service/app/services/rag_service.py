@@ -75,44 +75,17 @@ class RagService:
             ))
         )
         if _needs_retrieval:
-            try:
-                query_vector = await embedding_service.embed(message)
-
-                from qdrant_client import AsyncQdrantClient
-                client = AsyncQdrantClient(
-                    url=settings.QDRANT_URL,
-                    api_key=settings.QDRANT_API_KEY or None,
-                )
-                collection = _collection(organization_id)
-                bot_scope = f"bot_{bot_id}"
-
-                response = await client.query_points(
-                    collection_name=collection,
-                    query=query_vector,
-                    limit=max(top_k * 4, top_k),
-                    score_threshold=0.5,
-                )
-
-                allowed_scopes = {"", "__shared__", bot_scope}
-                for hit in response.points:
-                    payload = hit.payload or {}
-                    point_scope = str(payload.get("bot_scope") or "")
-                    point_bot_id = str(payload.get("bot_id") or "")
-                    if point_scope not in allowed_scopes and point_bot_id not in {"", bot_id}:
-                        continue
-                    sources.append({"content": payload.get("content", ""), "score": hit.score})
-                    if len(sources) >= top_k:
-                        break
-
-                context = "\n\n".join(s["content"] for s in sources)
-            except Exception as e:
-                logger.warning(f"RAG search failed (continuing without context): {e}")
+            sources = await self.retrieve(organization_id, bot_id, message, top_k)
+            context = "\n\n".join(s["content"] for s in sources)
 
         # 2. Generate reply (+ optional unified intent classification and conversation summary)
         chat_meta: dict[str, Any] = {}
         if use_tools:
             # Agentic tool-use path: the model acts through real tools (register_for_event) and
             # composes its reply from actual results — no classify-then-guardrail machinery.
+            async def _knowledge_search(query: str) -> list[dict]:
+                return await self.retrieve(organization_id, bot_id, query, top_k)
+
             result = await llm_service.generate_agentic(
                 user_message=message,
                 org_id=organization_id,
@@ -127,7 +100,12 @@ class RagService:
                 conversation_summary=conversation_summary,
                 enabled_tools=enabled_tools,
                 channel=channel,
+                knowledge_search=_knowledge_search,
+                eager_sources=sources,
             )
+            # Retrieved passages (eager + tool) drive citations/answerability display.
+            if result.get("sources"):
+                sources = result["sources"]
             reply = result.get("reply") or ""
             chat_meta = {
                 # The fired tool is the intent; fall back to NONE when no tool ran.
@@ -177,6 +155,45 @@ class RagService:
 
         assessment = self._assess_answerability(message, reply, sources)
         return reply, sources, assessment, chat_meta
+
+    async def retrieve(
+        self, organization_id: str, bot_id: str, query: str, top_k: int = 5
+    ) -> list[dict]:
+        """Embed the query and pull the most relevant knowledge-base chunks from Qdrant, scoped to
+        this bot (plus org-wide/shared chunks). Returns [{content, score}] ordered by relevance.
+        Shared by the eager pre-retrieval and the search_knowledge tool."""
+        sources: list[dict] = []
+        try:
+            query_vector = await embedding_service.embed(query)
+
+            from qdrant_client import AsyncQdrantClient
+            client = AsyncQdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY or None,
+            )
+            collection = _collection(organization_id)
+            bot_scope = f"bot_{bot_id}"
+
+            response = await client.query_points(
+                collection_name=collection,
+                query=query_vector,
+                limit=max(top_k * 4, top_k),
+                score_threshold=0.5,
+            )
+
+            allowed_scopes = {"", "__shared__", bot_scope}
+            for hit in response.points:
+                payload = hit.payload or {}
+                point_scope = str(payload.get("bot_scope") or "")
+                point_bot_id = str(payload.get("bot_id") or "")
+                if point_scope not in allowed_scopes and point_bot_id not in {"", bot_id}:
+                    continue
+                sources.append({"content": payload.get("content", ""), "score": hit.score})
+                if len(sources) >= top_k:
+                    break
+        except Exception as e:
+            logger.warning(f"RAG search failed (continuing without context): {e}")
+        return sources
 
     def _assess_answerability(
         self,

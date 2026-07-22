@@ -8,9 +8,10 @@ import { ActionForwardingController } from './action-forwarding.controller';
 import { InternalToolsController } from './internal-tools.controller';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RegistrationsModule } from '../registrations/registrations.module';
+import { TeamChatModule } from '../team-chat/team-chat.module';
 
 @Module({
-  imports: [HttpModule, BullModule.registerQueue({ name: ACTION_FORWARDING_QUEUE }), NotificationsModule, RegistrationsModule],
+  imports: [HttpModule, BullModule.registerQueue({ name: ACTION_FORWARDING_QUEUE }), NotificationsModule, RegistrationsModule, TeamChatModule],
   controllers: [ActionForwardingController, InternalToolsController],
   providers: [ActionForwardingService, ActionForwardingProcessor],
   exports: [ActionForwardingService],

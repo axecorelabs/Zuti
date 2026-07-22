@@ -141,6 +141,53 @@ LOG_TECHNICAL_ISSUE_TOOL = {
     },
 }
 
+SEARCH_KNOWLEDGE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_knowledge",
+        "description": (
+            "Search the company's knowledge base for grounded information to answer the customer's "
+            "question. You MUST call this before answering ANY question about the company, its "
+            "products, pricing, policies, features, or any specific fact — do not answer such "
+            "questions from your own general knowledge. Returns matching passages with a match "
+            "quality. If it returns NO_STRONG_MATCH or EMPTY, the knowledge base does not cover the "
+            "question: tell the customer you don't have that information and offer to connect them "
+            "with the team — never guess or invent an answer. You may call it again with a refined "
+            "query if the first result is weak."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "A focused search query capturing what the customer wants to know."},
+            },
+            "required": ["query"],
+        },
+    },
+}
+
+REPORT_KNOWLEDGE_GAP_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "report_knowledge_gap",
+        "description": (
+            "Flag a genuine question the knowledge base could not answer so the team can add the "
+            "missing content. Call this AFTER search_knowledge returns NO_STRONG_MATCH or EMPTY, but "
+            "ONLY when the question is on-topic and something the company should reasonably be able to "
+            "answer (e.g. pricing, policies, product details, availability). Do NOT log greetings, "
+            "chit-chat, off-topic questions, or nonsense. This runs silently in the background — it "
+            "does not reply to the customer, so still give them your normal answer or abstention."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The customer's question, phrased clearly and generically (not their exact words if messy)."},
+                "topic": {"type": "string", "description": "A short topic label, e.g. 'refund policy', 'pricing', 'shipping times'."},
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 ESCALATE_TO_HUMAN_TOOL = {
     "type": "function",
     "function": {
@@ -163,6 +210,8 @@ ESCALATE_TO_HUMAN_TOOL = {
 
 # Registry of every tool the agent can be granted, keyed by the tool name the model calls.
 ACTION_TOOL_REGISTRY = {
+    "search_knowledge": SEARCH_KNOWLEDGE_TOOL,
+    "report_knowledge_gap": REPORT_KNOWLEDGE_GAP_TOOL,
     "register_for_event": REGISTER_FOR_EVENT_TOOL,
     "book_meeting": BOOK_MEETING_TOOL,
     "request_consultation": REQUEST_CONSULTATION_TOOL,
@@ -170,6 +219,67 @@ ACTION_TOOL_REGISTRY = {
     "log_technical_issue": LOG_TECHNICAL_ISSUE_TOOL,
     "escalate_to_human": ESCALATE_TO_HUMAN_TOOL,
 }
+
+# Similarity score at/above which a retrieved passage counts as strong grounding (matches the
+# threshold used by RagService._assess_answerability). Below this, treat evidence as weak.
+STRONG_SOURCE_SCORE = 0.62
+
+# Safe fallback when a knowledge answer fails the faithfulness check — never dead-ends the customer.
+ABSTENTION_MESSAGE = (
+    "I want to make sure I only give you accurate information, and I don't have the details to answer "
+    "that confidently right now. Let me connect you with a teammate who can help — is there anything "
+    "else I can assist you with in the meantime?"
+)
+
+_ABSTENTION_HINTS = (
+    "don't have", "do not have", "couldn't find", "could not find", "not able to find",
+    "i'm not sure", "i am not sure", "don't have that information", "connect you", "connect you with",
+    "reach out to", "follow up with", "a teammate", "our team", "human agent",
+    "cannot provide", "can't provide", "not available", "isn't available", "is not available",
+    "unable to", "i'm unable", "i am unable", "no information", "knowledge base", "i cannot",
+    "i can't", "don't currently have", "not something i can", "not in my", "no details",
+)
+
+
+def _looks_like_abstention(text: str) -> bool:
+    """Broad check (decline + routing phrases) used only to SKIP the faithfulness verifier — being
+    broad here is safe (it just avoids a check on a reply that isn't asserting facts)."""
+    t = (text or "").lower()
+    return any(h in t for h in _ABSTENTION_HINTS)
+
+
+# Narrow, precise "I could not answer" phrases — the signal for logging a knowledge gap. Excludes
+# routing phrases like "reach out to our team", which also appear at the end of *real* answers.
+_DECLINE_HINTS = (
+    "cannot provide", "can't provide", "not available", "isn't available", "is not available",
+    "don't have", "do not have", "don't currently have", "no information", "no details",
+    "i cannot", "i can't", "unable to", "couldn't find", "could not find", "not able to",
+    "not in my", "don't have that information", "i'm not sure", "i am not sure", "not something i can",
+)
+
+
+def _is_decline(text: str) -> bool:
+    """Whether the reply actually declines to answer (didn't provide the information). Precise, so a
+    real answer that merely offers a human follow-up isn't mistaken for a knowledge gap."""
+    t = (text or "").lower()
+    return any(h in t for h in _DECLINE_HINTS)
+
+
+_QUESTION_WORDS = ("how ", "what ", "why ", "when ", "where ", "who ", "which ", "can ", "could ",
+                   "do ", "does ", "is ", "are ", "should ", "would ", "tell me", "explain")
+
+
+def _is_substantive_question(text: str) -> bool:
+    """Whether the customer's message is a genuine question worth logging as a knowledge gap when
+    unanswered — filters out greetings, thanks, and one-word acknowledgements."""
+    t = (text or "").lower().strip()
+    if len(t) < 8:
+        return False
+    if "?" in t:
+        return True
+    if any(t.startswith(w) or f" {w}" in t for w in _QUESTION_WORDS):
+        return True
+    return len(t) > 45
 
 # Tool name → intent action_type, so the agentic path can report a real action_type for analytics
 # (the classic structured path classifies intent; here the fired tool IS the intent).
@@ -501,37 +611,64 @@ class LlmService:
         conversation_summary: str | None = None,
         enabled_tools: list[str] | None = None,
         channel: str = "TELEGRAM",
+        knowledge_search: Any = None,
+        eager_sources: list[dict] | None = None,
     ) -> dict[str, Any]:
-        """Tool-use agentic loop: the model chats normally, and when it wants to take an action
-        (book a meeting, log an order, register a customer, escalate, …) it calls the matching
-        tool, receives the REAL result, and composes its reply from that. No post-hoc guardrails —
-        the model can only state tool-confirmed outcomes. Returns
-        {reply, registration_handled, action_handled, payment_url, should_resolve}."""
+        """Tool-use agentic loop. The model answers questions by grounding on the knowledge base
+        (search_knowledge tool) and takes actions through real tools (book_meeting, register, …),
+        composing its reply only from tool results. Knowledge answers are gated on retrieval
+        confidence and faithfulness-checked so the model can't confabulate facts the KB doesn't
+        contain. Returns {reply, sources, grounded, action_type, ...}."""
         if not settings.OPENROUTER_API_KEY:
             return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "registration_handled": False, "action_handled": False, "payment_url": "", "should_resolve": False}
 
-        # Only offer tools this bot is actually allowed to use (computed by the backend from
-        # capabilities). Unknown names are ignored defensively.
-        tool_names = [t for t in (enabled_tools or []) if t in ACTION_TOOL_REGISTRY]
+        # Action tools come from the backend (bot capabilities); search_knowledge is always available
+        # (executed locally here — embeddings + Qdrant live in this service, so no backend round-trip).
+        # Meta tools (knowledge search + gap logging) are always available and executed here; they
+        # don't count as customer-facing "actions". Action tools come from the backend (capabilities).
+        META_TOOLS = ("search_knowledge", "report_knowledge_gap")
+        action_tool_names = [t for t in (enabled_tools or []) if t in ACTION_TOOL_REGISTRY and t not in META_TOOLS]
+        tool_names = (list(META_TOOLS) if knowledge_search is not None else []) + action_tool_names
         tools_param = [ACTION_TOOL_REGISTRY[t] for t in tool_names]
 
         base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
-        tool_guidance = (
-            "\n\nYou have tools to submit certain requests to the team on the customer's behalf. "
-            "Use a tool ONLY when the customer clearly wants that specific action and you have "
-            "collected every required field for it — gather the details conversationally first, then "
-            "call the tool. Trust each tool's result completely and compose your reply from it: if it "
-            "returns SUBMITTED, confirm it was forwarded and the team will follow up; if MISSING_FIELDS, "
-            "ask the customer for exactly the listed fields; if NOT_AVAILABLE or NOT_SUBMITTED, do NOT "
-            "claim anything was submitted. Never invent a confirmation, reference number, ticket, or "
-            "status the tool did not return."
-        )
-        if "register_for_event" in tool_names:
+        tool_guidance = ""
+        if knowledge_search is not None:
             tool_guidance += (
-                " For event registration specifically: if register_for_event returns PENDING_PAYMENT, "
-                "give the customer the payment link and make clear they are NOT registered until they "
-                "pay; if AT_CAPACITY or ALREADY_REGISTERED, relay that honestly; only say a registration "
-                "is confirmed when the tool says CONFIRMED."
+                "\n\nGROUNDING — this is critical. For ANY question about the company, its products, "
+                "pricing, policies, features, or any specific fact, you MUST answer only from grounded "
+                "sources: the approved response templates provided in your context (if one matches the "
+                "topic, use it) and the passages returned by search_knowledge. Call search_knowledge "
+                "before answering such a question unless an approved template already covers it. Never "
+                "answer from your own general knowledge. If neither an approved template nor "
+                "search_knowledge covers it (NO_STRONG_MATCH or EMPTY), briefly tell the customer you "
+                "don't have that information and offer to connect them with the team — do NOT guess, "
+                "approximate, or invent details (no made-up prices, policies, dates, or features). It is "
+                "always better to say you don't know than to state something that might be wrong. When "
+                "you can't answer a genuine, on-topic question this way, also call report_knowledge_gap "
+                "so the team can add the missing content (it runs silently — still give your reply). "
+                "General chit-chat, greetings, and clarifying questions need neither a search nor a gap."
+            )
+        if action_tool_names:
+            tool_guidance += (
+                "\n\nYou also have tools to submit requests to the team on the customer's behalf. Use one "
+                "ONLY when the customer clearly wants that action and you have collected every required "
+                "field — gather details conversationally first, then call the tool. Compose your reply "
+                "from the tool's result: SUBMITTED → confirm it was forwarded; MISSING_FIELDS → ask for "
+                "exactly the listed fields; NOT_AVAILABLE/NOT_SUBMITTED → do NOT claim anything was "
+                "submitted. Never invent a confirmation, reference, or status a tool didn't return. "
+                "IMPORTANT: the grounding rule above governs how you ANSWER questions — it does NOT gate "
+                "these action tools. When a customer wants to book, order, register, or escalate, capture "
+                "the details THEY give you (product name, date, quantity, etc.) and call the tool. You do "
+                "NOT need to look up or verify those details in the knowledge base first — the team "
+                "validates them. Do not refuse or stall an action just because its details aren't in the "
+                "knowledge base."
+            )
+        if "register_for_event" in action_tool_names:
+            tool_guidance += (
+                " For event registration: if register_for_event returns PENDING_PAYMENT, give the payment "
+                "link and make clear they are NOT registered until they pay; relay AT_CAPACITY / "
+                "ALREADY_REGISTERED honestly; only say confirmed when the tool says CONFIRMED."
             )
         agent_prompt = f"{base_prompt}{tool_guidance}"
 
@@ -548,10 +685,15 @@ class LlmService:
         action_handled = False
         action_type = "NONE"
         payment_url = ""
+        gap_logged = False
+        # Track all retrieved passages (eager pre-retrieval + any search_knowledge calls) and whether
+        # any cleared the strong-grounding bar — this drives the faithfulness gate below.
+        retrieved_passages: list[dict] = list(eager_sources or [])
+        has_strong_grounding = any(float(p.get("score") or 0) >= STRONG_SOURCE_SCORE for p in retrieved_passages)
         client = self._client()
 
         # Bounded loop: model → (optional tool call → execute → observe) → final reply.
-        for _ in range(4):
+        for _ in range(5):
             create_kwargs: dict[str, Any] = {
                 "model": model,
                 "messages": messages,
@@ -564,17 +706,19 @@ class LlmService:
                 resp = await client.chat.completions.create(**create_kwargs)
             except Exception as e:
                 logger.warning(f"generate_agentic model call failed: {e}")
-                return {"reply": "", "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": conversation_summary or ""}
+                return {"reply": "", "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": conversation_summary or "", "sources": retrieved_passages, "grounded": has_strong_grounding}
 
             msg = resp.choices[0].message
             tool_calls = getattr(msg, "tool_calls", None)
 
             if not tool_calls:
                 reply = (msg.content or "").strip()
-                # Resolution mirrors the classic path: the model emits [RESOLVED] when the
-                # customer's issue is fully handled (base prompt already instructs this). A
-                # completed action with nothing left pending also counts as resolved. A pending
-                # payment never resolves — the customer still has to pay. chat.py strips the tag.
+                reply, gap_logged = await self._postprocess_knowledge_answer(
+                    reply, knowledge_search=knowledge_search, action_handled=action_handled,
+                    has_strong_grounding=has_strong_grounding, gap_logged=gap_logged,
+                    retrieved_passages=retrieved_passages, model=model, user_message=user_message,
+                    org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
+                )
                 resolved_tag = bool(re.search(r"\[\s*resolved\s*\]", reply, re.IGNORECASE))
                 should_resolve = (resolved_tag or (action_handled and not payment_url)) and not payment_url
                 new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
@@ -586,6 +730,8 @@ class LlmService:
                     "payment_url": payment_url,
                     "should_resolve": bool(should_resolve),
                     "conversation_summary": new_summary,
+                    "sources": retrieved_passages,
+                    "grounded": has_strong_grounding,
                 }
 
             # Record the assistant's tool-call message, then execute each tool.
@@ -599,13 +745,21 @@ class LlmService:
             })
             for tc in tool_calls:
                 name = tc.function.name
-                if name not in ACTION_TOOL_REGISTRY or name not in tool_names:
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except Exception:
+                    args = {}
+                if name == "search_knowledge" and knowledge_search is not None:
+                    result, passages, strong = await self._run_knowledge_search(knowledge_search, args.get("query") or user_message)
+                    retrieved_passages.extend(passages)
+                    has_strong_grounding = has_strong_grounding or strong
+                elif name == "report_knowledge_gap" and knowledge_search is not None:
+                    # Meta tool: log the gap via the backend, but it's not a customer-facing action.
+                    result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
+                    gap_logged = True
+                elif name not in ACTION_TOOL_REGISTRY or name not in tool_names:
                     result = {"outcome": "ERROR", "message": "That tool is not available."}
                 else:
-                    try:
-                        args = json.loads(tc.function.arguments or "{}")
-                    except Exception:
-                        args = {}
                     result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
                     action_handled = True
                     action_type = TOOL_ACTION_TYPES.get(name, action_type)
@@ -621,8 +775,93 @@ class LlmService:
             reply = (final.choices[0].message.content or "").strip()
         except Exception:
             reply = ""
+        reply, gap_logged = await self._postprocess_knowledge_answer(
+            reply, knowledge_search=knowledge_search, action_handled=action_handled,
+            has_strong_grounding=has_strong_grounding, gap_logged=gap_logged,
+            retrieved_passages=retrieved_passages, model=model, user_message=user_message,
+            org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
+        )
         new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
-        return {"reply": reply, "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": new_summary}
+        return {"reply": reply, "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": new_summary, "sources": retrieved_passages, "grounded": has_strong_grounding}
+
+    async def _postprocess_knowledge_answer(
+        self, reply: str, *, knowledge_search: Any, action_handled: bool, has_strong_grounding: bool,
+        gap_logged: bool, retrieved_passages: list[dict], model: str, user_message: str,
+        org_id: str, bot_id: str, conversation_id: str, channel: str,
+    ) -> tuple[str, bool]:
+        """For an informational answer on weak/empty grounding: (1) faithfulness-check it and override
+        with a safe abstention if unsupported, then (2) deterministically log a knowledge gap when the
+        turn ends in an abstention — so gap capture doesn't depend on the model choosing to call the
+        report_knowledge_gap tool. Returns (reply, gap_logged)."""
+        if knowledge_search is None or action_handled or not reply:
+            return reply, gap_logged
+
+        # (1) Faithfulness: only for a weakly-grounded answer that isn't already declining — verify it
+        # is supported and override with a safe abstention if not. Strong grounding is trusted.
+        if not has_strong_grounding and not _looks_like_abstention(reply):
+            if not await self._verify_grounding(reply, retrieved_passages, model):
+                logger.info("generate_agentic: unfaithful answer overridden with abstention")
+                reply = ABSTENTION_MESSAGE
+
+        # (2) Gap capture: the bot declined to answer a genuine question. Grounding SCORE is not the
+        # signal — a highly-similar chunk that doesn't contain the answer still leaves a real gap; the
+        # decline in the reply is what matters.
+        if not gap_logged and _is_substantive_question(user_message) and _is_decline(reply):
+            try:
+                await self._execute_tool("report_knowledge_gap", {"question": user_message}, org_id, bot_id, conversation_id, channel)
+                gap_logged = True
+            except Exception as e:
+                logger.warning(f"auto knowledge-gap logging failed: {e}")
+        return reply, gap_logged
+
+    async def _run_knowledge_search(self, knowledge_search: Any, query: str) -> tuple[dict, list[dict], bool]:
+        """Execute a search_knowledge tool call: retrieve, gate on similarity, and return
+        (result_for_model, passages, has_strong_match). The result tells the model to answer only
+        from strong passages, or to abstain when nothing clears the bar."""
+        try:
+            passages = await knowledge_search(query) or []
+        except Exception as e:
+            logger.warning(f"search_knowledge failed: {e}")
+            return ({"outcome": "ERROR", "message": "Knowledge search is temporarily unavailable; if you can't answer confidently, offer a human follow-up."}, [], False)
+
+        strong = [p for p in passages if float(p.get("score") or 0) >= STRONG_SOURCE_SCORE]
+        if strong:
+            use = strong[:5]
+            result = {
+                "outcome": "FOUND",
+                "passages": [{"text": (p.get("content") or "")[:800]} for p in use],
+                "instruction": "Answer the customer using ONLY the facts in these passages. Do not add details they don't contain.",
+            }
+            return (result, passages, True)
+        if passages:
+            result = {
+                "outcome": "NO_STRONG_MATCH",
+                "passages": [{"text": (p.get("content") or "")[:400]} for p in passages[:2]],
+                "instruction": "No passage strongly matches. Do NOT answer from general knowledge. Tell the customer you don't have that specific information and offer to connect them with the team. If this is a genuine on-topic question, also call report_knowledge_gap.",
+            }
+            return (result, passages, False)
+        return ({"outcome": "EMPTY", "instruction": "The knowledge base has nothing on this. Tell the customer you don't have that information and offer a human follow-up. Do not guess or invent an answer. If this is a genuine on-topic question, also call report_knowledge_gap so the team can add it."}, [], False)
+
+    async def _verify_grounding(self, reply: str, passages: list[dict], model: str) -> bool:
+        """Faithfulness check: is every factual claim in `reply` supported by the retrieved passages?
+        Returns True (ok) when grounded or when the reply makes no factual claims; False when it
+        asserts facts the passages don't support. Fails open (True) on verifier error."""
+        evidence = "\n---\n".join((p.get("content") or "")[:800] for p in (passages or [])[:6]) or "(no passages were retrieved)"
+        system = (
+            "You are a strict fact-checker for a customer-support reply. You are given SOURCE passages "
+            "and the agent's ANSWER. Greetings, offers to help, apologies, and requests for more "
+            "information are always fine. But any specific claim about the company, its products, "
+            "pricing, policies, features, dates, or numbers MUST be directly supported by the sources. "
+            "If the answer asserts such a fact that the sources do not support — or the sources are "
+            "empty and it still asserts specific facts — respond UNSUPPORTED. Otherwise respond "
+            "GROUNDED. Reply with exactly one word."
+        )
+        user = f"SOURCES:\n{evidence}\n\nANSWER:\n{reply}\n\nVerdict (GROUNDED or UNSUPPORTED):"
+        try:
+            out = (await self.complete(system, user, max_tokens=5, model=model)).strip().upper()
+            return "UNSUPPORTED" not in out
+        except Exception:
+            return True
 
     async def _refresh_summary(
         self, prior_summary: str | None, history: list[dict], user_message: str, reply: str, model: str

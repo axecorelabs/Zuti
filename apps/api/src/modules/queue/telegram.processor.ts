@@ -1020,7 +1020,7 @@ export class TelegramProcessor {
       enabledTools.push(...this.actionForwarding.getEnabledActionTools(capabilities, { hasCommerceStore: Boolean(botCaps?.commerceStoreId) }));
     }
     if (registrationContext) enabledTools.push('register_for_event');
-    const useTools = isAgenticEnabled(this.config) && enabledTools.length > 0;
+    const useTools = isAgenticEnabled(this.config); // knowledge grounding makes every bot agentic; enabled_tools may still be empty (search_knowledge is added AI-side)
 
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();

@@ -12,9 +12,6 @@ import {
   RefreshCw,
   ShieldCheck,
   Zap,
-  ChevronRight,
-  CheckCircle2,
-  XCircle,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { api, botsApi, knowledgeApi, orgsApi } from '@/lib/api';
@@ -70,7 +67,7 @@ function KnowledgePageContent() {
   const searchParams = useSearchParams();
 
   const rawTab = searchParams.get('tab');
-  const pageTab: PageTab = rawTab === 'suggestions' || rawTab === 'gaps' ? rawTab : 'sources';
+  const pageTab: PageTab = rawTab === 'gaps' ? 'gaps' : 'sources';
 
   const [orgId, setOrgId] = useState<string | null>(null);
   const [bots, setBots] = useState<BotOption[]>([]);
@@ -168,7 +165,6 @@ function KnowledgePageContent() {
           setOrgId(preferred.id);
           loadItems(preferred.id, 'shared');
           loadBots(preferred.id);
-          loadSuggestions(preferred.id);
           loadGaps(preferred.id);
         }
       })
@@ -374,14 +370,13 @@ function KnowledgePageContent() {
         >
           Sources
         </button>
-        <button
-          onClick={() => setPageTab('suggestions')}
-          className={`knowledge-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
-            pageTab === 'suggestions' ? 'bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
-          }`}
+        <Link
+          href={orgId ? `/settings/canned-responses?org=${orgId}` : '/settings/canned-responses'}
+          className="knowledge-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors text-zinc-500 hover:text-zinc-300 inline-flex items-center gap-1.5"
         >
-          Suggestions ({suggestions.length})
-        </button>
+          <Zap className="w-3.5 h-3.5" />
+          Canned Responses
+        </Link>
         <button
           onClick={() => setPageTab('gaps')}
           className={`knowledge-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
@@ -612,143 +607,7 @@ function KnowledgePageContent() {
               )}
             </div>
           </div>
-
-          <div className="mt-6 card p-5">
-            <p className="text-xs text-zinc-500 mb-3 font-normal">Response templates</p>
-            <Link
-              href="/settings/canned-responses"
-              className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-zinc-800/60 transition-colors group"
-            >
-              <div className="w-8 h-8 rounded-lg bg-blue-600/15 border border-blue-600/20 flex items-center justify-center shrink-0">
-                <Zap className="w-4 h-4 text-blue-400" />
-              </div>
-              <div className="flex-1">
-                <p className="text-sm text-zinc-200">Canned Responses</p>
-                <p className="text-xs text-zinc-600">Pre-written reply templates for agents and AI.</p>
-              </div>
-              <ChevronRight className="w-4 h-4 text-zinc-700 group-hover:text-zinc-400 transition-colors" />
-            </Link>
-          </div>
         </>
-      ) : null}
-
-      {pageTab === 'suggestions' ? (
-        <div className="card p-6">
-          <div className="flex items-center justify-between mb-4 gap-3">
-            <div>
-              <h2 className="font-brand font-semibold text-base tracking-tight text-white">Pending suggestions</h2>
-              <p className="text-xs text-zinc-500 mt-0.5">Review specialist drafts before they become knowledge.</p>
-            </div>
-            <button
-              type="button"
-              onClick={() => orgId && loadSuggestions(orgId)}
-              disabled={suggestionsLoading || !orgId}
-              className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-900 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${suggestionsLoading ? 'animate-spin' : ''}`} />
-              Refresh
-            </button>
-          </div>
-
-          {suggestionsLoading ? (
-            <div className="space-y-2.5">{[1, 2].map((row) => <div key={row} className="h-20 rounded-xl bg-zinc-900/50 animate-pulse" />)}</div>
-          ) : suggestions.length === 0 ? (
-            <div className="rounded-xl border border-zinc-900 bg-zinc-950/50 p-4 text-sm text-zinc-500">
-              No pending knowledge suggestions.
-            </div>
-          ) : (
-            <div className="grid lg:grid-cols-2 gap-3">
-              {suggestions.map((suggestion) => (
-                <div key={suggestion.id} className="rounded-xl border border-zinc-900 bg-zinc-950/50 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      {editingSuggestionId === suggestion.id ? (
-                        <input
-                          value={editTitle}
-                          onChange={(e) => setEditTitle(e.target.value)}
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-600"
-                          placeholder="Suggestion title"
-                        />
-                      ) : (
-                        <p className="text-sm text-zinc-100">{suggestion.title}</p>
-                      )}
-                      <p className="text-[11px] text-zinc-600 mt-1">
-                        {suggestion.thread?.topic ? `Topic: ${suggestion.thread.topic}` : 'Specialist answer'}
-                        {suggestion.thread?.assignedUser ? ` • ${suggestion.thread.assignedUser.name || suggestion.thread.assignedUser.email}` : ''}
-                      </p>
-                    </div>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-300">{suggestion.status}</span>
-                  </div>
-
-                  <div className="mt-3 rounded-lg border border-zinc-900 bg-zinc-950 p-3">
-                    <p className="text-[10px] uppercase tracking-wide text-zinc-600 mb-1">Draft content</p>
-                    {editingSuggestionId === suggestion.id ? (
-                      <textarea
-                        value={editContent}
-                        onChange={(e) => setEditContent(e.target.value)}
-                        rows={6}
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-2 text-xs text-zinc-200 resize-none focus:outline-none focus:border-zinc-600"
-                        placeholder="Editable knowledge content"
-                      />
-                    ) : (
-                      <p className="text-xs text-zinc-300 whitespace-pre-wrap line-clamp-5">{suggestion.content}</p>
-                    )}
-                  </div>
-
-                  <div className="mt-3 flex items-center gap-2">
-                    {editingSuggestionId === suggestion.id ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => saveEditedSuggestion(suggestion.id)}
-                          disabled={reviewingId === suggestion.id}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-xs text-white transition-colors"
-                        >
-                          Save
-                        </button>
-                        <button
-                          type="button"
-                          onClick={cancelEditSuggestion}
-                          disabled={reviewingId === suggestion.id}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 disabled:opacity-50 text-xs transition-colors"
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => beginEditSuggestion(suggestion)}
-                        disabled={reviewingId === suggestion.id}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 disabled:opacity-50 text-xs transition-colors"
-                      >
-                        Edit
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleApproveSuggestion(suggestion.id)}
-                      disabled={reviewingId === suggestion.id || editingSuggestionId === suggestion.id}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-xs text-white transition-colors"
-                    >
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                      Approve
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRejectSuggestion(suggestion.id)}
-                      disabled={reviewingId === suggestion.id || editingSuggestionId === suggestion.id}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-800 text-zinc-400 hover:text-red-300 hover:border-red-800 hover:bg-red-950/30 disabled:opacity-50 text-xs transition-colors"
-                    >
-                      <XCircle className="w-3.5 h-3.5" />
-                      Reject
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
       ) : null}
 
       {pageTab === 'gaps' ? (

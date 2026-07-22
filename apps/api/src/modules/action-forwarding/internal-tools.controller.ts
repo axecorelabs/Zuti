@@ -5,6 +5,7 @@ import { ApiExcludeController } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { ActionForwardingService } from './action-forwarding.service';
 import { RegistrationsService } from '../registrations/registrations.service';
+import { TeamChatService } from '../team-chat/team-chat.service';
 import type { RuntimeChannel } from './action-forwarding.types';
 
 interface ExecuteToolBody {
@@ -32,6 +33,7 @@ export class InternalToolsController {
   constructor(
     private readonly actionForwarding: ActionForwardingService,
     private readonly registrations: RegistrationsService,
+    private readonly teamChat: TeamChatService,
     private readonly config: ConfigService,
   ) {}
 
@@ -77,6 +79,24 @@ export class InternalToolsController {
         customerEmail: typeof args.customer_email === 'string' ? args.customer_email : undefined,
         fields: args.fields && typeof args.fields === 'object' ? (args.fields as Record<string, string>) : undefined,
       });
+    }
+
+    // Knowledge-gap logging: the AI flags a genuine question the knowledge base couldn't answer.
+    // Populates the Gaps tab (deduped by topic) without escalating or handing off to a human.
+    if (toolName === 'report_knowledge_gap') {
+      const question = String(args.question ?? '').trim();
+      if (!question) return { outcome: 'ERROR', message: 'Missing question.' };
+      try {
+        const res = await this.teamChat.recordKnowledgeGap(body.orgId, {
+          question,
+          topic: typeof args.topic === 'string' ? args.topic : null,
+          conversationId: body.conversationId ?? null,
+          metadata: { source: 'ai_knowledge_tool', channel },
+        });
+        return { outcome: 'LOGGED', message: res.created ? 'Knowledge gap recorded for the team.' : 'Knowledge gap already tracked (count incremented).' };
+      } catch {
+        return { outcome: 'ERROR', message: 'Could not record the knowledge gap.' };
+      }
     }
 
     if (!body.conversationId) {

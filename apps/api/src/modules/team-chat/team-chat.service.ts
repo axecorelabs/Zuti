@@ -203,6 +203,20 @@ export class TeamChatService {
     });
 
     if (existing) {
+      // A gap first recorded by the AI's report_knowledge_gap tool has no escalation thread. If that
+      // topic now genuinely escalates, create and attach one so the human has somewhere to respond.
+      let ensuredThread = existing.thread;
+      if (!existing.threadId) {
+        ensuredThread = await this.createEscalationThread(organizationId, {
+          conversationId: input.conversationId,
+          assignedUserId: input.assignedUserId,
+          topic: input.topic ?? existing.topic ?? null,
+          question: input.question,
+          senderId: input.senderId,
+          metadata: { ...(input.metadata ?? {}), source: input.metadata?.source ?? 'knowledge_gap' },
+        });
+      }
+
       const updated = await this.prisma.knowledgeGap.update({
         where: { id: existing.id },
         data: {
@@ -210,6 +224,7 @@ export class TeamChatService {
           lastSeenAt: new Date(),
           conversationId: input.conversationId,
           question: input.question,
+          ...(existing.threadId ? {} : { threadId: ensuredThread?.id ?? null }),
           metadata: {
             ...((existing.metadata as Record<string, unknown>) ?? {}),
             ...(input.metadata ?? {}),
@@ -255,6 +270,55 @@ export class TeamChatService {
     });
 
     return { gap, thread, created: true };
+  }
+
+  /**
+   * Record a knowledge gap detected by the AI (the search_knowledge tool found no answer to a
+   * genuine question) into the Gaps tab — WITHOUT opening an escalation thread or handing off to a
+   * human. Dedups by topicKey with the escalation-driven gaps, so a repeated question just bumps
+   * seenCount. This is the lightweight, tool-driven counterpart to ensureKnowledgeGapThread.
+   */
+  async recordKnowledgeGap(
+    organizationId: string,
+    input: { question: string; topic?: string | null; conversationId?: string | null; metadata?: Record<string, unknown> },
+  ): Promise<{ created: boolean }> {
+    const key = topicKey(input.topic || input.question);
+    const existing = await this.prisma.knowledgeGap.findUnique({
+      where: { organizationId_topicKey: { organizationId, topicKey: key } },
+    });
+
+    if (existing) {
+      await this.prisma.knowledgeGap.update({
+        where: { id: existing.id },
+        data: {
+          seenCount: { increment: 1 },
+          lastSeenAt: new Date(),
+          conversationId: input.conversationId ?? existing.conversationId,
+          question: input.question,
+          metadata: {
+            ...((existing.metadata as Record<string, unknown>) ?? {}),
+            ...(input.metadata ?? {}),
+            lastQuestion: input.question,
+          } as any,
+        },
+      });
+      return { created: false };
+    }
+
+    await this.prisma.knowledgeGap.create({
+      data: {
+        organizationId,
+        conversationId: input.conversationId ?? null,
+        topicKey: key,
+        topic: input.topic ?? null,
+        question: input.question,
+        metadata: {
+          ...(input.metadata ?? {}),
+          source: input.metadata?.source ?? 'ai_knowledge_tool',
+        } as Prisma.InputJsonValue,
+      },
+    });
+    return { created: true };
   }
 
   async replyToEscalationThread(
