@@ -618,6 +618,9 @@ export class TelegramProcessor {
       customerEmail: null,
       actionForwardingEnabled: bot?.actionForwardingEnabled === true,
       skipAiClassification: true,
+      // When the agentic loop is on, it's the sole task writer — this keyword pre-check only
+      // classifies (no draft persisted), so no orphaned tasks when the model doesn't call a tool.
+      classifyOnly: isAgenticEnabled(this.config),
     }).then((result) => {
       forwardingResult = result;
     }).catch((err: unknown) => {
@@ -1004,11 +1007,20 @@ export class TelegramProcessor {
     const preflightCredits = estimateUsageCredits(preflightPromptTokens, 1);
     await this.billing.assertMinimumCredits(organizationId, preflightCredits);
 
-    // Route registration-capable bots through the agentic tool-use loop (default ON; the
-    // REGISTRATION_AGENTIC env var is a kill-switch). The model calls the register_for_event
-    // tool and composes its reply from the real result, so the classic classify→re-queue→
-    // guardrail machinery is bypassed for this turn.
-    const useTools = isAgenticEnabled(this.config) && Boolean(registrationContext);
+    // Route action-capable bots through the agentic tool-use loop (default ON; the
+    // REGISTRATION_AGENTIC env var is a kill-switch). The model calls the matching tool
+    // (book_meeting, create_sales_order, register_for_event, …) and composes its reply from the
+    // real result, so the classic classify→re-queue→guardrail machinery is bypassed for this turn.
+    // Only tools the bot's capabilities actually allow are offered.
+    const forwardingEnabled = aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED';
+    const enabledTools: string[] = [];
+    if (forwardingEnabled) {
+      const botCaps = await this.prisma.bot.findUnique({ where: { id: botId }, select: { capabilities: true, commerceStoreId: true } });
+      const capabilities = (botCaps?.capabilities as Record<string, unknown> | null) ?? {};
+      enabledTools.push(...this.actionForwarding.getEnabledActionTools(capabilities, { hasCommerceStore: Boolean(botCaps?.commerceStoreId) }));
+    }
+    if (registrationContext) enabledTools.push('register_for_event');
+    const useTools = isAgenticEnabled(this.config) && enabledTools.length > 0;
 
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
@@ -1027,6 +1039,8 @@ export class TelegramProcessor {
             customer_context: effectiveCustomerContext,
             action_forwarding_enabled: aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED',
             use_tools: useTools,
+            enabled_tools: enabledTools,
+            channel: 'TELEGRAM',
             conversation_summary: storedConversationSummary ?? null,
             forwarding_status: forwardingResult.status,
             forwarding_reason: forwardingResult.reason,

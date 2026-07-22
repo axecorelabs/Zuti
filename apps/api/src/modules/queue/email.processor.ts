@@ -419,6 +419,8 @@ export class EmailProcessor {
       customerEmail: conversation.customerEmail,
       actionForwardingEnabled: bot.actionForwardingEnabled === true,
       skipAiClassification: true,
+      // Agentic loop is the sole task writer — classify only, don't persist an orphan draft.
+      classifyOnly: isAgenticEnabled(this.config),
     }).then((result) => {
       forwardingResult = result;
     }).catch((err: unknown) => {
@@ -771,8 +773,18 @@ export class EmailProcessor {
       ),
     ].filter(Boolean).join('\n\n');
 
-    // Agentic tool-use path for registration-capable bots (default ON; REGISTRATION_AGENTIC kill-switch).
-    const useTools = isAgenticEnabled(this.config) && Boolean(registrationContext);
+    // Agentic tool-use path for action-capable bots (default ON; REGISTRATION_AGENTIC kill-switch).
+    // Only tools the bot's capabilities allow are offered; registration is added when the org has
+    // registration products. When any tool is available the classic guardrail path is bypassed.
+    const forwardingEnabled = aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED';
+    const enabledTools: string[] = [];
+    if (forwardingEnabled) {
+      const botCaps = await this.prisma.bot.findUnique({ where: { id: botId }, select: { capabilities: true, commerceStoreId: true } });
+      const capabilities = (botCaps?.capabilities as Record<string, unknown> | null) ?? {};
+      enabledTools.push(...this.actionForwarding.getEnabledActionTools(capabilities, { hasCommerceStore: Boolean(botCaps?.commerceStoreId) }));
+    }
+    if (registrationContext) enabledTools.push('register_for_event');
+    const useTools = isAgenticEnabled(this.config) && enabledTools.length > 0;
 
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
@@ -789,8 +801,10 @@ export class EmailProcessor {
             org_name: orgName,
             system_prompt: effectiveSystemPrompt,
             customer_context: effectiveCustomerContext,
-            action_forwarding_enabled: aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED',
+            action_forwarding_enabled: forwardingEnabled,
             use_tools: useTools,
+            enabled_tools: enabledTools,
+            channel: 'EMAIL',
             conversation_summary: storedConversationSummary ?? null,
             forwarding_status: forwardingResult.status,
             forwarding_reason: forwardingResult.reason,

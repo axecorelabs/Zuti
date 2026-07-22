@@ -25,6 +25,8 @@ class ChatRequest(BaseModel):
     action_forwarding_enabled: bool = False
     conversation_summary: str | None = None
     use_tools: bool = False
+    enabled_tools: list[str] = Field(default_factory=list)
+    channel: str = "TELEGRAM"
     # Legacy operational truth fields — kept for backward compat, no longer used
     forwarding_status: str | None = None
     forwarding_reason: str | None = None
@@ -57,6 +59,7 @@ class ChatResponse(BaseModel):
     collected_fields: dict = Field(default_factory=dict)
     # Agentic tool-use path outputs
     registration_handled: bool = False
+    action_handled: bool = False
     payment_url: str = ""
 
 
@@ -79,6 +82,8 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             action_forwarding_enabled=request.action_forwarding_enabled,
             conversation_summary=request.conversation_summary,
             use_tools=request.use_tools,
+            enabled_tools=request.enabled_tools,
+            channel=request.channel,
             forwarding_status=request.forwarding_status,
             forwarding_reason=request.forwarding_reason,
             action_task_id=request.action_task_id,
@@ -116,6 +121,7 @@ async def chat(request: ChatRequest, x_internal_key: str | None = Header(default
             registration_product_id=chat_meta.get("registration_product_id") or "",
             collected_fields=chat_meta.get("collected_fields") or {},
             registration_handled=bool(chat_meta.get("registration_handled")),
+            action_handled=bool(chat_meta.get("action_handled")),
             payment_url=chat_meta.get("payment_url") or "",
         )
     except Exception as e:

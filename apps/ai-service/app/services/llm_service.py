@@ -46,6 +46,142 @@ REGISTER_FOR_EVENT_TOOL = {
     },
 }
 
+def _contact_props(extra: dict) -> dict:
+    """Common customer contact fields shared by every action tool, plus tool-specific fields."""
+    base = {
+        "customer_name": {"type": "string", "description": "The customer's full name."},
+        "customer_email": {"type": "string", "description": "The customer's email address. Never invent or auto-complete this — ask the customer."},
+        "summary": {"type": "string", "description": "A concise one-line summary of the request, in your own words, for the team."},
+    }
+    base.update(extra)
+    return base
+
+
+BOOK_MEETING_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "book_meeting",
+        "description": (
+            "Submit a meeting / call booking request to the team. Call this ONLY when the customer "
+            "clearly wants to book or schedule a meeting AND you have collected their name, email, "
+            "preferred date/time, and the reason. It creates the real booking and notifies the team. "
+            "Do not claim a meeting is booked unless this tool returns a SUBMITTED outcome."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": _contact_props({
+                "preferred_datetime": {"type": "string", "description": "The customer's preferred date and/or time for the meeting."},
+                "booking_reason": {"type": "string", "description": "What the meeting is about."},
+            }),
+            "required": ["customer_name", "customer_email", "preferred_datetime", "booking_reason"],
+        },
+    },
+}
+
+REQUEST_CONSULTATION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "request_consultation",
+        "description": (
+            "Submit a consultation / demo / specialist follow-up request to the team. Call this ONLY "
+            "when the customer wants a consultation, demo, or onboarding help AND you have their name, "
+            "email, phone, company, and the purpose. Do not claim it is arranged unless this tool "
+            "returns a SUBMITTED outcome."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": _contact_props({
+                "customer_phone": {"type": "string", "description": "The customer's phone number."},
+                "company_name": {"type": "string", "description": "The customer's company or organization name."},
+                "consultation_purpose": {"type": "string", "description": "What the consultation is for."},
+            }),
+            "required": ["customer_name", "customer_email", "customer_phone", "company_name", "consultation_purpose"],
+        },
+    },
+}
+
+CREATE_SALES_ORDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "create_sales_order",
+        "description": (
+            "Submit a sales order / purchase request to the team. Call this ONLY when the customer "
+            "clearly intends to buy or order a specific product AND you have their name, email, and "
+            "the product. Do not claim an order is placed unless this tool returns a SUBMITTED outcome."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": _contact_props({
+                "product": {"type": "string", "description": "The product or item the customer wants to order."},
+                "quantity": {"type": "integer", "description": "How many units. Default 1 if unspecified."},
+                "unit_price": {"type": "string", "description": "The unit price if the customer stated one; otherwise omit."},
+            }),
+            "required": ["customer_name", "customer_email", "product"],
+        },
+    },
+}
+
+LOG_TECHNICAL_ISSUE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "log_technical_issue",
+        "description": (
+            "Submit a technical issue / bug report to the team for follow-up. Call this ONLY when the "
+            "customer describes a specific, concrete technical problem AND you have a clear issue "
+            "summary and their email for follow-up. Do not claim it is resolved — only that it was "
+            "logged — and only when this tool returns a SUBMITTED outcome."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": _contact_props({
+                "issue_summary": {"type": "string", "description": "A clear, specific summary of the technical problem."},
+            }),
+            "required": ["customer_email", "issue_summary"],
+        },
+    },
+}
+
+ESCALATE_TO_HUMAN_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "escalate_to_human",
+        "description": (
+            "Escalate the conversation to a human on the team / the owner. Call this ONLY when the "
+            "customer explicitly asks to speak to a person, the owner, or management, or when the "
+            "request is clearly beyond what you can handle AND you have their name and email so the "
+            "team can reach them. Do not claim a human has responded — only that the team was notified."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": _contact_props({
+                "reason": {"type": "string", "description": "Why the customer needs a human / the owner."},
+            }),
+            "required": ["customer_name", "customer_email", "reason"],
+        },
+    },
+}
+
+# Registry of every tool the agent can be granted, keyed by the tool name the model calls.
+ACTION_TOOL_REGISTRY = {
+    "register_for_event": REGISTER_FOR_EVENT_TOOL,
+    "book_meeting": BOOK_MEETING_TOOL,
+    "request_consultation": REQUEST_CONSULTATION_TOOL,
+    "create_sales_order": CREATE_SALES_ORDER_TOOL,
+    "log_technical_issue": LOG_TECHNICAL_ISSUE_TOOL,
+    "escalate_to_human": ESCALATE_TO_HUMAN_TOOL,
+}
+
+# Tool name → intent action_type, so the agentic path can report a real action_type for analytics
+# (the classic structured path classifies intent; here the fired tool IS the intent).
+TOOL_ACTION_TYPES = {
+    "register_for_event": "REGISTRATION_REQUEST",
+    "book_meeting": "MEETING_REQUEST",
+    "request_consultation": "CONSULTATION_REQUEST",
+    "create_sales_order": "SALES_ORDER_REQUEST",
+    "log_technical_issue": "TECHNICAL_ISSUE",
+    "escalate_to_human": "OWNER_ATTENTION_NEEDED",
+}
+
 # Default model — change to any model slug on https://openrouter.ai/models
 DEFAULT_MODEL = "google/gemini-2.5-flash"
 
@@ -322,33 +458,32 @@ class LlmService:
             "collected_fields": collected_fields,
         }
 
-    async def _execute_register_tool(
-        self, args: dict, org_id: str, bot_id: str, conversation_id: str
+    async def _execute_tool(
+        self, tool_name: str, args: dict, org_id: str, bot_id: str, conversation_id: str, channel: str
     ) -> dict:
-        """Execute the register_for_event tool by calling the NestJS backend, which does the
-        real work (capacity, dedup, entry, payment) and returns a structured result."""
+        """Execute any agent tool by calling the unified NestJS internal endpoint, which does the
+        real work (create the record, queue delivery, run payment for registrations) and returns a
+        structured result. The model composes its reply from that — never from assumption."""
         payload = {
+            "toolName": tool_name,
             "orgId": org_id,
             "botId": bot_id,
             "conversationId": conversation_id,
-            "productId": str(args.get("product_id") or "").strip(),
-            "quantity": int(args.get("quantity") or 1),
-            "customerName": (args.get("customer_name") or None),
-            "customerEmail": (args.get("customer_email") or None),
-            "fields": args.get("fields") if isinstance(args.get("fields"), dict) else {},
+            "channel": channel,
+            "args": args if isinstance(args, dict) else {},
         }
         headers = {"X-Internal-Key": settings.INTERNAL_API_SECRET} if settings.INTERNAL_API_SECRET else {}
-        url = f"{settings.BACKEND_URL.rstrip('/')}/api/internal/registration/register-for-event"
+        url = f"{settings.BACKEND_URL.rstrip('/')}/api/internal/tools/execute"
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code != 200:
-                    logger.warning(f"register_for_event tool HTTP {resp.status_code}: {resp.text[:200]}")
-                    return {"outcome": "ERROR", "message": "The registration system is temporarily unavailable; tell the customer a teammate will follow up."}
+                    logger.warning(f"{tool_name} tool HTTP {resp.status_code}: {resp.text[:200]}")
+                    return {"outcome": "ERROR", "message": "That request could not be submitted right now; tell the customer a teammate will follow up."}
                 return resp.json()
         except Exception as e:
-            logger.warning(f"register_for_event tool call failed: {e}")
-            return {"outcome": "ERROR", "message": "The registration system is temporarily unavailable; tell the customer a teammate will follow up."}
+            logger.warning(f"{tool_name} tool call failed: {e}")
+            return {"outcome": "ERROR", "message": "That request could not be submitted right now; tell the customer a teammate will follow up."}
 
     async def generate_agentic(
         self,
@@ -364,25 +499,41 @@ class LlmService:
         system_prompt_override: str | None = None,
         customer_context: str | None = None,
         conversation_summary: str | None = None,
+        enabled_tools: list[str] | None = None,
+        channel: str = "TELEGRAM",
     ) -> dict[str, Any]:
-        """Tool-use agentic loop: the model chats normally, and when it wants to register a
-        customer it calls the register_for_event tool, receives the REAL result, and composes
-        its reply from that. No post-hoc guardrails — the model can only state tool-confirmed
-        outcomes. Returns {reply, registration_handled, payment_url, should_resolve}."""
+        """Tool-use agentic loop: the model chats normally, and when it wants to take an action
+        (book a meeting, log an order, register a customer, escalate, …) it calls the matching
+        tool, receives the REAL result, and composes its reply from that. No post-hoc guardrails —
+        the model can only state tool-confirmed outcomes. Returns
+        {reply, registration_handled, action_handled, payment_url, should_resolve}."""
         if not settings.OPENROUTER_API_KEY:
-            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "registration_handled": False, "payment_url": "", "should_resolve": False}
+            return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "registration_handled": False, "action_handled": False, "payment_url": "", "should_resolve": False}
+
+        # Only offer tools this bot is actually allowed to use (computed by the backend from
+        # capabilities). Unknown names are ignored defensively.
+        tool_names = [t for t in (enabled_tools or []) if t in ACTION_TOOL_REGISTRY]
+        tools_param = [ACTION_TOOL_REGISTRY[t] for t in tool_names]
 
         base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
-        agent_prompt = (
-            f"{base_prompt}\n\n"
-            "You can register customers for events using the register_for_event tool. "
-            "Collect the required fields (shown per event in the available registrations context) "
-            "conversationally first, then call the tool. Trust the tool's result completely: if it "
-            "returns PENDING_PAYMENT, give the customer the payment link and make clear they are NOT "
-            "registered until they pay; if AT_CAPACITY or ALREADY_REGISTERED, relay that honestly; only "
-            "say a registration is confirmed when the tool says CONFIRMED. Never invent a confirmation, "
-            "payment status, or ticket."
+        tool_guidance = (
+            "\n\nYou have tools to submit certain requests to the team on the customer's behalf. "
+            "Use a tool ONLY when the customer clearly wants that specific action and you have "
+            "collected every required field for it — gather the details conversationally first, then "
+            "call the tool. Trust each tool's result completely and compose your reply from it: if it "
+            "returns SUBMITTED, confirm it was forwarded and the team will follow up; if MISSING_FIELDS, "
+            "ask the customer for exactly the listed fields; if NOT_AVAILABLE or NOT_SUBMITTED, do NOT "
+            "claim anything was submitted. Never invent a confirmation, reference number, ticket, or "
+            "status the tool did not return."
         )
+        if "register_for_event" in tool_names:
+            tool_guidance += (
+                " For event registration specifically: if register_for_event returns PENDING_PAYMENT, "
+                "give the customer the payment link and make clear they are NOT registered until they "
+                "pay; if AT_CAPACITY or ALREADY_REGISTERED, relay that honestly; only say a registration "
+                "is confirmed when the tool says CONFIRMED."
+            )
+        agent_prompt = f"{base_prompt}{tool_guidance}"
 
         messages = self._build_messages(
             user_message=user_message,
@@ -394,22 +545,26 @@ class LlmService:
         )
 
         registration_handled = False
+        action_handled = False
+        action_type = "NONE"
         payment_url = ""
         client = self._client()
 
         # Bounded loop: model → (optional tool call → execute → observe) → final reply.
         for _ in range(4):
+            create_kwargs: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": 0.3,
+                "max_tokens": 1000,
+            }
+            if tools_param:
+                create_kwargs["tools"] = tools_param
             try:
-                resp = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=[REGISTER_FOR_EVENT_TOOL],
-                    temperature=0.3,
-                    max_tokens=1000,
-                )
+                resp = await client.chat.completions.create(**create_kwargs)
             except Exception as e:
                 logger.warning(f"generate_agentic model call failed: {e}")
-                return {"reply": "", "registration_handled": registration_handled, "payment_url": payment_url, "should_resolve": False}
+                return {"reply": "", "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": conversation_summary or ""}
 
             msg = resp.choices[0].message
             tool_calls = getattr(msg, "tool_calls", None)
@@ -418,15 +573,19 @@ class LlmService:
                 reply = (msg.content or "").strip()
                 # Resolution mirrors the classic path: the model emits [RESOLVED] when the
                 # customer's issue is fully handled (base prompt already instructs this). A
-                # completed free registration also counts as resolved. A pending payment never
-                # resolves — the customer still has to pay. chat.py strips the [RESOLVED] tag.
+                # completed action with nothing left pending also counts as resolved. A pending
+                # payment never resolves — the customer still has to pay. chat.py strips the tag.
                 resolved_tag = bool(re.search(r"\[\s*resolved\s*\]", reply, re.IGNORECASE))
-                should_resolve = (resolved_tag or (registration_handled and not payment_url)) and not payment_url
+                should_resolve = (resolved_tag or (action_handled and not payment_url)) and not payment_url
+                new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
                 return {
                     "reply": reply,
                     "registration_handled": registration_handled,
+                    "action_handled": action_handled,
+                    "action_type": action_type,
                     "payment_url": payment_url,
                     "should_resolve": bool(should_resolve),
+                    "conversation_summary": new_summary,
                 }
 
             # Record the assistant's tool-call message, then execute each tool.
@@ -439,15 +598,19 @@ class LlmService:
                 ],
             })
             for tc in tool_calls:
-                if tc.function.name != "register_for_event":
-                    result = {"outcome": "ERROR", "message": "Unknown tool."}
+                name = tc.function.name
+                if name not in ACTION_TOOL_REGISTRY or name not in tool_names:
+                    result = {"outcome": "ERROR", "message": "That tool is not available."}
                 else:
                     try:
                         args = json.loads(tc.function.arguments or "{}")
                     except Exception:
                         args = {}
-                    result = await self._execute_register_tool(args, org_id, bot_id, conversation_id)
-                    registration_handled = True
+                    result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
+                    action_handled = True
+                    action_type = TOOL_ACTION_TYPES.get(name, action_type)
+                    if name == "register_for_event":
+                        registration_handled = True
                     if result.get("payment_url"):
                         payment_url = result["payment_url"]
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps(result)})
@@ -458,7 +621,41 @@ class LlmService:
             reply = (final.choices[0].message.content or "").strip()
         except Exception:
             reply = ""
-        return {"reply": reply, "registration_handled": registration_handled, "payment_url": payment_url, "should_resolve": False}
+        new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
+        return {"reply": reply, "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": new_summary}
+
+    async def _refresh_summary(
+        self, prior_summary: str | None, history: list[dict], user_message: str, reply: str, model: str
+    ) -> str:
+        """Maintain a running conversation summary on the agentic path (the classic structured path
+        refreshes this each turn; the tool loop must too, or long threads lose context beyond the
+        recent-history window). One cheap call; skipped when there is nothing meaningful to summarize."""
+        prior = (prior_summary or "").strip()
+        if not history and not prior:
+            # First trivial turn — nothing to carry forward yet.
+            return prior
+        convo_lines: list[str] = []
+        for h in (history or [])[-8:]:
+            role = h.get("role", "user")
+            content = (h.get("content") or "").strip()
+            if content:
+                convo_lines.append(f"{role}: {content}")
+        convo_lines.append(f"user: {user_message}")
+        if reply:
+            convo_lines.append(f"assistant: {reply}")
+        convo = "\n".join(convo_lines)[:4000]
+        system = (
+            "You maintain a concise running summary of a customer-support conversation. Given the prior "
+            "summary and the latest turns, return an UPDATED summary in 2–4 sentences capturing key facts, "
+            "the customer's requests, and any outcomes (e.g. a booking submitted, an order placed). "
+            "Return ONLY the summary text — no preamble."
+        )
+        user = f"Prior summary:\n{prior or '(none)'}\n\nConversation:\n{convo}\n\nUpdated summary:"
+        try:
+            out = (await self.complete(system, user, max_tokens=180, model=model)).strip()
+            return out or prior
+        except Exception:
+            return prior
 
     async def complete(
         self,

@@ -45,6 +45,8 @@ class RagService:
         action_forwarding_enabled: bool = False,
         conversation_summary: str | None = None,
         use_tools: bool = False,
+        enabled_tools: list[str] | None = None,
+        channel: str = "TELEGRAM",
         # Legacy params kept for API compat — no longer used internally
         forwarding_status: str | None = None,
         forwarding_reason: str | None = None,
@@ -123,14 +125,19 @@ class RagService:
                 system_prompt_override=system_prompt,
                 customer_context=customer_context,
                 conversation_summary=conversation_summary,
+                enabled_tools=enabled_tools,
+                channel=channel,
             )
             reply = result.get("reply") or ""
             chat_meta = {
-                "action_type": "NONE",
+                # The fired tool is the intent; fall back to NONE when no tool ran.
+                "action_type": result.get("action_type") or "NONE",
                 "should_resolve": bool(result.get("should_resolve")),
                 "registration_handled": bool(result.get("registration_handled")),
+                "action_handled": bool(result.get("action_handled")),
                 "payment_url": result.get("payment_url") or "",
-                "conversation_summary": conversation_summary or "",
+                # Refreshed each turn by the agentic loop; falls back to the prior stored summary.
+                "conversation_summary": result.get("conversation_summary") or conversation_summary or "",
             }
         elif action_forwarding_enabled:
             result = await llm_service.generate_structured(

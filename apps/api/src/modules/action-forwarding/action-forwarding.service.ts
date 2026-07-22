@@ -49,6 +49,22 @@ interface InboundActionSignalInput {
   registrationProductId?: string;
   /** Fields the AI already extracted from the conversation (source of truth for registration). */
   aiCollectedFields?: Record<string, string>;
+  /** When true, trust ONLY aiCollectedFields (+ saved draft) and skip regex extraction from
+   *  messageText. Used by the agentic tool path, where the model is authoritative and messageText
+   *  is a synthesized summary that must not leak spurious field values. */
+  aiFieldsAuthoritative?: boolean;
+  /** When true, classify + compute missing fields for prompting but persist NOTHING (no task,
+   *  record, draft, or queue). The keyword pre-check uses this on turns the agentic tool loop will
+   *  handle, so the tool is the single writer and no orphaned draft tasks are created. */
+  classifyOnly?: boolean;
+}
+
+/** Result shape returned to the AI tool-use loop for a non-registration action tool. */
+export interface ActionToolResult {
+  outcome: 'SUBMITTED' | 'ALREADY_SUBMITTED' | 'MISSING_FIELDS' | 'NOT_AVAILABLE' | 'NOT_SUBMITTED' | 'ERROR';
+  message: string;
+  missing_fields?: string[];
+  reference?: string;
 }
 
 type SkillKey = 'SALES' | 'BOOKING' | 'TECHNICAL';
@@ -193,6 +209,44 @@ const ACTION_CONTRACTS: Partial<Record<ActionType, ActionContractDefinition>> = 
     requiredFields: ['customer_name', 'customer_email'],
   },
 };
+
+/** Tool name (exposed to the AI model) → internal action type. */
+const TOOL_TO_ACTION: Record<string, ActionType> = {
+  book_meeting: 'MEETING_REQUEST',
+  request_consultation: 'CONSULTATION_REQUEST',
+  create_sales_order: 'SALES_ORDER_REQUEST',
+  log_technical_issue: 'TECHNICAL_ISSUE',
+  escalate_to_human: 'OWNER_ATTENTION_NEEDED',
+};
+
+/** Human-facing label for each action, used to word the tool result the model composes from. */
+const ACTION_LABELS: Record<ActionType, string> = {
+  MEETING_REQUEST: 'meeting request',
+  CONSULTATION_REQUEST: 'consultation request',
+  SALES_ORDER_REQUEST: 'order request',
+  TECHNICAL_ISSUE: 'technical issue report',
+  OWNER_ATTENTION_NEEDED: 'request for the team',
+  REGISTRATION_REQUEST: 'registration',
+};
+
+/** Build a short internal summary (used as the action's messageText) from the model's structured args. */
+function synthesizeToolSummary(actionType: ActionType, fields: Record<string, string>): string {
+  const who = fields.customer_name ? ` from ${fields.customer_name}` : '';
+  switch (actionType) {
+    case 'MEETING_REQUEST':
+      return `Meeting request${who}${fields.preferred_datetime ? ` for ${fields.preferred_datetime}` : ''}${fields.booking_reason ? `: ${fields.booking_reason}` : ''}`.trim();
+    case 'CONSULTATION_REQUEST':
+      return `Consultation request${who}${fields.consultation_purpose ? `: ${fields.consultation_purpose}` : ''}`.trim();
+    case 'SALES_ORDER_REQUEST':
+      return `Order request${who}${fields.product ? ` for ${fields.product}` : ''}${fields.quantity ? ` x${fields.quantity}` : ''}`.trim();
+    case 'TECHNICAL_ISSUE':
+      return (fields.issue_summary || `Technical issue reported${who}`).trim();
+    case 'OWNER_ATTENTION_NEEDED':
+      return `Customer${who} asked for the team/owner's attention`.trim();
+    default:
+      return `Request${who}`.trim();
+  }
+}
 
 function normalizeFieldKey(value: string): string {
   return value
@@ -1354,13 +1408,19 @@ export class ActionForwardingService {
         }
       }
 
+      // When the AI is authoritative (agentic tool path), trust only the saved draft + the model's
+      // fields; skip regex extraction so a synthesized summary can't fill a field the model omitted.
+      const regexExtracted = input.aiFieldsAuthoritative
+        ? {}
+        : Object.fromEntries(
+            Object.entries(extracted)
+              .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
+              .map(([key, value]) => [key, value!.trim()]),
+          );
+
       collectedFields = {
         ...normalizedPrevious,
-        ...Object.fromEntries(
-          Object.entries(extracted)
-            .filter(([, value]) => typeof value === 'string' && value.trim().length > 0)
-            .map(([key, value]) => [key, value!.trim()]),
-        ),
+        ...regexExtracted,
         ...aiCollected,
       };
 
@@ -1376,12 +1436,15 @@ export class ActionForwardingService {
         ...correctness.invalidFields,
       ]));
 
-      await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
-        status: missingOrInvalidFields.length > 0 ? 'COLLECTING' : 'READY',
-        requiredFields: requiredFieldKeys,
-        missingFields: missingOrInvalidFields,
-        collected: collectedFields,
-      });
+      // Skip the draft write in classify-only mode — the agentic tool loop owns all persistence.
+      if (!input.classifyOnly) {
+        await this.updateConversationContractDraft(input.conversationId, detected.actionType, {
+          status: missingOrInvalidFields.length > 0 ? 'COLLECTING' : 'READY',
+          requiredFields: requiredFieldKeys,
+          missingFields: missingOrInvalidFields,
+          collected: collectedFields,
+        });
+      }
 
       if (missingOrInvalidFields.length > 0) {
         followUpMissingFields = Array.from(new Set([...followUpMissingFields, ...missingOrInvalidFields]));
@@ -1392,6 +1455,19 @@ export class ActionForwardingService {
           followUpMissingFields.push('customer_email');
         }
       }
+    }
+
+    // Classify-only: intent + capability + missing fields are known; persist nothing. Returned as
+    // NO_INTENT so the truthful operational state is "nothing done yet" — the agentic tool loop does
+    // the real work this turn, and the classic path (when it runs) creates the task via its re-queue.
+    if (input.classifyOnly) {
+      return this.buildForwardingResult({
+        status: 'NO_INTENT',
+        reason: 'NO_ACTIONABLE_INTENT',
+        actionType: detected.actionType,
+        capabilityKey,
+        missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
+      });
     }
 
     const activeStatuses = [
@@ -1823,7 +1899,9 @@ export class ActionForwardingService {
         orgId: input.organizationId,
         botId: input.botId,
         conversationId: input.conversationId,
-        sourceMessageId: input.messageId,
+        // sourceMessageId is a nullable FK — tool-driven actions may not carry a real inbound
+        // message id, so coerce an empty value to null rather than violate the constraint.
+        sourceMessageId: input.messageId && input.messageId.length > 0 ? input.messageId : null,
         actionType: detected.actionType,
         status: followUpMissingFields.length > 0
           ? 'PENDING_CONFIRMATION'
@@ -2142,6 +2220,170 @@ export class ActionForwardingService {
       };
     }
     return finalResult;
+  }
+
+  /**
+   * Which action tools (by their public tool name) this bot is allowed to use, derived from its
+   * capabilities. Mirrors the capability gate in detectAndQueue so the model is only offered tools
+   * it can actually complete. Registration (`register_for_event`) is handled separately by the
+   * caller, since its availability depends on whether the org has registration products.
+   */
+  getEnabledActionTools(capabilities: Record<string, unknown>, opts?: { hasCommerceStore?: boolean }): string[] {
+    const tools: string[] = [];
+    for (const [toolName, actionType] of Object.entries(TOOL_TO_ACTION)) {
+      // Commerce-store bots have a dedicated checkout that owns orders — don't also offer the
+      // conversational sales-order tool, or the model could create a parallel order task.
+      if (toolName === 'create_sales_order' && opts?.hasCommerceStore) continue;
+      if (this.isActionEnabledByCapabilities(actionType, capabilities)) tools.push(toolName);
+    }
+    return tools;
+  }
+
+  /**
+   * Execute a non-registration action tool invoked by the AI agent loop. Reuses detectAndQueue —
+   * the same proven path that creates the domain record (booking/lead/order/issue/escalation),
+   * queues delivery, and notifies the team — by injecting the model-collected fields as the source
+   * of truth. Returns a structured result the model composes its reply from.
+   */
+  async executeActionTool(params: {
+    toolName: string;
+    orgId: string;
+    botId: string;
+    conversationId: string;
+    channel?: RuntimeChannel;
+    args: Record<string, unknown>;
+  }): Promise<ActionToolResult> {
+    const actionType = TOOL_TO_ACTION[params.toolName];
+    if (!actionType) return { outcome: 'ERROR', message: 'Unknown tool.' };
+
+    const args = params.args ?? {};
+    const fields: Record<string, string> = {};
+    const put = (key: string, value: unknown) => {
+      if (typeof value === 'string' && value.trim().length > 0) fields[normalizeFieldKey(key)] = value.trim();
+      else if (typeof value === 'number' && Number.isFinite(value)) fields[normalizeFieldKey(key)] = String(value);
+    };
+
+    // Standard contact fields.
+    put('customer_name', args.customer_name);
+    put('customer_email', args.customer_email);
+    put('customer_phone', args.customer_phone);
+    // Action-specific fields (accept a couple of natural aliases the model may use).
+    put('preferred_datetime', args.preferred_datetime);
+    put('booking_reason', args.booking_reason ?? args.reason);
+    put('company_name', args.company_name);
+    put('consultation_purpose', args.consultation_purpose ?? args.purpose);
+    put('product', args.product);
+    put('quantity', args.quantity);
+    put('unit_price', args.unit_price);
+    put('issue_summary', args.issue_summary ?? args.summary);
+    // Any additional custom intake fields the model gathered, keyed by their exact field key.
+    if (args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields)) {
+      for (const [key, value] of Object.entries(args.fields as Record<string, unknown>)) put(key, value);
+    }
+
+    const summary =
+      typeof args.summary === 'string' && args.summary.trim().length > 0
+        ? args.summary.trim()
+        : synthesizeToolSummary(actionType, fields);
+
+    // Pull the recent thread once: the newest message id anchors sourceMessageId (nullable FK), and
+    // the last several turns become the record's detail context (e.g. a technical issue's full
+    // details), so the team sees more than the model's one-line summary.
+    const recentMessages = await this.prisma.message.findMany({
+      where: { conversationId: params.conversationId },
+      orderBy: { createdAt: 'desc' },
+      take: 12,
+      select: { id: true, role: true, content: true },
+    });
+    const latestMessageId = recentMessages[0]?.id ?? '';
+    const conversationContext = recentMessages
+      .slice()
+      .reverse()
+      .map((m) => `${String(m.role).toLowerCase()}: ${(m.content ?? '').trim()}`)
+      .filter((line) => line.length > 6)
+      .join('\n')
+      .slice(0, 4000) || summary;
+
+    let result: ActionForwardingResult;
+    try {
+      result = await this.detectAndQueue(
+        {
+          organizationId: params.orgId,
+          botId: params.botId,
+          conversationId: params.conversationId,
+          messageId: latestMessageId,
+          messageText: summary,
+          channel: params.channel ?? 'TELEGRAM',
+          customerName: fields.customer_name ?? null,
+          customerEmail: fields.customer_email ?? null,
+          actionForwardingEnabled: true,
+          skipAiClassification: true,
+          conversationContext,
+          aiCollectedFields: fields,
+          aiFieldsAuthoritative: true,
+        },
+        { actionType, confidence: 0.95, summary },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`executeActionTool(${params.toolName}) failed: ${msg}`);
+      return { outcome: 'ERROR', message: 'That request could not be submitted right now; tell the customer a teammate will follow up.' };
+    }
+
+    return this.mapActionResultToToolOutcome(actionType, result);
+  }
+
+  private mapActionResultToToolOutcome(actionType: ActionType, result: ActionForwardingResult): ActionToolResult {
+    const label = ACTION_LABELS[actionType] ?? 'request';
+
+    if (
+      result.reason === 'FORWARDING_DISABLED' ||
+      result.reason === 'SKILL_NOT_ENABLED' ||
+      result.reason === 'EXECUTOR_DISABLED' ||
+      result.reason === 'CHANNEL_NOT_ALLOWED'
+    ) {
+      return {
+        outcome: 'NOT_AVAILABLE',
+        message: `This assistant can't submit a ${label} on this channel. Help the customer another way or let them know a teammate will follow up — do not claim it was submitted.`,
+      };
+    }
+
+    if (result.missingFields && result.missingFields.length > 0) {
+      return {
+        outcome: 'MISSING_FIELDS',
+        missing_fields: result.missingFields,
+        message: `Before the ${label} can be submitted, these details are still needed: ${result.missingFields.join(', ')}. Ask the customer for them — do not say it was submitted yet.`,
+      };
+    }
+
+    if (result.status === 'QUEUED') {
+      return {
+        outcome: 'SUBMITTED',
+        reference: result.actionTaskId,
+        message: `The ${label} was submitted to the team successfully. Confirm to the customer that it has been forwarded and someone will follow up.`,
+      };
+    }
+
+    if (result.status === 'DUPLICATE') {
+      return {
+        outcome: 'ALREADY_SUBMITTED',
+        reference: result.actionTaskId,
+        message: `This ${label} was already submitted for this customer. Reassure them it is in progress — do not create a duplicate.`,
+      };
+    }
+
+    if (result.status === 'NO_INTENT') {
+      return {
+        outcome: 'NOT_SUBMITTED',
+        message: `The ${label} was not submitted (no actionable request was detected). Continue helping the customer normally and do not claim anything was forwarded.`,
+      };
+    }
+
+    return {
+      outcome: 'SUBMITTED',
+      reference: result.actionTaskId,
+      message: `The ${label} was submitted.`,
+    };
   }
 
   async handleInboundDeliveryEvent(input: {
