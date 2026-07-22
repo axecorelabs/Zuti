@@ -10,7 +10,11 @@ type GroundingParams = {
   maxProducts?: number;
 };
 
-function isSalesSpecialist(aiConfig: RawConfig): boolean {
+function shouldGroundCommerce(aiConfig: RawConfig): boolean {
+  // ECOMMERCE-template bots are sales-first and must know the catalog to quote prices/stock and
+  // place orders (their unit price flows into the commerce order + payment link).
+  if (aiConfig?.guidedPreset === 'ecommerce') return true;
+  // SALES specialists (mode=SPECIALIST, skill=SALES) also sell from the catalog.
   const profile = aiConfig?.specialistProfile;
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return false;
   const mode = (profile as Record<string, unknown>).mode;
@@ -81,7 +85,7 @@ export async function buildCommerceGroundingContextBlock({
   userText,
   maxProducts = 5,
 }: GroundingParams): Promise<string | null> {
-  if (!isSalesSpecialist(aiConfig)) return null;
+  if (!shouldGroundCommerce(aiConfig)) return null;
 
   const products = await prisma.commerceProduct.findMany({
     where: {

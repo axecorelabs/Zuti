@@ -2227,13 +2227,14 @@ export class ActionForwardingService {
    * capabilities. Mirrors the capability gate in detectAndQueue so the model is only offered tools
    * it can actually complete. Registration (`register_for_event`) is handled separately by the
    * caller, since its availability depends on whether the org has registration products.
+   *
+   * NOTE: `create_sales_order` IS offered to commerce-store bots — for those bots it's the checkout:
+   * the resulting sales-order task is bridged to a CommerceOrder + Paystack payment link
+   * (bridgeToCommerceOrder), which is idempotent. Excluding it here disabled conversational ordering.
    */
-  getEnabledActionTools(capabilities: Record<string, unknown>, opts?: { hasCommerceStore?: boolean }): string[] {
+  getEnabledActionTools(capabilities: Record<string, unknown>, _opts?: { hasCommerceStore?: boolean }): string[] {
     const tools: string[] = [];
     for (const [toolName, actionType] of Object.entries(TOOL_TO_ACTION)) {
-      // Commerce-store bots have a dedicated checkout that owns orders — don't also offer the
-      // conversational sales-order tool, or the model could create a parallel order task.
-      if (toolName === 'create_sales_order' && opts?.hasCommerceStore) continue;
       if (this.isActionEnabledByCapabilities(actionType, capabilities)) tools.push(toolName);
     }
     return tools;
