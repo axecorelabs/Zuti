@@ -416,12 +416,17 @@ class LlmService:
 
             if not tool_calls:
                 reply = (msg.content or "").strip()
+                # Resolution mirrors the classic path: the model emits [RESOLVED] when the
+                # customer's issue is fully handled (base prompt already instructs this). A
+                # completed free registration also counts as resolved. A pending payment never
+                # resolves — the customer still has to pay. chat.py strips the [RESOLVED] tag.
+                resolved_tag = bool(re.search(r"\[\s*resolved\s*\]", reply, re.IGNORECASE))
+                should_resolve = (resolved_tag or (registration_handled and not payment_url)) and not payment_url
                 return {
                     "reply": reply,
                     "registration_handled": registration_handled,
                     "payment_url": payment_url,
-                    # A pending payment means the flow is not resolved.
-                    "should_resolve": bool(registration_handled and not payment_url),
+                    "should_resolve": bool(should_resolve),
                 }
 
             # Record the assistant's tool-call message, then execute each tool.
