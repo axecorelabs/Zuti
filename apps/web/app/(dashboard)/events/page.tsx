@@ -6,6 +6,9 @@ import {
   CalendarDays, DollarSign, Tag, CheckCircle, XCircle,
   Clock, RefreshCw, X, AlertCircle,
 } from 'lucide-react';
+import {
+  AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
+} from 'recharts';
 import toast from 'react-hot-toast';
 import { registrationsApi, botsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
@@ -48,6 +51,7 @@ interface RegistrationEntry {
   collectedFields: Record<string, string>;
   status: 'PENDING_PAYMENT' | 'AWAITING_APPROVAL' | 'CONFIRMED' | 'CANCELLED';
   quantity?: number;
+  amountMinor?: number | null;
   paystackReference: string | null;
   paidAt: string | null;
   createdAt: string;
@@ -68,6 +72,144 @@ const STATUS_CLASS: Record<string, string> = {
   CONFIRMED: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/20',
   CANCELLED: 'bg-zinc-800 text-zinc-500 border-zinc-700',
 };
+
+const STATUS_COLORS: Record<string, string> = {
+  CONFIRMED: '#10b981',
+  PENDING_PAYMENT: '#f59e0b',
+  AWAITING_APPROVAL: '#3b82f6',
+  CANCELLED: '#71717a',
+};
+
+// ── Stats + charts (shown above the attendees list) ───────────────────────────
+
+function ChartTooltip({ active, payload, label, suffix }: any) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0];
+  return (
+    <div className="rounded-lg border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-xs shadow-lg">
+      {label ? <p className="text-zinc-500 mb-0.5">{label}</p> : null}
+      <p className="text-white font-medium">
+        {p.name ? `${p.name}: ` : ''}{p.value}{suffix ?? ''}
+      </p>
+    </div>
+  );
+}
+
+function EventStats({ product, entries }: { product: RegistrationProduct; entries: RegistrationEntry[] }) {
+  const qty = (e: RegistrationEntry) => e.quantity ?? 1;
+  // Use the amount actually stored on the entry (captures price at registration time); fall back to
+  // unit price × quantity for legacy entries with no stored amount.
+  const amt = (e: RegistrationEntry) => (e.amountMinor && e.amountMinor > 0 ? e.amountMinor : (product.priceMinor ?? 0) * qty(e));
+
+  const confirmed = entries.filter((e) => e.status === 'CONFIRMED');
+  const pending = entries.filter((e) => e.status === 'PENDING_PAYMENT');
+  const awaiting = entries.filter((e) => e.status === 'AWAITING_APPROVAL');
+  const active = entries.filter((e) => e.status !== 'CANCELLED');
+
+  const revenue = confirmed.reduce((s, e) => s + amt(e), 0) / 100;
+  const pendingRevenue = pending.reduce((s, e) => s + amt(e), 0) / 100;
+  const ticketsSold = confirmed.reduce((s, e) => s + qty(e), 0);
+  const ticketsActive = active.reduce((s, e) => s + qty(e), 0);
+  const decided = confirmed.length + pending.length;
+  const paidRate = decided > 0 ? Math.round((confirmed.length / decided) * 100) : 0;
+  const capacityPct = product.capacity ? Math.min(100, Math.round((ticketsActive / product.capacity) * 100)) : null;
+  const money = (n: number) => `${product.currency} ${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+
+  // Cumulative tickets over time (non-cancelled), one point per registration day.
+  const byDay = new Map<string, number>();
+  [...active].sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt)).forEach((e) => {
+    const d = new Date(e.createdAt);
+    const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    byDay.set(key, (byDay.get(key) ?? 0) + qty(e));
+  });
+  let cum = 0;
+  const timeData = Array.from(byDay.entries()).map(([key, n]) => {
+    cum += n;
+    const [y, m, dd] = key.split('-').map(Number);
+    return { label: new Date(y, m, dd).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), tickets: cum };
+  });
+
+  const statusData = [
+    { name: 'Confirmed', value: confirmed.length, color: STATUS_COLORS.CONFIRMED },
+    { name: 'Pending', value: pending.length, color: STATUS_COLORS.PENDING_PAYMENT },
+    { name: 'Awaiting', value: awaiting.length, color: STATUS_COLORS.AWAITING_APPROVAL },
+    { name: 'Cancelled', value: entries.length - active.length, color: STATUS_COLORS.CANCELLED },
+  ].filter((s) => s.value > 0);
+
+  const cards: { label: string; value: string; sub: string }[] = [
+    product.isFree
+      ? { label: 'Revenue', value: 'Free', sub: 'No charge' }
+      : { label: 'Revenue', value: money(revenue), sub: pendingRevenue > 0 ? `${money(pendingRevenue)} pending` : `${ticketsSold} paid ticket${ticketsSold === 1 ? '' : 's'}` },
+    { label: product.isFree ? 'Tickets' : 'Tickets sold', value: String(product.isFree ? ticketsActive : ticketsSold), sub: product.capacity ? `${Math.max(0, product.capacity - ticketsActive)} left` : `${entries.length} registrant${entries.length === 1 ? '' : 's'}` },
+    { label: 'Registrants', value: String(entries.length), sub: `${confirmed.length} confirmed` },
+    product.capacity
+      ? { label: 'Capacity filled', value: `${capacityPct}%`, sub: `${ticketsActive}/${product.capacity} spots` }
+      : product.isFree
+        ? { label: 'Awaiting approval', value: String(awaiting.length), sub: awaiting.length ? 'needs review' : 'all clear' }
+        : { label: 'Paid rate', value: `${paidRate}%`, sub: `${pending.length} pending` },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {cards.map((c) => (
+          <div key={c.label} className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+            <p className="text-[11px] text-zinc-500 font-medium">{c.label}</p>
+            <p className="text-lg font-semibold text-white mt-1 tracking-tight truncate">{c.value}</p>
+            <p className="text-[11px] text-zinc-600 mt-0.5 truncate">{c.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+          <p className="text-xs font-medium text-zinc-400 mb-3">Registrations over time</p>
+          <ResponsiveContainer width="100%" height={168}>
+            <AreaChart data={timeData} margin={{ top: 4, right: 8, left: -18, bottom: 0 }}>
+              <defs>
+                <linearGradient id="regGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#818cf8" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#818cf8" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <XAxis dataKey="label" tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} />
+              <YAxis allowDecimals={false} tick={{ fill: '#71717a', fontSize: 11 }} axisLine={false} tickLine={false} width={28} />
+              <Tooltip content={<ChartTooltip suffix=" tickets" />} cursor={{ stroke: '#3f3f46' }} />
+              <Area type="monotone" dataKey="tickets" stroke="#818cf8" strokeWidth={2} fill="url(#regGrad)" />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+          <p className="text-xs font-medium text-zinc-400 mb-3">Status breakdown</p>
+          <div className="flex items-center gap-3">
+            <div className="w-[140px] h-[168px] shrink-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={statusData} dataKey="value" nameKey="name" innerRadius={40} outerRadius={64} paddingAngle={2} stroke="none">
+                    {statusData.map((s) => <Cell key={s.name} fill={s.color} />)}
+                  </Pie>
+                  <Tooltip content={<ChartTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex-1 space-y-1.5 min-w-0">
+              {statusData.map((s) => (
+                <div key={s.name} className="flex items-center justify-between text-xs gap-2">
+                  <span className="flex items-center gap-2 text-zinc-400 truncate">
+                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: s.color }} />
+                    {s.name}
+                  </span>
+                  <span className="text-zinc-300 font-medium shrink-0">{s.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ── CSV helper ────────────────────────────────────────────────────────────────
 
@@ -886,7 +1028,11 @@ export default function EventsPage() {
                 <p className="text-xs text-zinc-600 mt-1">When customers register via a bot they&apos;ll appear here</p>
               </div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="space-y-6">
+                <EventStats product={selectedProduct} entries={entries} />
+                <div>
+                  <p className="text-xs font-medium text-zinc-500 mb-2">Attendees</p>
+                  <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-zinc-800">
@@ -973,6 +1119,8 @@ export default function EventsPage() {
                     ))}
                   </tbody>
                 </table>
+                  </div>
+                </div>
               </div>
             )}
           </div>
