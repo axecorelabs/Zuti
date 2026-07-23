@@ -147,9 +147,11 @@ export async function buildCommerceGroundingContextBlock({
   const selected = (matched.length > 0 ? matched : ranked).slice(0, Math.max(1, Math.min(maxProducts, 6)));
 
   const lines: string[] = [
-    'Commerce Grounding (authoritative):',
-    '- Use only catalog facts below for concrete product/price/stock claims.',
-    '- If information is missing here, explicitly say you cannot confirm yet and ask a focused follow-up question.',
+    'Commerce Grounding (authoritative) — this IS your product catalog; answer product, price, and',
+    'stock questions directly from it (you do NOT need to search elsewhere for these):',
+    '- Use only the catalog facts below for concrete product/price/stock claims.',
+    '- When placing an order, pass the exact numeric unit_price shown for the chosen variant (no currency symbol).',
+    '- If something is missing here, say you cannot confirm it yet and ask a focused follow-up question.',
   ];
 
   for (const { product, score } of selected) {
@@ -179,8 +181,12 @@ export async function buildCommerceGroundingContextBlock({
         .map((level) => `${level.locationName}(${level.locationCode}):${level.available}`)
         .join(', ');
 
+      // Show the human-facing price (major units), NOT price_minor — the AI passes this value as the
+      // order's unit price, so exposing kobo/cents caused a 100x overcharge. No thousands separator,
+      // so it parses cleanly when passed to the order tool.
+      const priceMajor = (variant.priceMinor / 100).toFixed(2);
       lines.push(
-        `  variant: sku=${variant.sku}; title=${variant.title ?? 'n/a'}; price_minor=${variant.priceMinor}; total_available=${totalAvailable}; by_location=${topLocations || 'n/a'}`,
+        `  variant: sku=${variant.sku}; title=${variant.title ?? 'n/a'}; unit_price=${priceMajor} (${product.store.currency}); total_available=${totalAvailable}; by_location=${topLocations || 'n/a'}`,
       );
     }
   }

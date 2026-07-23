@@ -635,19 +635,20 @@ class LlmService:
         tool_guidance = ""
         if knowledge_search is not None:
             tool_guidance += (
-                "\n\nGROUNDING — this is critical. For ANY question about the company, its products, "
-                "pricing, policies, features, or any specific fact, you MUST answer only from grounded "
-                "sources: the approved response templates provided in your context (if one matches the "
-                "topic, use it) and the passages returned by search_knowledge. Call search_knowledge "
-                "before answering such a question unless an approved template already covers it. Never "
-                "answer from your own general knowledge. If neither an approved template nor "
-                "search_knowledge covers it (NO_STRONG_MATCH or EMPTY), briefly tell the customer you "
-                "don't have that information and offer to connect them with the team — do NOT guess, "
-                "approximate, or invent details (no made-up prices, policies, dates, or features). It is "
-                "always better to say you don't know than to state something that might be wrong. When "
-                "you can't answer a genuine, on-topic question this way, also call report_knowledge_gap "
-                "so the team can add the missing content (it runs silently — still give your reply). "
-                "General chit-chat, greetings, and clarifying questions need neither a search nor a gap."
+                "\n\nGROUNDING — this is critical. Answer questions about the company, its products, "
+                "pricing, policies, features, events, or any specific fact ONLY from grounded sources: "
+                "(a) the AUTHORITATIVE CONTEXT already provided to you this turn — this may include a "
+                "product catalog with prices and stock, event/registration options, and approved reply "
+                "templates — and (b) passages returned by the search_knowledge tool. IMPORTANT: if your "
+                "provided context already contains the answer (e.g. a product's price or stock, an "
+                "event's details), USE IT DIRECTLY and confidently — do not say you lack the information "
+                "and do not call search_knowledge for it. Only call search_knowledge for factual "
+                "questions your provided context does NOT cover. Never answer product/price/policy "
+                "questions from your own general knowledge. If neither your provided context nor "
+                "search_knowledge covers it, briefly say you don't have that information and offer to "
+                "connect the customer with the team — do NOT guess or invent prices, policies, dates, or "
+                "availability, and in that case also call report_knowledge_gap (it runs silently — still "
+                "give your reply). General chit-chat and greetings need no grounding."
             )
         if action_tool_names:
             tool_guidance += (

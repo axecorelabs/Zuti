@@ -2331,10 +2331,19 @@ export class ActionForwardingService {
       return { outcome: 'ERROR', message: 'That request could not be submitted right now; tell the customer a teammate will follow up.' };
     }
 
-    return this.mapActionResultToToolOutcome(actionType, result);
+    // For a sales order on a commerce-connected bot, the queued task is bridged to a CommerceOrder +
+    // Paystack payment link (sent to the customer over the channel) — so the confirmation wording
+    // should promise a payment link, not a human follow-up.
+    const commerceOrder = actionType === 'SALES_ORDER_REQUEST'
+      ? await this.prisma.bot.findUnique({ where: { id: params.botId }, select: { commerceStoreId: true } })
+          .then((b) => Boolean(b?.commerceStoreId))
+          .catch(() => false)
+      : false;
+
+    return this.mapActionResultToToolOutcome(actionType, result, { commerceOrder });
   }
 
-  private mapActionResultToToolOutcome(actionType: ActionType, result: ActionForwardingResult): ActionToolResult {
+  private mapActionResultToToolOutcome(actionType: ActionType, result: ActionForwardingResult, opts?: { commerceOrder?: boolean }): ActionToolResult {
     const label = ACTION_LABELS[actionType] ?? 'request';
 
     if (
@@ -2358,6 +2367,13 @@ export class ActionForwardingService {
     }
 
     if (result.status === 'QUEUED') {
+      if (actionType === 'SALES_ORDER_REQUEST' && opts?.commerceOrder) {
+        return {
+          outcome: 'SUBMITTED',
+          reference: result.actionTaskId,
+          message: 'The order was captured and is being set up. A secure payment link is being sent to the customer in this chat to complete checkout — tell them to expect it shortly, and that the order is confirmed once payment is made. Do NOT say a teammate will follow up.',
+        };
+      }
       return {
         outcome: 'SUBMITTED',
         reference: result.actionTaskId,
