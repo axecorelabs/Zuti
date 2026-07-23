@@ -5,6 +5,7 @@ type RawConfig = Record<string, unknown> | null | undefined;
 type GroundingParams = {
   prisma: PrismaClient;
   organizationId: string;
+  botId?: string;
   aiConfig: RawConfig;
   userText: string;
   maxProducts?: number;
@@ -81,19 +82,27 @@ function scoreProduct(
 export async function buildCommerceGroundingContextBlock({
   prisma,
   organizationId,
+  botId,
   aiConfig,
   userText,
   maxProducts = 5,
 }: GroundingParams): Promise<string | null> {
-  if (!shouldGroundCommerce(aiConfig)) return null;
+  // The most reliable "this bot sells" signal is a linked commerce store — guidedPreset /
+  // specialistProfile can be edited away (e.g. flipped to 'Custom'). Scope grounding to that store's
+  // catalog. Fall back to the config signal for sales bots that aren't linked to a specific store.
+  let storeId: string | null = null;
+  if (botId) {
+    const bot = await prisma.bot.findUnique({ where: { id: botId }, select: { commerceStoreId: true } });
+    storeId = bot?.commerceStoreId ?? null;
+  }
+  if (!storeId && !shouldGroundCommerce(aiConfig)) return null;
 
   const products = await prisma.commerceProduct.findMany({
     where: {
       isActive: true,
-      store: {
-        organizationId,
-        isActive: true,
-      },
+      ...(storeId
+        ? { storeId }
+        : { store: { organizationId, isActive: true } }),
     },
     include: {
       store: {
@@ -150,7 +159,9 @@ export async function buildCommerceGroundingContextBlock({
     'Commerce Grounding (authoritative) — this IS your product catalog; answer product, price, and',
     'stock questions directly from it (you do NOT need to search elsewhere for these):',
     '- Use only the catalog facts below for concrete product/price/stock claims.',
-    '- When placing an order, pass the exact numeric unit_price shown for the chosen variant (no currency symbol).',
+    '- To place an order, pass the chosen variant_id to the order tool (create_sales_order). The price is',
+    '  taken from the catalog automatically — do NOT type the price yourself.',
+    '- You can also call search_products to look up more items or refine a search.',
     '- If something is missing here, say you cannot confirm it yet and ask a focused follow-up question.',
   ];
 
@@ -186,7 +197,7 @@ export async function buildCommerceGroundingContextBlock({
       // so it parses cleanly when passed to the order tool.
       const priceMajor = (variant.priceMinor / 100).toFixed(2);
       lines.push(
-        `  variant: sku=${variant.sku}; title=${variant.title ?? 'n/a'}; unit_price=${priceMajor} (${product.store.currency}); total_available=${totalAvailable}; by_location=${topLocations || 'n/a'}`,
+        `  variant: variant_id=${variant.id}; sku=${variant.sku}; title=${variant.title ?? 'n/a'}; unit_price=${priceMajor} (${product.store.currency}); total_available=${totalAvailable}; by_location=${topLocations || 'n/a'}`,
       );
     }
   }

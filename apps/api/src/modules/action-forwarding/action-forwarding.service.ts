@@ -61,7 +61,7 @@ interface InboundActionSignalInput {
 
 /** Result shape returned to the AI tool-use loop for a non-registration action tool. */
 export interface ActionToolResult {
-  outcome: 'SUBMITTED' | 'ALREADY_SUBMITTED' | 'MISSING_FIELDS' | 'NOT_AVAILABLE' | 'NOT_SUBMITTED' | 'ERROR';
+  outcome: 'SUBMITTED' | 'ALREADY_SUBMITTED' | 'MISSING_FIELDS' | 'NOT_AVAILABLE' | 'NOT_SUBMITTED' | 'ERROR' | 'NEEDS_CHOICE' | 'NOT_FOUND';
   message: string;
   missing_fields?: string[];
   reference?: string;
@@ -1664,6 +1664,7 @@ export class ActionForwardingService {
                   customFields,
                   customFieldVersion: customContract.version,
                   followUpMissingFields: currentFollowUpMissingFields,
+                  ...(collectedFields.variant_id ? { variantId: collectedFields.variant_id } : {}),
                 },
               },
             });
@@ -1946,6 +1947,9 @@ export class ActionForwardingService {
             customFields,
             customFieldVersion: customContract.version,
             followUpMissingFields,
+            // Resolved catalog variant (set by executeActionTool for store orders) — the bridge links
+            // the CommerceOrder line to this exact SKU.
+            ...(collectedFields.variant_id ? { variantId: collectedFields.variant_id } : {}),
           },
         },
       });
@@ -2232,11 +2236,13 @@ export class ActionForwardingService {
    * the resulting sales-order task is bridged to a CommerceOrder + Paystack payment link
    * (bridgeToCommerceOrder), which is idempotent. Excluding it here disabled conversational ordering.
    */
-  getEnabledActionTools(capabilities: Record<string, unknown>, _opts?: { hasCommerceStore?: boolean }): string[] {
+  getEnabledActionTools(capabilities: Record<string, unknown>, opts?: { hasCommerceStore?: boolean }): string[] {
     const tools: string[] = [];
     for (const [toolName, actionType] of Object.entries(TOOL_TO_ACTION)) {
       if (this.isActionEnabledByCapabilities(actionType, capabilities)) tools.push(toolName);
     }
+    // Commerce-store bots get the catalog lookup tool; they order by variant_id (see executeActionTool).
+    if (opts?.hasCommerceStore) tools.push('search_products');
     return tools;
   }
 
@@ -2280,6 +2286,61 @@ export class ActionForwardingService {
     // Any additional custom intake fields the model gathered, keyed by their exact field key.
     if (args.fields && typeof args.fields === 'object' && !Array.isArray(args.fields)) {
       for (const [key, value] of Object.entries(args.fields as Record<string, unknown>)) put(key, value);
+    }
+
+    // Variant-based ordering: if the model passed a catalog variant_id, the PRICE and product name
+    // come authoritatively from the catalog — never from a model-typed number. This is what makes
+    // commerce orders correct by construction (kills the mistyped/100x-price class of bug).
+    const variantId = typeof args.variant_id === 'string' ? args.variant_id.trim() : '';
+    let commerceStoreBot = false;
+    if (actionType === 'SALES_ORDER_REQUEST') {
+      const bot = await this.prisma.bot.findUnique({ where: { id: params.botId }, select: { commerceStoreId: true } });
+      const storeId = bot?.commerceStoreId ?? null;
+      commerceStoreBot = Boolean(storeId);
+      const prismaAny = this.prisma as any;
+
+      // Resolve the order line to a real catalog variant so the PRICE is always catalog-owned (never a
+      // model-typed number). Prefer an exact variant_id; otherwise match the product name within the
+      // bot's store. Either way the price comes from the variant.
+      let resolved: { priceMinor: number; product: string; variantId: string } | null = null;
+      if (variantId) {
+        const v = await prismaAny.commerceVariant.findFirst({
+          where: { id: variantId, product: { store: { organizationId: params.orgId } } },
+          select: { id: true, priceMinor: true, title: true, sku: true, product: { select: { title: true } } },
+        });
+        if (v) resolved = { priceMinor: v.priceMinor, product: v.product?.title ?? v.title ?? v.sku, variantId: v.id };
+      } else if (commerceStoreBot && fields.product) {
+        const variants = await prismaAny.commerceVariant.findMany({
+          where: { isActive: true, product: { storeId, isActive: true, title: { contains: fields.product.trim(), mode: 'insensitive' } } },
+          select: { id: true, priceMinor: true, title: true, sku: true, product: { select: { title: true } } },
+          take: 12,
+        });
+        if (variants.length === 1) {
+          const v = variants[0];
+          resolved = { priceMinor: v.priceMinor, product: v.product?.title ?? v.title ?? v.sku, variantId: v.id };
+        } else if (variants.length > 1) {
+          const opts = variants.slice(0, 8)
+            .map((v: any) => `${v.product?.title ?? ''} ${v.title ?? v.sku} (variant_id=${v.id}, ${(v.priceMinor / 100).toFixed(2)})`)
+            .join('; ');
+          return {
+            outcome: 'NEEDS_CHOICE',
+            message: `Several options match — ask the customer which one, then order with its variant_id: ${opts}`,
+          };
+        }
+      }
+
+      if (resolved) {
+        fields.unit_price = (resolved.priceMinor / 100).toFixed(2);
+        fields.product = resolved.product;
+        fields.variant_id = resolved.variantId;
+      } else if (commerceStoreBot) {
+        // Couldn't resolve to a catalog item — never create an unpriced/mystery store order, and never
+        // ask the customer for an internal id. Tell the model to look it up itself.
+        return {
+          outcome: 'NOT_FOUND',
+          message: `Could not match "${fields.product ?? 'that item'}" to a product in the catalog. Call search_products yourself to find the right item and its variant_id, then order with it — do NOT ask the customer for a variant id and do NOT type a price.`,
+        };
+      }
     }
 
     const summary =
@@ -2333,14 +2394,8 @@ export class ActionForwardingService {
 
     // For a sales order on a commerce-connected bot, the queued task is bridged to a CommerceOrder +
     // Paystack payment link (sent to the customer over the channel) — so the confirmation wording
-    // should promise a payment link, not a human follow-up.
-    const commerceOrder = actionType === 'SALES_ORDER_REQUEST'
-      ? await this.prisma.bot.findUnique({ where: { id: params.botId }, select: { commerceStoreId: true } })
-          .then((b) => Boolean(b?.commerceStoreId))
-          .catch(() => false)
-      : false;
-
-    return this.mapActionResultToToolOutcome(actionType, result, { commerceOrder });
+    // should promise a payment link, not a human follow-up. (commerceStoreBot resolved above.)
+    return this.mapActionResultToToolOutcome(actionType, result, { commerceOrder: commerceStoreBot });
   }
 
   private mapActionResultToToolOutcome(actionType: ActionType, result: ActionForwardingResult, opts?: { commerceOrder?: boolean }): ActionToolResult {
@@ -2643,6 +2698,18 @@ export class ActionForwardingService {
         return;
       }
 
+      // Link the order line to the exact catalog SKU when the AI resolved one (traceability in the
+      // Orders tab). Re-validate it still exists in THIS store (the FK is onDelete: Restrict).
+      const soMeta = (salesOrder.metadata && typeof salesOrder.metadata === 'object' ? salesOrder.metadata : {}) as Record<string, unknown>;
+      let linkedVariantId: string | null = typeof soMeta.variantId === 'string' ? soMeta.variantId : null;
+      if (linkedVariantId) {
+        const okVariant = await prismaAny.commerceVariant.findFirst({
+          where: { id: linkedVariantId, product: { storeId: store.id } },
+          select: { id: true },
+        });
+        if (!okVariant) linkedVariantId = null;
+      }
+
       const order = await prismaAny.commerceOrder.create({
         data: {
           organizationId: options.organizationId,
@@ -2658,6 +2725,7 @@ export class ActionForwardingService {
           metadata: { source: 'bot', actionTaskId: options.actionTaskId, botId: options.botId },
           items: {
             create: {
+              variantId: linkedVariantId,
               lineDescription: salesOrder.product ?? null,
               quantity,
               unitPriceMinor,

@@ -6,6 +6,7 @@ import { Public } from '../../common/decorators/public.decorator';
 import { ActionForwardingService } from './action-forwarding.service';
 import { RegistrationsService } from '../registrations/registrations.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
+import { CommerceService } from '../commerce/commerce.service';
 import type { RuntimeChannel } from './action-forwarding.types';
 
 interface ExecuteToolBody {
@@ -34,6 +35,7 @@ export class InternalToolsController {
     private readonly actionForwarding: ActionForwardingService,
     private readonly registrations: RegistrationsService,
     private readonly teamChat: TeamChatService,
+    private readonly commerce: CommerceService,
     private readonly config: ConfigService,
   ) {}
 
@@ -79,6 +81,17 @@ export class InternalToolsController {
         customerEmail: typeof args.customer_email === 'string' ? args.customer_email : undefined,
         fields: args.fields && typeof args.fields === 'object' ? (args.fields as Record<string, string>) : undefined,
       });
+    }
+
+    // Product search: return the bot's store catalog (products, variant_ids, prices, stock) for the
+    // AI to quote from and order against — pricing stays authoritative (backend-owned).
+    if (toolName === 'search_products') {
+      const query = typeof args.query === 'string' ? args.query : '';
+      try {
+        return await this.commerce.searchProductsForBot(body.orgId, body.botId, query);
+      } catch {
+        return { outcome: 'ERROR', message: 'Could not search the catalog right now.', products: [] };
+      }
     }
 
     // Knowledge-gap logging: the AI flags a genuine question the knowledge base couldn't answer.

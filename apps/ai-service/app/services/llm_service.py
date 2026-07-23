@@ -105,18 +105,41 @@ CREATE_SALES_ORDER_TOOL = {
     "function": {
         "name": "create_sales_order",
         "description": (
-            "Submit a sales order / purchase request to the team. Call this ONLY when the customer "
-            "clearly intends to buy or order a specific product AND you have their name, email, and "
-            "the product. Do not claim an order is placed unless this tool returns a SUBMITTED outcome."
+            "Submit a sales order / purchase request. Call this when the customer clearly intends to buy "
+            "AND you have their name, email, and which product. Always pass `product` (the product name). "
+            "For a store item the price is taken from the catalog automatically — do NOT type it; include "
+            "`variant_id` too if you have one from search_products. If the item isn't found, the tool will "
+            "tell you to search_products. Do not claim an order is placed unless it returns SUBMITTED."
         ),
         "parameters": {
             "type": "object",
             "properties": _contact_props({
-                "product": {"type": "string", "description": "The product or item the customer wants to order."},
+                "product": {"type": "string", "description": "The product the customer wants to order (name as they/the catalog refer to it)."},
+                "variant_id": {"type": "string", "description": "The catalog variant_id if known (from search_products) — makes the match exact. Optional."},
                 "quantity": {"type": "integer", "description": "How many units. Default 1 if unspecified."},
-                "unit_price": {"type": "string", "description": "The unit price if the customer stated one; otherwise omit."},
+                "unit_price": {"type": "string", "description": "Only for off-catalog items the customer priced themselves; omit for store products (price comes from the catalog)."},
             }),
             "required": ["customer_name", "customer_email", "product"],
+        },
+    },
+}
+
+SEARCH_PRODUCTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "search_products",
+        "description": (
+            "Search this store's product catalog by name, type, or keywords. Returns matching products "
+            "with their variants, exact prices, and stock. Call this before quoting a price or taking an "
+            "order so you use real catalog data — never guess a product or price. To order, pass the "
+            "chosen variant_id to create_sales_order."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What the customer is looking for (product name, type, or keywords)."},
+            },
+            "required": ["query"],
         },
     },
 }
@@ -212,6 +235,7 @@ ESCALATE_TO_HUMAN_TOOL = {
 ACTION_TOOL_REGISTRY = {
     "search_knowledge": SEARCH_KNOWLEDGE_TOOL,
     "report_knowledge_gap": REPORT_KNOWLEDGE_GAP_TOOL,
+    "search_products": SEARCH_PRODUCTS_TOOL,
     "register_for_event": REGISTER_FOR_EVENT_TOOL,
     "book_meeting": BOOK_MEETING_TOOL,
     "request_consultation": REQUEST_CONSULTATION_TOOL,
@@ -622,13 +646,16 @@ class LlmService:
         if not settings.OPENROUTER_API_KEY:
             return {"reply": "I'm sorry, I'm not configured to respond yet. Please contact support.", "registration_handled": False, "action_handled": False, "payment_url": "", "should_resolve": False}
 
-        # Action tools come from the backend (bot capabilities); search_knowledge is always available
-        # (executed locally here — embeddings + Qdrant live in this service, so no backend round-trip).
-        # Meta tools (knowledge search + gap logging) are always available and executed here; they
-        # don't count as customer-facing "actions". Action tools come from the backend (capabilities).
-        META_TOOLS = ("search_knowledge", "report_knowledge_gap")
-        action_tool_names = [t for t in (enabled_tools or []) if t in ACTION_TOOL_REGISTRY and t not in META_TOOLS]
-        tool_names = (list(META_TOOLS) if knowledge_search is not None else []) + action_tool_names
+        # Lookup tools (knowledge search, gap logging, product search) return info and don't count as
+        # customer-facing "actions". search_knowledge/report_knowledge_gap are always available when
+        # knowledge_search is set (search runs locally here); the rest come from the backend
+        # (capabilities), including search_products for commerce-store bots.
+        LOOKUP_TOOLS = {"search_knowledge", "report_knowledge_gap", "search_products"}
+        enabled = [t for t in (enabled_tools or []) if t in ACTION_TOOL_REGISTRY]
+        tool_names = list(dict.fromkeys(
+            (["search_knowledge", "report_knowledge_gap"] if knowledge_search is not None else []) + enabled
+        ))
+        action_tool_names = [t for t in tool_names if t not in LOOKUP_TOOLS]
         tools_param = [ACTION_TOOL_REGISTRY[t] for t in tool_names]
 
         base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
@@ -670,6 +697,16 @@ class LlmService:
                 " For event registration: if register_for_event returns PENDING_PAYMENT, give the payment "
                 "link and make clear they are NOT registered until they pay; relay AT_CAPACITY / "
                 "ALREADY_REGISTERED honestly; only say confirmed when the tool says CONFIRMED."
+            )
+        if "search_products" in tool_names:
+            tool_guidance += (
+                "\n\nSTORE / PRODUCTS: this bot has a store. For ANY question about what you sell, product "
+                "details, prices, or stock, call search_products (it IS your catalog) — do NOT use "
+                "search_knowledge for products and do NOT say you lack catalog info before searching; "
+                "answer from what it returns. ORDERING: call create_sales_order with the `product` name "
+                "(and name, email, quantity); the price is taken from the catalog automatically — never "
+                "type it. If the tool replies NOT_FOUND, call search_products yourself to find the right "
+                "item, then order again — do NOT ask the customer for an internal id."
             )
         agent_prompt = f"{base_prompt}{tool_guidance}"
 
@@ -759,6 +796,14 @@ class LlmService:
                     # Meta tool: log the gap via the backend, but it's not a customer-facing action.
                     result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
                     gap_logged = True
+                elif name == "search_products" and name in tool_names:
+                    # Catalog lookup via the backend — informational, not a customer-facing action.
+                    result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
+                    if result.get("outcome") == "FOUND" and result.get("products"):
+                        # Catalog results are authoritative grounding — feed them to the faithfulness
+                        # check and trust them (so a correct product/price reply isn't overridden).
+                        retrieved_passages.append({"content": "PRODUCT CATALOG (search_products): " + json.dumps(result["products"])[:2500], "score": 1.0})
+                        has_strong_grounding = True
                 elif name not in ACTION_TOOL_REGISTRY or name not in tool_names:
                     result = {"outcome": "ERROR", "message": "That tool is not available."}
                 else:

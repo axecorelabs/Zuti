@@ -9,9 +9,10 @@ import { InternalToolsController } from './internal-tools.controller';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { RegistrationsModule } from '../registrations/registrations.module';
 import { TeamChatModule } from '../team-chat/team-chat.module';
+import { CommerceModule } from '../commerce/commerce.module';
 
 @Module({
-  imports: [HttpModule, BullModule.registerQueue({ name: ACTION_FORWARDING_QUEUE }), NotificationsModule, RegistrationsModule, TeamChatModule],
+  imports: [HttpModule, BullModule.registerQueue({ name: ACTION_FORWARDING_QUEUE }), NotificationsModule, RegistrationsModule, TeamChatModule, CommerceModule],
   controllers: [ActionForwardingController, InternalToolsController],
   providers: [ActionForwardingService, ActionForwardingProcessor],
   exports: [ActionForwardingService],

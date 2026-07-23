@@ -993,7 +993,7 @@ export class TelegramProcessor {
     ].filter(Boolean).join('\n\n');
 
     const [commerceGrounding, registrationContext] = await Promise.all([
-      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, aiConfig, userText }),
+      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId, aiConfig, userText }),
       buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId }),
     ]);
     const effectiveCustomerContext = [

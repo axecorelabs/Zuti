@@ -150,6 +150,72 @@ export class CommerceService {
     });
   }
 
+  /**
+   * search_products tool: return the bot's store catalog (products + variants with exact prices and
+   * stock) for the AI to quote from and order against. The model orders by variant_id — it never
+   * types the price — so orders are always priced from the catalog. Store-scoped.
+   */
+  async searchProductsForBot(orgId: string, botId: string | undefined, query: string) {
+    if (!botId) return { outcome: 'NO_STORE', message: 'No bot context for product search.', products: [] };
+    const bot = await this.prisma.bot.findUnique({ where: { id: botId }, select: { commerceStoreId: true } });
+    if (!bot?.commerceStoreId) {
+      return { outcome: 'NO_STORE', message: 'This assistant is not connected to a store; do not quote products.', products: [] };
+    }
+    const store = await this.prisma.commerceStore.findUnique({ where: { id: bot.commerceStoreId }, select: { currency: true } });
+    const products = await this.prisma.commerceProduct.findMany({
+      where: { storeId: bot.commerceStoreId, isActive: true },
+      include: {
+        variants: {
+          where: { isActive: true },
+          include: { inventoryLevels: { select: { onHand: true, reserved: true } } },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 60,
+    });
+
+    const q = (query ?? '').toLowerCase().trim();
+    const terms = q.split(/\s+/).filter((t) => t.length >= 3);
+    const scored = products
+      .map((p) => {
+        const hay = [p.title, p.category ?? '', p.description ?? '', ...p.variants.map((v) => `${v.sku} ${v.title ?? ''}`)]
+          .join(' ')
+          .toLowerCase();
+        let score = 0;
+        if (q.length >= 3 && hay.includes(q)) score += 5;
+        for (const term of terms) if (hay.includes(term)) score += 2;
+        return { p, score };
+      })
+      .sort((a, b) => b.score - a.score);
+
+    const anyMatch = scored.some((s) => s.score > 0);
+    const selected = (anyMatch ? scored.filter((s) => s.score > 0) : scored).slice(0, 8);
+
+    const results = selected.map(({ p }) => ({
+      product_id: p.id,
+      title: p.title,
+      category: p.category,
+      variants: p.variants.map((v) => ({
+        variant_id: v.id,
+        sku: v.sku,
+        name: v.title,
+        price: (v.priceMinor / 100).toFixed(2),
+        currency: store?.currency ?? 'NGN',
+        in_stock: v.inventoryLevels.reduce((sum, l) => sum + Math.max(0, l.onHand - l.reserved), 0),
+      })),
+    }));
+
+    if (results.length === 0) {
+      return { outcome: 'NONE', message: 'No matching products in the catalog. Tell the customer you don\'t carry that and offer what you do have.', products: [] };
+    }
+    return {
+      outcome: 'FOUND',
+      message: 'Use these exact products, prices and stock. To place an order, pass the chosen variant_id to create_sales_order — never type the price yourself.',
+      products: results,
+    };
+  }
+
   async deactivateStore(orgId: string, storeId: string) {
     const store = await this.prisma.commerceStore.findFirst({
       where: { id: storeId, organizationId: orgId, isActive: true },

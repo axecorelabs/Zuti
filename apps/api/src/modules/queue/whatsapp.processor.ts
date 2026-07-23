@@ -812,7 +812,7 @@ export class WhatsAppProcessor {
     }).catch(() => null);
 
     const [commerceGrounding, registrationContext] = await Promise.all([
-      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, aiConfig, userText }),
+      buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId: bot.id, aiConfig, userText }),
       buildRegistrationContextBlock({ prisma: this.prisma, botId: bot.id, orgId: organizationId }),
     ]);
     const effectiveCustomerContext = [
