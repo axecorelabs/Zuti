@@ -499,6 +499,11 @@ export const commerceApi = {
     api.post(`/organizations/${orgId}/commerce/orders/${orderId}/payment/initialize`, data ?? {}),
   verifyPayment: (orgId: string, orderId: string, data?: { reference?: string }) =>
     api.post(`/organizations/${orgId}/commerce/orders/${orderId}/payment/verify`, data ?? {}),
+  updateFulfillment: (
+    orgId: string,
+    orderId: string,
+    status: 'UNFULFILLED' | 'PREPARING' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED',
+  ) => api.patch(`/organizations/${orgId}/commerce/orders/${orderId}/fulfillment`, { status }),
   uploadImage: (orgId: string, file: File) => {
     const form = new FormData();
     form.append('file', file);

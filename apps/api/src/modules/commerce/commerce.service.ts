@@ -28,6 +28,7 @@ import {
   UpdateCommerceVariantDto,
   UpdateCommerceStoreDto,
   UpsertCommerceInventoryDto,
+  OrderFulfillmentStatus,
 } from './dto/commerce.dto';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage, toPublicStorageUrl } from '../../common/utils/supabase-storage';
 
@@ -1290,6 +1291,77 @@ export class CommerceService {
     return order;
   }
 
+  /**
+   * Advance an order through the fulfillment pipeline (UNFULFILLED → PREPARING → SHIPPED → DELIVERED),
+   * or cancel it. Fulfillment sub-status lives on order.metadata (no schema migration); CANCELLED maps
+   * to the real order.status column. Shipping states require a settled (PAID) order; cancellation is
+   * only allowed while the order is still unpaid (paid orders would need a refund, out of scope here).
+   */
+  async updateOrderFulfillment(
+    orgId: string,
+    orderId: string,
+    status: OrderFulfillmentStatus,
+    actor?: { id?: string; name?: string | null; email?: string | null },
+  ) {
+    const order = await this.prisma.commerceOrder.findFirst({
+      where: { id: orderId, organizationId: orgId },
+      select: { id: true, status: true, paymentStatus: true, metadata: true, customerName: true },
+    });
+    if (!order) {
+      throw new NotFoundException('Commerce order not found');
+    }
+
+    const isPaid = order.status === CommerceOrderStatus.PAID || order.paymentStatus === CommercePaymentStatus.SUCCESS;
+
+    if (status === 'CANCELLED') {
+      if (isPaid) {
+        throw new BadRequestException('A paid order cannot be cancelled here — issue a refund in Paystack first.');
+      }
+      if (order.status === CommerceOrderStatus.CANCELLED) {
+        throw new BadRequestException('Order is already cancelled.');
+      }
+    } else {
+      // Shipping/fulfillment states only make sense once payment has settled.
+      if (!isPaid) {
+        throw new BadRequestException('Only a paid order can be moved through fulfillment.');
+      }
+    }
+
+    const currentMeta = (order.metadata && typeof order.metadata === 'object'
+      ? (order.metadata as Record<string, unknown>)
+      : {}) as Record<string, unknown>;
+
+    const data: Prisma.CommerceOrderUpdateInput =
+      status === 'CANCELLED'
+        ? { status: CommerceOrderStatus.CANCELLED }
+        : {
+            metadata: {
+              ...currentMeta,
+              fulfillment: {
+                status,
+                updatedAt: new Date().toISOString(),
+                updatedBy: actor?.name?.trim() || actor?.email?.trim() || 'System',
+              },
+            } as Prisma.InputJsonValue,
+          };
+
+    const updated = await this.prisma.commerceOrder.update({ where: { id: order.id }, data });
+
+    const label = status.charAt(0) + status.slice(1).toLowerCase();
+    await this.recordMutation(
+      orgId,
+      actor,
+      ActivityAction.COMMERCE_ORDER_FULFILLMENT_UPDATED,
+      'commerce_order',
+      updated.id,
+      `Order ${status === 'CANCELLED' ? 'cancelled' : `marked ${label}`}`,
+      `Order ${order.customerName ?? updated.id.slice(-8)} was ${status === 'CANCELLED' ? 'cancelled' : `marked ${label}`}.`,
+      { orderId: updated.id, fulfillmentStatus: status },
+    );
+
+    return updated;
+  }
+
   async initializeOrderPayment(orgId: string, orderId: string, dto: InitializeCommerceOrderPaymentDto) {
     const order = await this.prisma.commerceOrder.findFirst({
       where: {
@@ -1499,11 +1571,15 @@ export class CommerceService {
             } as Prisma.InputJsonValue,
           },
         }),
-        // Conditional update: only rows not already PAID are affected. This makes the
-        // "did THIS call perform the transition" check atomic instead of a racy pre-read,
-        // so concurrent webhook/manual-verify calls can't both enqueue a duplicate receipt.
+        // Conditional update: transition any non-terminal row (DRAFT / PENDING_PAYMENT / FAILED —
+        // a FAILED order must still recover if payment lands after a premature verify). This makes
+        // the "did THIS call perform the transition" check atomic instead of a racy pre-read, so
+        // concurrent webhook/manual-verify calls can't both enqueue a duplicate receipt. PAID is
+        // excluded for dedup; CANCELLED is excluded on purpose — a late payment on an order the
+        // owner already cancelled must NOT silently un-cancel it or fire a false "order confirmed"
+        // (the payment row is still marked SUCCESS above, so the owner sees it and can refund).
         this.prisma.commerceOrder.updateMany({
-          where: { id: order.id, status: { not: CommerceOrderStatus.PAID } },
+          where: { id: order.id, status: { notIn: [CommerceOrderStatus.PAID, CommerceOrderStatus.CANCELLED] } },
           data: {
             status: CommerceOrderStatus.PAID,
             paymentStatus: CommercePaymentStatus.SUCCESS,

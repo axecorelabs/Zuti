@@ -270,6 +270,14 @@ export class ReceiptsProcessor {
     });
 
     this.logger.log(`Receipt job ${job.id}: ecommerce receipt sent to ${order.customerEmail}`);
+
+    // Confirm to the customer on the channel they ordered from (Telegram/WhatsApp) — same as the
+    // registration flow. Non-fatal: a channel hiccup must not fail (and retry) the whole receipt job.
+    try {
+      await this.sendEcommerceChannelConfirmation(order, reference, receiptNumber);
+    } catch (err) {
+      this.logger.warn(`Receipt job ${job.id}: ecommerce channel message failed (non-fatal): ${String(err)}`);
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────
@@ -332,6 +340,79 @@ export class ReceiptsProcessor {
       this.events.emitNewMessage(entry.orgId, { conversationId: entry.conversationId, message: aiMessage });
     } catch (err) {
       this.logger.warn(`Failed to persist registration confirmation message: ${String(err)}`);
+    }
+
+    if (conv.channel === 'TELEGRAM' && conv.telegramChatId && bot.telegramToken) {
+      await firstValueFrom(
+        this.http.post(
+          `https://api.telegram.org/bot${bot.telegramToken}/sendMessage`,
+          { chat_id: conv.telegramChatId, text: msg },
+        ),
+      );
+    } else if (conv.channel === 'WHATSAPP' && conv.whatsappPhoneNumber) {
+      await sendWhatsAppText(
+        this.http,
+        {
+          provider: bot.whatsappProvider,
+          channelIdentifier: bot.whatsappChannelIdentifier,
+          config: bot.whatsappConfig,
+        },
+        conv.whatsappPhoneNumber,
+        msg,
+      );
+    }
+  }
+
+  private async sendEcommerceChannelConfirmation(order: any, reference: string, receiptNumber: string) {
+    // Bot orders stash the originating conversation + bot on the order metadata (set in the bridge).
+    const meta = (order.metadata && typeof order.metadata === 'object' ? order.metadata : {}) as Record<string, unknown>;
+    const conversationId = typeof meta.conversationId === 'string' ? meta.conversationId : null;
+    const botId = typeof meta.botId === 'string' ? meta.botId : null;
+    if (!conversationId || !botId) return; // dashboard/manual orders have no chat to reply to
+
+    const prismaAny = this.prisma as any;
+    const conv = await prismaAny.conversation.findUnique({
+      where: { id: conversationId },
+      select: { channel: true, telegramChatId: true, whatsappPhoneNumber: true },
+    });
+    if (!conv) return;
+
+    const bot = await prismaAny.bot.findUnique({
+      where: { id: botId },
+      select: {
+        telegramToken: true,
+        whatsappProvider: true,
+        whatsappChannelIdentifier: true,
+        whatsappConfig: true,
+      },
+    });
+    if (!bot) return;
+
+    const total = (order.totalMinor / 100).toLocaleString('en-NG', {
+      style: 'currency',
+      currency: order.currency,
+      minimumFractionDigits: 0,
+    });
+    const msg =
+      `Payment received — thank you! ✅\n\n` +
+      `Your order from ${order.store?.name ?? 'the store'} is confirmed.\n` +
+      `Total paid: ${total}\n\n` +
+      `A receipt (${receiptNumber}) has been sent to ${order.customerEmail}.\n` +
+      `Ref: ${reference.slice(-8).toUpperCase()}`;
+
+    // Persist as an assistant message + push to the inbox live, so the dashboard shows the
+    // post-payment confirmation just like any other bot reply.
+    try {
+      const aiMessage = await prismaAny.message.create({
+        data: { conversationId, role: 'ASSISTANT', content: msg },
+      });
+      await prismaAny.conversation.update({
+        where: { id: conversationId },
+        data: { lastMessageAt: new Date() },
+      });
+      this.events.emitNewMessage(order.organizationId, { conversationId, message: aiMessage });
+    } catch (err) {
+      this.logger.warn(`Failed to persist ecommerce confirmation message: ${String(err)}`);
     }
 
     if (conv.channel === 'TELEGRAM' && conv.telegramChatId && bot.telegramToken) {

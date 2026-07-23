@@ -140,6 +140,15 @@ export class VerifyCommerceOrderPaymentDto {
   reference?: string;
 }
 
+export const ORDER_FULFILLMENT_STATUSES = ['UNFULFILLED', 'PREPARING', 'SHIPPED', 'DELIVERED', 'CANCELLED'] as const;
+export type OrderFulfillmentStatus = (typeof ORDER_FULFILLMENT_STATUSES)[number];
+
+export class UpdateCommerceOrderFulfillmentDto {
+  @ApiProperty({ enum: ORDER_FULFILLMENT_STATUSES, example: 'SHIPPED' })
+  @IsIn(ORDER_FULFILLMENT_STATUSES)
+  declare status: OrderFulfillmentStatus;
+}
+
 export class CreateCommerceLocationDto {
   @ApiProperty({ description: 'Target store ID', example: 'ck_store_123' })
   @IsString()

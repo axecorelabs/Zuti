@@ -4,25 +4,50 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { commerceApi, orgApi, resolveOrgId } from '@/lib/api';
 import CustomSelect from '@/components/custom-select';
 import {
+  Ban,
   CheckCircle2,
   ChevronDown,
   Clock,
   Copy,
   ExternalLink,
   Package2,
+  PackageCheck,
   Plus,
   ShoppingBag,
+  Truck,
   X,
 } from 'lucide-react';
 
 const STATUS_STYLE: Record<string, string> = {
   DRAFT: 'text-zinc-500 bg-zinc-800 border-zinc-700',
-  CONFIRMED: 'text-blue-400 bg-blue-600/10 border-blue-600/20',
-  PROCESSING: 'text-amber-400 bg-amber-600/10 border-amber-600/20',
-  SHIPPED: 'text-purple-400 bg-purple-600/10 border-purple-600/20',
-  DELIVERED: 'text-emerald-400 bg-emerald-600/10 border-emerald-600/20',
+  PENDING_PAYMENT: 'text-amber-400 bg-amber-600/10 border-amber-600/20',
+  PAID: 'text-emerald-400 bg-emerald-600/10 border-emerald-600/20',
   CANCELLED: 'text-red-400 bg-red-600/10 border-red-600/20',
+  FAILED: 'text-red-400 bg-red-600/10 border-red-600/20',
 };
+
+// Fulfillment pipeline for a paid order. Sub-status lives on order.metadata.fulfillment (backend).
+const FULFILLMENT_STAGES = ['PREPARING', 'SHIPPED', 'DELIVERED'] as const;
+type FulfillmentStatus = 'UNFULFILLED' | (typeof FULFILLMENT_STAGES)[number];
+
+const FULFILLMENT_STYLE: Record<string, string> = {
+  UNFULFILLED: 'text-zinc-400 bg-zinc-800 border-zinc-700',
+  PREPARING: 'text-amber-400 bg-amber-600/10 border-amber-600/20',
+  SHIPPED: 'text-blue-400 bg-blue-600/10 border-blue-600/20',
+  DELIVERED: 'text-emerald-400 bg-emerald-600/10 border-emerald-600/20',
+};
+
+const FULFILLMENT_LABEL: Record<string, string> = {
+  UNFULFILLED: 'Unfulfilled',
+  PREPARING: 'Preparing',
+  SHIPPED: 'Shipped',
+  DELIVERED: 'Delivered',
+};
+
+function getFulfillment(order: any): FulfillmentStatus {
+  const s = order?.metadata?.fulfillment?.status;
+  return (typeof s === 'string' && s in FULFILLMENT_LABEL ? s : 'UNFULFILLED') as FulfillmentStatus;
+}
 
 type PaymentState = {
   reference: string;
@@ -47,6 +72,7 @@ export default function OrdersPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [paymentStates, setPaymentStates] = useState<Record<string, PaymentState>>({});
+  const [fulfilling, setFulfilling] = useState<string | null>(null);
 
   // Create order form
   const [storeId, setStoreId] = useState('');
@@ -178,6 +204,22 @@ export default function OrdersPage() {
     }
   };
 
+  const setFulfillment = async (
+    order: any,
+    status: 'PREPARING' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED',
+  ) => {
+    if (!orgId) return;
+    setFulfilling(order.id);
+    try {
+      await commerceApi.updateFulfillment(orgId, order.id, status);
+      await loadData(orgId);
+    } catch {
+      patchPs(order.id, { message: 'Could not update fulfillment status.' });
+    } finally {
+      setFulfilling(null);
+    }
+  };
+
   const copyToClipboard = (text: string) => navigator.clipboard.writeText(text).catch(() => {});
 
   const toggleExpand = (orderId: string) =>
@@ -289,9 +331,17 @@ export default function OrdersPage() {
             {orders.map((order) => {
               const isExpanded = expandedOrderId === order.id;
               const ps = getPs(order.id as string);
-              const isPaid = order.paymentStatus === 'PAID';
+              const isPaid = order.status === 'PAID' || order.paymentStatus === 'SUCCESS';
               const isCancelled = order.status === 'CANCELLED';
-              const hasLink = !!ps.authorizationUrl;
+              // Prefer the persisted payment record (survives refresh; carries bot-order links) over
+              // transient local state from a manual "Initialize payment" click this session.
+              const payment = order.payments?.[0];
+              const persistedLink = payment && payment.status === 'PENDING' ? (payment.authorizationUrl as string) || '' : '';
+              const link = ps.authorizationUrl || persistedLink;
+              const reference = ps.reference || (payment?.reference as string) || '';
+              const hasLink = !!link;
+              const fulfillment = getFulfillment(order);
+              const money = (minor: number) => `${((minor ?? 0) / 100).toLocaleString()} ${order.currency}`;
 
               return (
                 <div
@@ -321,9 +371,14 @@ export default function OrdersPage() {
                           <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400">
                             <CheckCircle2 className="w-3 h-3" /> PAID
                           </span>
-                        ) : (
+                        ) : !isCancelled ? (
                           <span className="inline-flex items-center gap-1 text-[10px] text-zinc-500">
                             <Clock className="w-3 h-3" /> {order.paymentStatus}
+                          </span>
+                        ) : null}
+                        {isPaid && !isCancelled && (
+                          <span className={`inline-flex items-center text-[10px] font-normal border rounded-full px-2 py-0.5 ${FULFILLMENT_STYLE[fulfillment]}`}>
+                            {FULFILLMENT_LABEL[fulfillment]}
                           </span>
                         )}
                         <ChevronDown className={`w-3.5 h-3.5 text-zinc-600 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
@@ -337,86 +392,157 @@ export default function OrdersPage() {
                     </div>
                   </button>
 
-                  {/* Expanded: customer info + payment actions */}
+                  {/* Expanded: what to fulfill — items, customer, payment, fulfillment */}
                   {isExpanded && (
                     <div className="border-t border-zinc-800 px-4 py-4 space-y-4">
-                      {(order.customerEmail || order.customerPhone || order.deliveryAddress) && (
-                        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
-                          {order.customerEmail && (
-                            <div>
-                              <span className="text-zinc-600">Email </span>
-                              <span className="text-zinc-400">{order.customerEmail}</span>
-                            </div>
-                          )}
-                          {order.customerPhone && (
-                            <div>
-                              <span className="text-zinc-600">Phone </span>
-                              <span className="text-zinc-400">{order.customerPhone}</span>
-                            </div>
-                          )}
-                          {order.deliveryAddress && (
-                            <div className="col-span-2">
-                              <span className="text-zinc-600">Address </span>
-                              <span className="text-zinc-400">{order.deliveryAddress}</span>
-                            </div>
+                      {/* Line items — the heart of fulfillment */}
+                      <div>
+                        <p className="text-[11px] uppercase tracking-wide text-zinc-600 mb-2">Items</p>
+                        <div className="space-y-1.5">
+                          {(order.items ?? []).map((item: any) => {
+                            const title = item.variant?.product?.title || item.lineDescription || 'Item';
+                            const variantBits = [item.variant?.title, item.variant?.sku].filter(Boolean).join(' · ');
+                            return (
+                              <div key={item.id} className="flex items-start justify-between gap-3 text-sm">
+                                <div className="min-w-0">
+                                  <p className="text-zinc-200 font-light truncate">
+                                    <span className="text-zinc-500">{item.quantity}×</span> {title}
+                                  </p>
+                                  {variantBits && <p className="text-[11px] text-zinc-600 font-mono truncate">{variantBits}</p>}
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <p className="text-zinc-300 font-light">{money(item.lineTotalMinor)}</p>
+                                  {item.quantity > 1 && <p className="text-[10px] text-zinc-600">{money(item.unitPriceMinor)} ea</p>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-zinc-800 flex items-center justify-between text-sm">
+                          <span className="text-zinc-500">Total</span>
+                          <span className="text-white font-normal">{money(order.totalMinor)}</span>
+                        </div>
+                      </div>
+
+                      {/* Customer + order meta */}
+                      <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                        {order.customerEmail && (
+                          <div className="min-w-0"><span className="text-zinc-600">Email </span><span className="text-zinc-400 break-all">{order.customerEmail}</span></div>
+                        )}
+                        {order.customerPhone && (
+                          <div><span className="text-zinc-600">Phone </span><span className="text-zinc-400">{order.customerPhone}</span></div>
+                        )}
+                        {order.deliveryAddress && (
+                          <div className="col-span-2"><span className="text-zinc-600">Ship to </span><span className="text-zinc-300">{order.deliveryAddress}</span></div>
+                        )}
+                        {order.notes && (
+                          <div className="col-span-2"><span className="text-zinc-600">Notes </span><span className="text-zinc-400">{order.notes}</span></div>
+                        )}
+                        <div className="col-span-2 text-zinc-600">
+                          Placed {new Date(order.createdAt).toLocaleString()}
+                        </div>
+                      </div>
+
+                      {/* Fulfillment pipeline — only for a paid order */}
+                      {isPaid && !isCancelled && (
+                        <div className="border-t border-zinc-800 pt-3">
+                          <p className="text-[11px] uppercase tracking-wide text-zinc-600 mb-2">Fulfillment</p>
+                          <div className="flex flex-wrap gap-2">
+                            {FULFILLMENT_STAGES.map((stage) => {
+                              const active = fulfillment === stage;
+                              const Icon = stage === 'PREPARING' ? Package2 : stage === 'SHIPPED' ? Truck : PackageCheck;
+                              return (
+                                <button
+                                  key={stage}
+                                  type="button"
+                                  disabled={fulfilling === order.id || active}
+                                  onClick={() => setFulfillment(order, stage)}
+                                  className={`inline-flex items-center gap-1.5 text-xs rounded-lg px-3 py-1.5 border transition-colors disabled:opacity-100 ${
+                                    active
+                                      ? FULFILLMENT_STYLE[stage]
+                                      : 'text-zinc-400 border-zinc-800 bg-zinc-900 hover:border-zinc-700 hover:text-white'
+                                  }`}
+                                >
+                                  <Icon className="w-3.5 h-3.5" />
+                                  {active ? FULFILLMENT_LABEL[stage] : `Mark ${FULFILLMENT_LABEL[stage].toLowerCase()}`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {fulfillment === 'DELIVERED' && (
+                            <p className="mt-2 text-xs text-emerald-400 flex items-center gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5" /> Order fulfilled.
+                            </p>
                           )}
                         </div>
                       )}
 
-                      {/* Payment actions — status-driven */}
-                      {isCancelled ? (
-                        <p className="text-xs text-zinc-600">This order has been cancelled.</p>
-                      ) : isPaid ? (
-                        <div className="flex items-center gap-2 text-sm text-emerald-400">
-                          <CheckCircle2 className="w-4 h-4" />
-                          Payment confirmed
-                        </div>
-                      ) : !hasLink ? (
+                      {/* Payment — status-driven */}
+                      <div className="border-t border-zinc-800 pt-3">
+                        <p className="text-[11px] uppercase tracking-wide text-zinc-600 mb-2">Payment</p>
+                        {isCancelled ? (
+                          <p className="text-xs text-zinc-600">This order was cancelled.</p>
+                        ) : isPaid ? (
+                          <div className="flex items-center gap-2 text-sm text-emerald-400">
+                            <CheckCircle2 className="w-4 h-4" /> Payment confirmed
+                          </div>
+                        ) : !hasLink ? (
+                          <button
+                            type="button"
+                            className="btn-primary flex items-center gap-2 text-sm"
+                            onClick={() => initializePayment(order)}
+                            disabled={ps.loading}
+                          >
+                            {ps.loading ? 'Initializing…' : 'Initialize payment'}
+                          </button>
+                        ) : (
+                          <div className="space-y-2">
+                            <div className="flex gap-2">
+                              <a
+                                href={link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="btn-primary flex items-center gap-2 text-sm flex-1 justify-center"
+                              >
+                                Open checkout <ExternalLink className="w-3.5 h-3.5" />
+                              </a>
+                              <button
+                                type="button"
+                                className="btn-secondary flex items-center gap-1.5 text-sm px-3"
+                                onClick={() => copyToClipboard(link)}
+                                title="Copy checkout link"
+                              >
+                                <Copy className="w-3.5 h-3.5" /> Copy
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-secondary text-sm px-3"
+                                onClick={() => verifyPayment(order)}
+                                disabled={ps.loading}
+                              >
+                                {ps.loading ? '…' : 'Verify'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        {reference && (
+                          <p className="mt-2 text-[10px] text-zinc-700 font-mono break-all">ref: {reference}</p>
+                        )}
+                      </div>
+
+                      {/* Cancel — only while unpaid (paid orders need a Paystack refund first) */}
+                      {!isPaid && !isCancelled && (
                         <button
                           type="button"
-                          className="btn-primary flex items-center gap-2 text-sm"
-                          onClick={() => initializePayment(order)}
-                          disabled={ps.loading}
+                          onClick={() => setFulfillment(order, 'CANCELLED')}
+                          disabled={fulfilling === order.id}
+                          className="inline-flex items-center gap-1.5 text-xs text-red-400/80 hover:text-red-400 transition-colors"
                         >
-                          {ps.loading ? 'Initializing…' : 'Initialize payment'}
+                          <Ban className="w-3.5 h-3.5" /> Cancel order
                         </button>
-                      ) : (
-                        <div className="space-y-2">
-                          <div className="flex gap-2">
-                            <a
-                              href={ps.authorizationUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="btn-primary flex items-center gap-2 text-sm flex-1 justify-center"
-                            >
-                              Open checkout <ExternalLink className="w-3.5 h-3.5" />
-                            </a>
-                            <button
-                              type="button"
-                              className="btn-secondary flex items-center gap-1.5 text-sm px-3"
-                              onClick={() => copyToClipboard(ps.authorizationUrl)}
-                              title="Copy checkout link"
-                            >
-                              <Copy className="w-3.5 h-3.5" /> Copy
-                            </button>
-                            <button
-                              type="button"
-                              className="btn-secondary text-sm px-3"
-                              onClick={() => verifyPayment(order)}
-                              disabled={ps.loading}
-                            >
-                              {ps.loading ? '…' : 'Verify'}
-                            </button>
-                          </div>
-                          {ps.reference && (
-                            <p className="text-[10px] text-zinc-700 font-mono break-all">ref: {ps.reference}</p>
-                          )}
-                        </div>
                       )}
 
-                      {ps.message && (
-                        <p className="text-xs text-zinc-400">{ps.message}</p>
-                      )}
+                      {ps.message && <p className="text-xs text-zinc-400">{ps.message}</p>}
                     </div>
                   )}
                 </div>

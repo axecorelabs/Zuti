@@ -17,6 +17,7 @@ import {
   UpdateCommerceProductDto,
   UpdateCommerceVariantDto,
   UpdateCommerceStoreDto,
+  UpdateCommerceOrderFulfillmentDto,
   UpsertCommerceInventoryDto,
   VerifyCommerceOrderPaymentDto,
 } from './dto/commerce.dto';
@@ -183,6 +184,18 @@ export class CommerceController {
   @ApiOperation({ summary: 'Get order context with items and payment records' })
   getOrder(@Param('id') orgId: string, @Param('orderId') orderId: string) {
     return this.commerce.getOrder(orgId, orderId);
+  }
+
+  @Patch('orders/:orderId/fulfillment')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Advance an order through fulfillment (preparing/shipped/delivered) or cancel it' })
+  updateOrderFulfillment(
+    @Param('id') orgId: string,
+    @Param('orderId') orderId: string,
+    @Req() req: any,
+    @Body() dto: UpdateCommerceOrderFulfillmentDto,
+  ) {
+    return this.commerce.updateOrderFulfillment(orgId, orderId, dto.status, req.user);
   }
 
   @Post('orders/:orderId/payment/initialize')

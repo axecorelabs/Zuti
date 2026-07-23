@@ -2407,6 +2407,12 @@ export class ActionForwardingService {
       if (toolResult.outcome === 'SUBMITTED') {
         toolResult.message = `The order was captured. Give the customer this secure payment link to complete checkout, and tell them the order is confirmed once payment is made: ${result.commercePaymentUrl}`;
       }
+    } else if (commerceStoreBot && toolResult.outcome === 'SUBMITTED') {
+      // Commerce order was captured but the payment link could NOT be generated (no subaccount,
+      // Paystack error, missing email, etc. — the org has already been flagged internally). Never
+      // promise the customer a link that isn't coming: tell the model a teammate will follow up.
+      toolResult.message =
+        'The order was captured, but a payment link could not be set up automatically. Tell the customer a teammate will follow up shortly to complete payment — do NOT tell them to expect a payment link in this chat.';
     }
     return toolResult;
   }
@@ -2735,7 +2741,7 @@ export class ActionForwardingService {
           totalMinor: lineTotal,
           notes: `Bot order — ${salesOrder.product ?? 'product'}`,
           status: 'DRAFT',
-          metadata: { source: 'bot', actionTaskId: options.actionTaskId, botId: options.botId },
+          metadata: { source: 'bot', actionTaskId: options.actionTaskId, botId: options.botId, conversationId: options.conversationId },
           items: {
             create: {
               variantId: linkedVariantId,
