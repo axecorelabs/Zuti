@@ -9,7 +9,6 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RegistrationsService } from '../registrations/registrations.service';
-import { sendWhatsAppText } from '../../common/utils/whatsapp';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
   ActionClaimLevel,
@@ -65,6 +64,8 @@ export interface ActionToolResult {
   message: string;
   missing_fields?: string[];
   reference?: string;
+  /** Payment link (commerce store order) — surfaced to the AI so its reply carries the link. */
+  payment_url?: string;
 }
 
 type SkillKey = 'SALES' | 'BOOKING' | 'TECHNICAL';
@@ -1232,6 +1233,8 @@ export class ActionForwardingService {
   ): Promise<ActionForwardingResult> {
     let registrationProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; priceMinor: number | null; allowDuplicateRegistrations: boolean; fields: unknown } | null = null;
     let registrationPaymentUrl: string | null = null;
+    // Payment link for a bridged commerce order (awaited synchronously so the AI reply carries it).
+    let commercePaymentUrl: string | null = null;
     // Human-facing notice for dedup / capacity outcomes (already registered, event full, etc.).
     let registrationNotice: string | null = null;
 
@@ -1815,7 +1818,7 @@ export class ActionForwardingService {
           );
 
           if (detected.actionType === 'SALES_ORDER_REQUEST') {
-            void this.bridgeToCommerceOrder({
+            commercePaymentUrl = await this.bridgeToCommerceOrder({
               organizationId: input.organizationId,
               botId: input.botId,
               conversationId: input.conversationId,
@@ -1864,11 +1867,12 @@ export class ActionForwardingService {
           actionTaskId: existingTask.id,
           missingFields: currentFollowUpMissingFields.length > 0 ? currentFollowUpMissingFields : undefined,
         })).then((result) => {
-          if (registrationPaymentUrl || registrationNotice) {
+          if (registrationPaymentUrl || registrationNotice || commercePaymentUrl) {
             return {
               ...result,
               ...(registrationPaymentUrl ? { registrationPaymentUrl } : {}),
               ...(registrationNotice ? { registrationNotice } : {}),
+              ...(commercePaymentUrl ? { commercePaymentUrl } : {}),
             };
           }
           return result;
@@ -2183,7 +2187,8 @@ export class ActionForwardingService {
       );
 
       if (task.actionType === 'SALES_ORDER_REQUEST') {
-        void this.bridgeToCommerceOrder({
+        // Await so the Paystack link is ready to fold into the AI's reply (inbox + channel).
+        commercePaymentUrl = await this.bridgeToCommerceOrder({
           organizationId: input.organizationId,
           botId: input.botId,
           conversationId: input.conversationId,
@@ -2216,11 +2221,12 @@ export class ActionForwardingService {
       actionTaskId: task.id,
       missingFields: followUpMissingFields.length > 0 ? followUpMissingFields : undefined,
     }));
-    if (registrationPaymentUrl || registrationNotice) {
+    if (registrationPaymentUrl || registrationNotice || commercePaymentUrl) {
       return {
         ...finalResult,
         ...(registrationPaymentUrl ? { registrationPaymentUrl } : {}),
         ...(registrationNotice ? { registrationNotice } : {}),
+        ...(commercePaymentUrl ? { commercePaymentUrl } : {}),
       };
     }
     return finalResult;
@@ -2393,9 +2399,16 @@ export class ActionForwardingService {
     }
 
     // For a sales order on a commerce-connected bot, the queued task is bridged to a CommerceOrder +
-    // Paystack payment link (sent to the customer over the channel) — so the confirmation wording
-    // should promise a payment link, not a human follow-up. (commerceStoreBot resolved above.)
-    return this.mapActionResultToToolOutcome(actionType, result, { commerceOrder: commerceStoreBot });
+    // Paystack payment link — surface the link as payment_url so the AI's reply carries it (inbox +
+    // channel), matching the registration flow.
+    const toolResult = this.mapActionResultToToolOutcome(actionType, result, { commerceOrder: commerceStoreBot });
+    if (result.commercePaymentUrl) {
+      toolResult.payment_url = result.commercePaymentUrl;
+      if (toolResult.outcome === 'SUBMITTED') {
+        toolResult.message = `The order was captured. Give the customer this secure payment link to complete checkout, and tell them the order is confirmed once payment is made: ${result.commercePaymentUrl}`;
+      }
+    }
+    return toolResult;
   }
 
   private mapActionResultToToolOutcome(actionType: ActionType, result: ActionForwardingResult, opts?: { commerceOrder?: boolean }): ActionToolResult {
@@ -2636,7 +2649,7 @@ export class ActionForwardingService {
     botId: string;
     conversationId: string;
     actionTaskId: string;
-  }): Promise<void> {
+  }): Promise<string | null> {
     const prismaAny = this.prisma as any;
     try {
       const bot = await this.prisma.bot.findUnique({
@@ -2651,13 +2664,13 @@ export class ActionForwardingService {
         },
       });
 
-      if (!bot?.commerceStoreId) return;
+      if (!bot?.commerceStoreId) return null;
 
       const salesOrder = await prismaAny.salesOrder.findUnique({
         where: { actionTaskId: options.actionTaskId },
       });
 
-      if (!salesOrder || salesOrder.commerceOrderId) return;
+      if (!salesOrder || salesOrder.commerceOrderId) return null;
 
       const unitPriceMinor = salesOrder.unitPriceMinor;
       if (!unitPriceMinor || unitPriceMinor <= 0) {
@@ -2667,7 +2680,7 @@ export class ActionForwardingService {
           actionTaskId: options.actionTaskId,
           reason: 'the captured order has no valid price',
         });
-        return;
+        return null;
       }
 
       const store = await prismaAny.commerceStore.findFirst({
@@ -2682,7 +2695,7 @@ export class ActionForwardingService {
           actionTaskId: options.actionTaskId,
           reason: 'the connected commerce store could not be found',
         });
-        return;
+        return null;
       }
 
       const quantity = salesOrder.quantity ?? 1;
@@ -2695,7 +2708,7 @@ export class ActionForwardingService {
       });
       if (existingOrder) {
         this.logger.warn(`bridgeToCommerceOrder: order already exists for task ${options.actionTaskId} (${existingOrder.id}), skipping duplicate`);
-        return;
+        return null;
       }
 
       // Link the order line to the exact catalog SKU when the AI resolved one (traceability in the
@@ -2751,7 +2764,7 @@ export class ActionForwardingService {
           existingMetadata: order.metadata,
           reason: !paystackSecret ? 'Paystack is not configured' : 'the customer did not provide an email address',
         });
-        return;
+        return null;
       }
 
       const storeMetadata = (store.metadata && typeof store.metadata === 'object' ? store.metadata : {}) as Record<string, unknown>;
@@ -2766,16 +2779,19 @@ export class ActionForwardingService {
           existingMetadata: order.metadata,
           reason: 'the store has no Paystack subaccount configured',
         });
-        return;
+        return null;
       }
 
       const reference = `zuti_commerce_${Date.now()}_${randomBytes(6).toString('hex')}`;
+      const apiBase = (this.config.get<string>('API_URL') ?? 'http://localhost:3001').replace(/\/$/, '');
       const paystackPayload: Record<string, unknown> = {
         amount: order.totalMinor,
         email: salesOrder.customerEmail,
         currency: order.currency,
         reference,
         subaccount,
+        // Browser redirect after payment → instant verification (webhook + reconciliation are backstops).
+        callback_url: `${apiBase}/api/public/commerce/payment/callback`,
         metadata: { organizationId: options.organizationId, commerceOrderId: order.id, source: 'zuti-bot' },
       };
 
@@ -2800,7 +2816,7 @@ export class ActionForwardingService {
           existingMetadata: order.metadata,
           reason: 'Paystack rejected the payment link request',
         });
-        return;
+        return null;
       }
 
       if (!authorizationUrl) {
@@ -2812,7 +2828,7 @@ export class ActionForwardingService {
           existingMetadata: order.metadata,
           reason: 'Paystack did not return a payment link',
         });
-        return;
+        return null;
       }
 
       await prismaAny.commercePayment.create({
@@ -2834,16 +2850,9 @@ export class ActionForwardingService {
         data: { status: 'PENDING_PAYMENT', paymentStatus: 'PENDING' },
       });
 
-      await this.sendPaymentLinkToCustomer({
-        organizationId: options.organizationId,
-        conversationId: options.conversationId,
-        bot,
-        authorizationUrl,
-        orderId: order.id,
-        product: salesOrder.product,
-        totalMinor: order.totalMinor,
-        currency: store.currency,
-      });
+      // Return the link so the caller folds it into the AI's reply (which the processor persists to
+      // the inbox AND sends to the channel) — no separate, channel-only message.
+      return authorizationUrl;
     } catch (err) {
       this.logger.error(`bridgeToCommerceOrder failed for task ${options.actionTaskId}`, err);
       try {
@@ -2855,59 +2864,7 @@ export class ActionForwardingService {
       } catch (notifyErr) {
         this.logger.error(`bridgeToCommerceOrder: failed to notify org for task ${options.actionTaskId}`, notifyErr);
       }
-    }
-  }
-
-  private async sendPaymentLinkToCustomer(options: {
-    organizationId: string;
-    conversationId: string;
-    bot: {
-      telegramToken: string | null;
-      primaryChannel: string;
-      whatsappChannelIdentifier: string | null;
-      whatsappProvider: string | null;
-      whatsappConfig: unknown;
-    };
-    authorizationUrl: string;
-    orderId: string;
-    product: string | null;
-    totalMinor: number;
-    currency: string;
-  }): Promise<void> {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: options.conversationId },
-      select: { channel: true, telegramChatId: true, whatsappPhoneNumber: true },
-    });
-
-    if (!conversation) return;
-
-    const formattedTotal = (options.totalMinor / 100).toLocaleString('en-NG', {
-      style: 'currency',
-      currency: options.currency,
-      minimumFractionDigits: 0,
-    });
-    const orderRef = options.orderId.slice(-8).toUpperCase();
-    const productLine = options.product ? `Product: ${options.product}\n` : '';
-    const message = `Your order has been received!\n\n${productLine}Total: ${formattedTotal}\n\nComplete your payment here:\n${options.authorizationUrl}\n\nOrder ref: #${orderRef}`;
-
-    try {
-      if (conversation.channel === 'TELEGRAM' && conversation.telegramChatId && options.bot.telegramToken) {
-        await firstValueFrom(
-          this.http.post(
-            `https://api.telegram.org/bot${options.bot.telegramToken}/sendMessage`,
-            { chat_id: conversation.telegramChatId, text: message },
-          ),
-        );
-      } else if (conversation.channel === 'WHATSAPP' && conversation.whatsappPhoneNumber) {
-        const connection = {
-          provider: options.bot.whatsappProvider as 'META' | 'TWILIO' | null,
-          channelIdentifier: options.bot.whatsappChannelIdentifier,
-          config: options.bot.whatsappConfig,
-        };
-        await sendWhatsAppText(this.http, connection, conversation.whatsappPhoneNumber, message);
-      }
-    } catch (err) {
-      this.logger.error(`sendPaymentLinkToCustomer failed for conversation ${options.conversationId}`, err);
+      return null;
     }
   }
 }

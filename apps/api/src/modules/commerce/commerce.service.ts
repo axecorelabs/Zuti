@@ -1435,7 +1435,11 @@ export class CommerceService {
     };
   }
 
-  async verifyOrderPayment(orgId: string, orderId: string, reference?: string) {
+  async verifyOrderPayment(orgId: string, orderId: string, reference?: string, options?: { markFailedOnMiss?: boolean }) {
+    // Reconciliation sweeps pass markFailedOnMiss=false: a not-yet-paid link must stay PENDING for a
+    // later check, not be marked FAILED just because the customer hasn't paid yet. Event-driven callers
+    // (webhook / manual verify) keep the default true.
+    const markFailedOnMiss = options?.markFailedOnMiss !== false;
     const order = await this.prisma.commerceOrder.findFirst({
       where: {
         id: orderId,
@@ -1519,6 +1523,17 @@ export class CommerceService {
       };
     }
 
+    if (!markFailedOnMiss) {
+      // Reconciliation: leave the payment/order PENDING for a later sweep (the customer may still pay).
+      return {
+        orderId: order.id,
+        reference: payment.reference,
+        paid: false,
+        status: order.status,
+        reason: { verified, amountMatches, currencyMatches },
+      };
+    }
+
     await this.prisma.$transaction([
       this.prisma.commercePayment.update({
         where: { id: payment.id },
@@ -1550,6 +1565,59 @@ export class CommerceService {
         currencyMatches,
       },
     };
+  }
+
+  /**
+   * Confirm a commerce payment from the browser-redirect callback (Paystack sends the customer here
+   * after paying). Looks the payment up by reference and verifies it — the instant fast path
+   * alongside the webhook; the reconciliation sweep is the guarantee.
+   */
+  async confirmCommercePaymentByReference(reference: string) {
+    if (!reference || !this.paystackReferencePattern.test(reference)) return null;
+    const payment = await this.prisma.commercePayment.findUnique({
+      where: { reference },
+      select: { orderId: true, organizationId: true },
+    });
+    if (!payment) return null;
+    try {
+      return await this.verifyOrderPayment(payment.organizationId, payment.orderId, reference);
+    } catch (err) {
+      this.logger.warn(`Commerce callback verify failed for ${reference}: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Reconcile pending commerce payments against Paystack — the guarantee that a paid order is never
+   * stranded when the webhook (and browser callback) are missed. Only genuinely-paid links are
+   * confirmed (marks PAID + enqueues the receipt, idempotently); unpaid links are left PENDING.
+   */
+  async reconcilePendingCommercePayments(): Promise<{ checked: number; confirmed: number }> {
+    const now = Date.now();
+    const minAge = new Date(now - 3 * 60 * 1000);
+    const maxAge = new Date(now - 24 * 60 * 60 * 1000);
+
+    const stuck = await this.prisma.commercePayment.findMany({
+      where: { status: CommercePaymentStatus.PENDING, createdAt: { lt: minAge, gt: maxAge } },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+      select: { orderId: true, organizationId: true, reference: true },
+    });
+
+    let confirmed = 0;
+    for (const pmt of stuck) {
+      try {
+        const res = await this.verifyOrderPayment(pmt.organizationId, pmt.orderId, pmt.reference, { markFailedOnMiss: false });
+        if (res?.paid) confirmed++;
+      } catch (err) {
+        this.logger.warn(`Commerce payment reconciliation failed for ${pmt.reference}: ${(err as Error).message}`);
+      }
+    }
+
+    if (stuck.length > 0) {
+      this.logger.log(`Commerce payment reconciliation: checked ${stuck.length}, confirmed ${confirmed}`);
+    }
+    return { checked: stuck.length, confirmed };
   }
 
   async handlePaystackWebhook(signature: string | undefined, rawBody: Buffer, payload: any) {

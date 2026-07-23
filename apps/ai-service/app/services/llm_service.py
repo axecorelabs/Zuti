@@ -608,8 +608,14 @@ class LlmService:
         }
         headers = {"X-Internal-Key": settings.INTERNAL_API_SECRET} if settings.INTERNAL_API_SECRET else {}
         url = f"{settings.BACKEND_URL.rstrip('/')}/api/internal/tools/execute"
+        # Action tools that create records + run a live payment call (order checkout, event
+        # registration) are legitimately heavier than a lookup — they fan out to many sequential DB
+        # writes and a Paystack round-trip. Give them generous headroom so the backend's real result
+        # (incl. the payment link) always makes it back into the reply instead of the client giving up
+        # mid-flight and reporting a false "couldn't submit" while the order actually got created.
+        timeout = 60.0 if tool_name in ("create_sales_order", "register_for_event") else 20.0
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.post(url, json=payload, headers=headers)
                 if resp.status_code != 200:
                     logger.warning(f"{tool_name} tool HTTP {resp.status_code}: {resp.text[:200]}")

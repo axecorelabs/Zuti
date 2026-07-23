@@ -98,6 +98,8 @@ export interface ActionForwardingResult {
   registrationPaymentUrl?: string;
   /** Customer-facing notice for registration dedup / capacity outcomes (already registered, full). */
   registrationNotice?: string;
+  /** Paystack payment link for a bridged commerce (store) order, surfaced so the AI reply carries it. */
+  commercePaymentUrl?: string;
 }
 
 export type ContactChannel = 'TELEGRAM' | 'EMAIL' | 'WHATSAPP';
