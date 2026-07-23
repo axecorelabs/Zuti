@@ -1326,6 +1326,12 @@ export class ActionForwardingService {
       });
     }
 
+    // Fetch the bot config and the conversation metadata (needed for the contract draft) together —
+    // they're independent, so overlapping them saves a serial round-trip on the hot path. The
+    // conversation read is guarded so a capability early-return can't orphan a rejecting promise.
+    const conversationMetaP = this.prisma.conversation
+      .findUnique({ where: { id: input.conversationId }, select: { metadata: true } })
+      .catch(() => null as { metadata: unknown } | null);
     const bot = await this.prisma.bot.findUnique({
       where: { id: input.botId },
       select: { capabilities: true, aiConfig: true },
@@ -1378,10 +1384,7 @@ export class ActionForwardingService {
         ...registrationProductRequiredKeys,
       ]));
 
-      const conversation = await this.prisma.conversation.findUnique({
-        where: { id: input.conversationId },
-        select: { metadata: true },
-      });
+      const conversation = await conversationMetaP;
       const metadata = ((conversation?.metadata as Record<string, unknown> | null) ?? {});
       const contracts = ((metadata.actionContracts as Record<string, unknown> | null) ?? {});
       const previousDraft = ((contracts[detected.actionType] as Record<string, unknown> | null) ?? {});
@@ -2294,6 +2297,18 @@ export class ActionForwardingService {
       for (const [key, value] of Object.entries(args.fields as Record<string, unknown>)) put(key, value);
     }
 
+    // Kick off the recent-thread read now so it overlaps the (independent) bot/variant lookups below
+    // instead of running after them — one fewer serial DB round-trip on the order hot path. Guarded so
+    // an early return (NEEDS_CHOICE/NOT_FOUND) can't leave an unhandled rejection.
+    const recentMessagesP = this.prisma.message
+      .findMany({
+        where: { conversationId: params.conversationId },
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+        select: { id: true, role: true, content: true },
+      })
+      .catch(() => [] as { id: string; role: string; content: string }[]);
+
     // Variant-based ordering: if the model passed a catalog variant_id, the PRICE and product name
     // come authoritatively from the catalog — never from a model-typed number. This is what makes
     // commerce orders correct by construction (kills the mistyped/100x-price class of bug).
@@ -2354,15 +2369,10 @@ export class ActionForwardingService {
         ? args.summary.trim()
         : synthesizeToolSummary(actionType, fields);
 
-    // Pull the recent thread once: the newest message id anchors sourceMessageId (nullable FK), and
-    // the last several turns become the record's detail context (e.g. a technical issue's full
-    // details), so the team sees more than the model's one-line summary.
-    const recentMessages = await this.prisma.message.findMany({
-      where: { conversationId: params.conversationId },
-      orderBy: { createdAt: 'desc' },
-      take: 12,
-      select: { id: true, role: true, content: true },
-    });
+    // The recent thread (started above, overlapping the bot/variant lookups): the newest message id
+    // anchors sourceMessageId (nullable FK), and the last several turns become the record's detail
+    // context (e.g. a technical issue's full details), so the team sees more than the one-line summary.
+    const recentMessages = await recentMessagesP;
     const latestMessageId = recentMessages[0]?.id ?? '';
     const conversationContext = recentMessages
       .slice()

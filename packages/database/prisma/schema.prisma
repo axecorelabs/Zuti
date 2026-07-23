@@ -599,6 +599,10 @@ model ActionTask {
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([orgId, actionType, createdAt(sort: Desc)])
   @@index([orgId, assignedEndpointId, status, createdAt(sort: Desc)])
+  // Hot path: the agentic order flow looks up the active task for a single conversation
+  // (activeConversationTask in action-forwarding). All other indexes lead with orgId, so that
+  // lookup scanned the whole org's tasks; a conversation-led index keeps it a tight seek.
+  @@index([conversationId, actionType, createdAt(sort: Desc)])
 }
 
 enum ActionType {

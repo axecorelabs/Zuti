@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { ConversationsController } from './conversations.controller';
+import { InternalConversationsController } from './internal-conversations.controller';
 import { ConversationsService } from './conversations.service';
 import { ConversationsScheduler } from './conversations.scheduler';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -13,7 +14,7 @@ import { BillingModule } from '../billing/billing.module';
 
 @Module({
   imports: [HttpModule, NotificationsModule, ActivityModule, forwardRef(() => OrganizationsModule), EventsModule, TeamChatModule, AiUsageModule, BillingModule],
-  controllers: [ConversationsController],
+  controllers: [ConversationsController, InternalConversationsController],
   providers: [ConversationsService, ConversationsScheduler],
   exports: [ConversationsService],
 })

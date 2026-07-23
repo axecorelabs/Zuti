@@ -3,6 +3,7 @@ LLM service — routes all completions through OpenRouter.
 Uses the OpenAI-compatible SDK; swap `model` to any OpenRouter-supported model.
 """
 from __future__ import annotations
+import asyncio
 import logging
 import httpx
 from openai import AsyncOpenAI
@@ -10,6 +11,10 @@ from app.core.config import settings
 import json
 import re
 from typing import Any
+
+# Holds references to fire-and-forget background tasks (e.g. out-of-band summary refresh) so the
+# event loop doesn't garbage-collect them mid-flight. Tasks remove themselves when done.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 logger = logging.getLogger(__name__)
 
@@ -766,7 +771,11 @@ class LlmService:
                 )
                 resolved_tag = bool(re.search(r"\[\s*resolved\s*\]", reply, re.IGNORECASE))
                 should_resolve = (resolved_tag or (action_handled and not payment_url)) and not payment_url
-                new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
+                # Refresh the running summary OFF the critical path — it's only needed as context for
+                # the NEXT turn, so computing it here would just make the customer wait on an extra
+                # model call. Returns "" so the caller skips its own write; the background task
+                # persists the fresh summary directly.
+                self._schedule_summary_refresh(conversation_id, org_id, conversation_summary, history, user_message, reply, model)
                 return {
                     "reply": reply,
                     "registration_handled": registration_handled,
@@ -774,7 +783,7 @@ class LlmService:
                     "action_type": action_type,
                     "payment_url": payment_url,
                     "should_resolve": bool(should_resolve),
-                    "conversation_summary": new_summary,
+                    "conversation_summary": "",
                     "sources": retrieved_passages,
                     "grounded": has_strong_grounding,
                 }
@@ -835,8 +844,9 @@ class LlmService:
             org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
             customer_context=customer_context,
         )
-        new_summary = await self._refresh_summary(conversation_summary, history or [], user_message, reply, model)
-        return {"reply": reply, "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": new_summary, "sources": retrieved_passages, "grounded": has_strong_grounding}
+        # Summary refresh is off the critical path (see the early-return note above).
+        self._schedule_summary_refresh(conversation_id, org_id, conversation_summary, history, user_message, reply, model)
+        return {"reply": reply, "registration_handled": registration_handled, "action_handled": action_handled, "action_type": action_type, "payment_url": payment_url, "should_resolve": False, "conversation_summary": "", "sources": retrieved_passages, "grounded": has_strong_grounding}
 
     async def _postprocess_knowledge_answer(
         self, reply: str, *, knowledge_search: Any, action_handled: bool, has_strong_grounding: bool,
@@ -930,6 +940,35 @@ class LlmService:
             return "UNSUPPORTED" not in out
         except Exception:
             return True
+
+    def _schedule_summary_refresh(
+        self, conversation_id: str, org_id: str, prior_summary: str | None,
+        history: list[dict] | None, user_message: str, reply: str, model: str,
+    ) -> None:
+        """Fire-and-forget: recompute the running summary and persist it via the backend, without
+        blocking the reply. Held in _BACKGROUND_TASKS so the loop can't GC it mid-flight."""
+        if not conversation_id or not org_id or not reply:
+            return
+        task = asyncio.create_task(
+            self._refresh_and_persist_summary(conversation_id, org_id, prior_summary, list(history or []), user_message, reply, model)
+        )
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    async def _refresh_and_persist_summary(
+        self, conversation_id: str, org_id: str, prior_summary: str | None,
+        history: list[dict], user_message: str, reply: str, model: str,
+    ) -> None:
+        try:
+            new_summary = await self._refresh_summary(prior_summary, history, user_message, reply, model)
+            if not (new_summary or "").strip():
+                return
+            headers = {"X-Internal-Key": settings.INTERNAL_API_SECRET} if settings.INTERNAL_API_SECRET else {}
+            url = f"{settings.BACKEND_URL.rstrip('/')}/api/internal/conversations/summary"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                await client.post(url, json={"conversationId": conversation_id, "orgId": org_id, "summary": new_summary}, headers=headers)
+        except Exception as e:
+            logger.warning(f"background summary refresh failed for {conversation_id}: {e}")
 
     async def _refresh_summary(
         self, prior_summary: str | None, history: list[dict], user_message: str, reply: str, model: str
