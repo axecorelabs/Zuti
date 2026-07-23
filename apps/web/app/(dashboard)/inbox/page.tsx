@@ -480,8 +480,10 @@ function InboxPageContent() {
     if (!orgId || !requestedConversationId || loading) return;
     if (conversations.some((conv) => conv.id === requestedConversationId)) return;
 
+    let cancelled = false;
     conversationsApi.get(orgId, requestedConversationId, { messageLimit: MESSAGE_PAGE_SIZE, includeContext: false })
       .then((res) => {
+        if (cancelled) return; // a newer selection superseded this deep-link fetch — don't clobber it
         const conversation = res.data as ConversationDetails;
         setConversations((prev) => {
           if (prev.some((item) => item.id === conversation.id)) return prev;
@@ -492,25 +494,35 @@ function InboxPageContent() {
         setMessageBeforeCursor(conversation.messagePage?.nextBefore ?? null);
       })
       .catch(() => {});
+    return () => { cancelled = true; };
   }, [orgId, requestedConversationId, loading, conversations]);
 
   useEffect(() => {
     if (!orgId || !selected?.id) return;
+    // Guard the race: this fetch calls setSelected() on the SAME `selected` the effect depends on.
+    // If the user switches conversations before it resolves, a late response would write its (stale)
+    // conversation back into `selected`, re-triggering this effect — two in-flight fetches then flip
+    // `selected` back and forth forever and neither ever finishes loading. Dropping a superseded
+    // fetch's result breaks that loop.
+    let cancelled = false;
+    const targetId = selected.id;
     setLoadingSelected(true);
     setLoadingOlderMessages(false);
     setHasMoreMessages(false);
     setMessageBeforeCursor(null);
     setLoadingPanelContext(false);
     setIsNoteMode(false);
-    conversationsApi.get(orgId, selected.id, { messageLimit: MESSAGE_PAGE_SIZE, includeContext: false })
+    conversationsApi.get(orgId, targetId, { messageLimit: MESSAGE_PAGE_SIZE, includeContext: false })
       .then((res) => {
+        if (cancelled) return;
         const details = res.data as ConversationDetails;
         setSelected(details);
         setHasMoreMessages(details.messagePage?.hasMore === true);
         setMessageBeforeCursor(details.messagePage?.nextBefore ?? null);
       })
       .catch(() => {})
-      .finally(() => setLoadingSelected(false));
+      .finally(() => { if (!cancelled) setLoadingSelected(false); });
+    return () => { cancelled = true; };
   }, [selected?.id, orgId]);
 
   useEffect(() => {

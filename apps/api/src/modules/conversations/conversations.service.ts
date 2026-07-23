@@ -165,6 +165,11 @@ export class ConversationsService {
     }
 
     const rows = await this.prisma.conversation.findMany({
+      // Load the relations via LATERAL joins in ONE round-trip instead of Prisma's default of a
+      // separate sequential query per relation (this list was 7 sequential statements). The join
+      // strategy also pushes the messages `take: 1` down into the DB, so the last-message preview no
+      // longer pulls a conversation's whole history to slice one row client-side.
+      relationLoadStrategy: 'join',
       where: {
         organizationId,
         ...(filters.status && { status: filters.status as any }),
@@ -175,7 +180,9 @@ export class ConversationsService {
       include: {
         bot: { select: { id: true, name: true, telegramUsername: true } },
         assignedAgent: { select: { id: true, name: true, email: true } },
-        _count: { select: { messages: true } },
+        // NOTE: no `_count: { messages: true }` — it compiled to a GROUP BY COUNT over the ENTIRE
+        // Message table (LEFT JOIN aggregate) on every list load, and nothing in the UI reads it.
+        // It was the dominant cost of this query; the sidebar only needs the last-message preview.
         messages: {
           orderBy: { createdAt: 'desc' },
           take: 1,
@@ -213,6 +220,9 @@ export class ConversationsService {
       ];
     }
     const conversation = await this.prisma.conversation.findFirst({
+      // One round-trip for bot + assignedAgent + escalations (with the take pushed down) instead of
+      // a sequential query per relation — the inbox calls findOne on every conversation open.
+      relationLoadStrategy: 'join',
       where: where as any,
       include: {
         bot: { select: { id: true, name: true, telegramUsername: true } },
@@ -267,6 +277,7 @@ export class ConversationsService {
     const [previousConversations, escalationHistory] = includeContext
       ? await Promise.all([
         prevCustomerWhere ? this.prisma.conversation.findMany({
+          relationLoadStrategy: 'join',
           where: {
             organizationId,
             ...prevCustomerWhere,
@@ -275,7 +286,8 @@ export class ConversationsService {
           include: {
             bot: { select: { id: true, name: true, telegramUsername: true } },
             assignedAgent: { select: { id: true, name: true, email: true } },
-            _count: { select: { messages: true } },
+            // (no `_count: { messages: true }` — it ran a full Message aggregate and the panel
+            // never displayed a message count.)
           },
           orderBy: { lastMessageAt: 'desc' },
           take: 10,

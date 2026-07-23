@@ -224,7 +224,11 @@ ESCALATE_TO_HUMAN_TOOL = {
             "Escalate the conversation to a human on the team / the owner. Call this ONLY when the "
             "customer explicitly asks to speak to a person, the owner, or management, or when the "
             "request is clearly beyond what you can handle AND you have their name and email so the "
-            "team can reach them. Do not claim a human has responded — only that the team was notified."
+            "team can reach them. Do NOT escalate a question you have already answered, and do NOT "
+            "escalate merely to offer 'more detail' on something you just answered — answer what you "
+            "can from your sources and stop there. Only escalate if the customer explicitly wants a "
+            "human or you genuinely cannot answer at all. Do not claim a human has responded — only "
+            "that the team was notified."
         ),
         "parameters": {
             "type": "object",
@@ -686,7 +690,12 @@ class LlmService:
                 "search_knowledge covers it, briefly say you don't have that information and offer to "
                 "connect the customer with the team — do NOT guess or invent prices, policies, dates, or "
                 "availability, and in that case also call report_knowledge_gap (it runs silently — still "
-                "give your reply). General chit-chat and greetings need no grounding."
+                "give your reply). General chit-chat and greetings need no grounding. You may also "
+                "confirm, repeat, or build on a fact you ALREADY stated earlier in THIS conversation "
+                "without searching again — that fact is already grounded, so do not suddenly claim you "
+                "lack it. When the customer simply acknowledges or reacts to something you said (e.g. "
+                "'oh, I didn't know that'), that is normal conversation, not a new factual question — "
+                "respond naturally; do not treat it as something you must abstain from or escalate."
             )
         if action_tool_names:
             tool_guidance += (
@@ -767,7 +776,7 @@ class LlmService:
                     has_strong_grounding=has_strong_grounding, gap_logged=gap_logged,
                     retrieved_passages=retrieved_passages, model=model, user_message=user_message,
                     org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
-                    customer_context=customer_context,
+                    customer_context=customer_context, history=history, conversation_summary=conversation_summary,
                 )
                 resolved_tag = bool(re.search(r"\[\s*resolved\s*\]", reply, re.IGNORECASE))
                 should_resolve = (resolved_tag or (action_handled and not payment_url)) and not payment_url
@@ -842,7 +851,7 @@ class LlmService:
             has_strong_grounding=has_strong_grounding, gap_logged=gap_logged,
             retrieved_passages=retrieved_passages, model=model, user_message=user_message,
             org_id=org_id, bot_id=bot_id, conversation_id=conversation_id, channel=channel,
-            customer_context=customer_context,
+            customer_context=customer_context, history=history, conversation_summary=conversation_summary,
         )
         # Summary refresh is off the critical path (see the early-return note above).
         self._schedule_summary_refresh(conversation_id, org_id, conversation_summary, history, user_message, reply, model)
@@ -852,6 +861,7 @@ class LlmService:
         self, reply: str, *, knowledge_search: Any, action_handled: bool, has_strong_grounding: bool,
         gap_logged: bool, retrieved_passages: list[dict], model: str, user_message: str,
         org_id: str, bot_id: str, conversation_id: str, channel: str, customer_context: str | None = None,
+        history: list[dict] | None = None, conversation_summary: str | None = None,
     ) -> tuple[str, bool]:
         """For an informational answer on weak/empty grounding: (1) faithfulness-check it and override
         with a safe abstention if unsupported, then (2) deterministically log a knowledge gap when the
@@ -860,11 +870,23 @@ class LlmService:
         if knowledge_search is None or action_handled or not reply:
             return reply, gap_logged
 
+        # Facts the bot already gave this customer earlier count as grounding for a follow-up — this
+        # is what stops the bot from contradicting itself (answer a fact, then abstain when the
+        # customer asks about that same fact). Built from the running summary + the last few turns.
+        convo_parts: list[str] = []
+        if (conversation_summary or "").strip():
+            convo_parts.append("Summary so far: " + conversation_summary.strip())
+        for h in (history or [])[-6:]:
+            content = (h.get("content") or "").strip()
+            if content:
+                convo_parts.append(f"{h.get('role', 'user')}: {content}")
+        conversation_context = "\n".join(convo_parts)
+
         # (1) Faithfulness: only for a weakly-grounded answer that isn't already declining — verify it
         # is supported (by KB passages OR the approved customer context) and override with a safe
         # abstention if not. Strong grounding is trusted.
         if not has_strong_grounding and not _looks_like_abstention(reply):
-            if not await self._verify_grounding(reply, retrieved_passages, model, customer_context):
+            if not await self._verify_grounding(reply, retrieved_passages, model, customer_context, conversation_context):
                 logger.info("generate_agentic: unfaithful answer overridden with abstention")
                 reply = ABSTENTION_MESSAGE
 
@@ -907,12 +929,15 @@ class LlmService:
             return (result, passages, False)
         return ({"outcome": "EMPTY", "instruction": "The knowledge base has nothing on this. Tell the customer you don't have that information and offer a human follow-up. Do not guess or invent an answer. If this is a genuine on-topic question, also call report_knowledge_gap so the team can add it."}, [], False)
 
-    async def _verify_grounding(self, reply: str, passages: list[dict], model: str, customer_context: str | None = None) -> bool:
+    async def _verify_grounding(self, reply: str, passages: list[dict], model: str, customer_context: str | None = None, conversation_context: str | None = None) -> bool:
         """Faithfulness check: is every factual claim in `reply` supported by the grounding the model
-        was given? Grounding = the retrieved KB passages PLUS the approved context (registration
-        options, approved reply templates, product catalog, account details) injected for this turn —
-        a reply grounded in any of those is fine. Returns True (ok) when grounded or when the reply
-        makes no factual claims; False when it asserts unsupported facts. Fails open on error."""
+        was given? Grounding = the retrieved KB passages, the approved context (registration options,
+        approved reply templates, product catalog, account details), AND facts already established
+        earlier in THIS conversation — a reply grounded in any of those is fine. That last source
+        matters: when the customer follows up on something the bot already answered ('does he own a
+        farm?' after the bot said the company runs a farm), confirming it is faithful, not a new
+        unsupported claim. Returns True (ok) when grounded or when the reply makes no factual claims;
+        False when it asserts unsupported facts. Fails open on error."""
         parts: list[str] = []
         kb = "\n---\n".join((p.get("content") or "")[:800] for p in (passages or [])[:6])
         if kb:
@@ -923,16 +948,24 @@ class LlmService:
                 "OTHER APPROVED CONTEXT (registration/event options, approved reply templates, "
                 "product catalog, the customer's own details):\n" + ctx[:3500]
             )
+        convo = (conversation_context or "").strip()
+        if convo:
+            parts.append(
+                "ALREADY ESTABLISHED EARLIER IN THIS CONVERSATION (facts the agent already gave this "
+                "customer; confirming or building on these is grounded):\n" + convo[:3000]
+            )
         evidence = "\n\n".join(parts) or "(no grounding sources were provided)"
         system = (
             "You are a strict fact-checker for a customer-support reply. You are given the SOURCES the "
             "agent was allowed to use and the agent's ANSWER. The following are ALWAYS fine and count "
             "as GROUNDED: greetings, apologies, offers to help, asking the customer for more details, "
-            "and offering to perform or start an action the sources support (e.g. registering them for "
-            "a listed event, booking a meeting, taking an order). Only respond UNSUPPORTED when the "
-            "answer asserts a specific fact about the company, its products, pricing, policies, "
-            "features, dates, or numbers that the SOURCES do not support (or the sources are empty and "
-            "it still states such facts). Reply with exactly one word: GROUNDED or UNSUPPORTED."
+            "offering to perform or start an action the sources support (e.g. registering them for "
+            "a listed event, booking a meeting, taking an order), and confirming or reiterating a fact "
+            "already established earlier in this conversation (shown in the sources). Only respond "
+            "UNSUPPORTED when the answer asserts a specific fact about the company, its products, "
+            "pricing, policies, features, dates, or numbers that the SOURCES do not support (or the "
+            "sources are empty and it still states such facts). Reply with exactly one word: GROUNDED "
+            "or UNSUPPORTED."
         )
         user = f"SOURCES:\n{evidence}\n\nANSWER:\n{reply}\n\nVerdict (GROUNDED or UNSUPPORTED):"
         try:

@@ -71,20 +71,29 @@ export default function DashboardPage() {
   const withOrg = (path: string) => (activeOrgId ? `${path}?org=${activeOrgId}` : path);
 
   useEffect(() => {
+    // Guard against a stale org's data leaking in: when activeOrgId changes we re-fetch, but a
+    // previously-visited org's request may still be in flight and resolve LATER, overwriting the
+    // current org's stats. `cancelled` drops any result from a superseded run, and resetting
+    // `loading` shows skeletons (not the old org's numbers) while the new data loads.
+    let cancelled = false;
+    setLoading(true);
     orgsApi.listSummary().then(async (res) => {
+      if (cancelled) return;
       const orgs = res.data as OrgSummary[];
       if (!orgs.length) return;
       const preferred = activeOrgId
         ? (orgs.find((currentOrg) => currentOrg.id === activeOrgId) ?? orgs[0])
         : orgs[0];
-      setOrg(preferred);
       const role = (preferred.role ?? getRoleForOrg(preferred.id) ?? null) as MemberRole | null;
-      setMyRole(role);
 
       const overviewRes = await conversationsApi.overview(preferred.id).catch(() => null);
+      if (cancelled) return; // org switched again mid-flight — this result is stale, drop it
       const overviewData = (overviewRes?.data as OverviewData | undefined) ?? null;
-      setOverview(overviewData);
 
+      // Commit all org-scoped state together, only for the still-current org.
+      setOrg(preferred);
+      setMyRole(role);
+      setOverview(overviewData);
       setStats({
         total: overviewData?.totals.total ?? 0,
         open: overviewData?.totals.open ?? 0,
@@ -93,7 +102,8 @@ export default function DashboardPage() {
         bots: role === 'AGENT' ? 0 : (preferred.botCount ?? 0),
         members: preferred.memberCount ?? 0,
       });
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch(() => {}).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [activeOrgId, getRoleForOrg]);
 
   const volumeData = (overview?.volumeByDay ?? []).map((point) => ({

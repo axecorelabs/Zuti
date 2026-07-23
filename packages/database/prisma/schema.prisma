@@ -1,5 +1,8 @@
 generator client {
   provider = "prisma-client-js"
+  // Enables per-query `relationLoadStrategy: "join"` — loads relations via LATERAL joins in a single
+  // round-trip (with proper LIMIT pushdown) instead of Prisma's default N sequential statements.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {
