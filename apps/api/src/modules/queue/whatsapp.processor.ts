@@ -26,7 +26,7 @@ import {
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
 import { WHATSAPP_QUEUE } from './queue.module';
-import { extractWhatsAppConfig, sendWhatsAppText } from '../../common/utils/whatsapp';
+import { extractWhatsAppConfig, sendWhatsAppText, sendWhatsAppTypingIndicator } from '../../common/utils/whatsapp';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
@@ -654,6 +654,7 @@ export class WhatsAppProcessor {
       forwardingResult,
       userMessage.id,
       recentMessagesPromise,
+      messageId,
     );
   }
 
@@ -675,6 +676,7 @@ export class WhatsAppProcessor {
     forwardingResult: ActionForwardingResult,
     inboundMessageId?: string,
     preloadedRecentMessages?: Promise<Array<{ role: string; content: string }>>,
+    inboundWaMessageId?: string,
   ) {
     const aiServiceUrl = this.config.get<string>('AI_SERVICE_URL') ?? 'http://localhost:8000';
     const organizationId = bot.organizationId;
@@ -837,6 +839,15 @@ export class WhatsAppProcessor {
     }
     if (registrationContext) enabledTools.push('register_for_event');
     const useTools = isAgenticEnabled(this.config); // knowledge grounding makes every bot agentic; enabled_tools may still be empty (search_knowledge is added AI-side)
+
+    // Show a WhatsApp "typing…" indicator (Meta only) while the AI composes. Meta keeps it up for
+    // ~25s and clears it the moment our reply is delivered, so one fire-and-forget call covers the
+    // whole wait. Never let an indicator failure affect message handling.
+    void sendWhatsAppTypingIndicator(
+      this.http,
+      { provider: bot.whatsappProvider, channelIdentifier: bot.whatsappChannelIdentifier, config: bot.whatsappConfig },
+      inboundWaMessageId,
+    ).catch(() => undefined);
 
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();

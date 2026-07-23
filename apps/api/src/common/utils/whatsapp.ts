@@ -255,3 +255,39 @@ export async function sendWhatsAppText(
 
   throw new BadRequestException('Unsupported WhatsApp provider');
 }
+
+/**
+ * Show WhatsApp's "typing…" indicator to the customer while the AI composes a reply. Meta-only
+ * (Twilio's WhatsApp API has no typing indicator). It piggybacks on the read receipt for the
+ * customer's incoming message, so it needs that message's WAMID. Meta keeps the indicator up for up
+ * to ~25s and clears it the moment our reply is delivered, so a single call covers the whole wait —
+ * no keep-alive needed. Fire-and-forget by contract: callers should not let a failure here affect
+ * message handling.
+ */
+export async function sendWhatsAppTypingIndicator(
+  http: HttpService,
+  connection: WhatsAppBotConnection,
+  incomingMessageId: string | null | undefined,
+): Promise<void> {
+  if (connection.provider !== 'META') return; // Twilio: no typing indicator
+  const channelIdentifier = connection.channelIdentifier?.trim();
+  const messageId = (incomingMessageId ?? '').trim();
+  if (!channelIdentifier || !messageId) return;
+
+  const config = extractWhatsAppConfig(connection.config);
+  const accessToken = typeof config.accessToken === 'string' ? config.accessToken.trim() : '';
+  if (!accessToken) return;
+
+  await firstValueFrom(
+    http.post(
+      `https://graph.facebook.com/v20.0/${channelIdentifier}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' },
+      },
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    ),
+  );
+}

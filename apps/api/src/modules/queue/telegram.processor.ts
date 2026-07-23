@@ -1022,6 +1022,9 @@ export class TelegramProcessor {
     if (registrationContext) enabledTools.push('register_for_event');
     const useTools = isAgenticEnabled(this.config); // knowledge grounding makes every bot agentic; enabled_tools may still be empty (search_knowledge is added AI-side)
 
+    // Show a "typing…" indicator while the (multi-second) AI call runs so the wait feels responsive.
+    // Fire-and-forget + self-capping; stopped in the finally once the reply has been sent.
+    const stopTyping = this.startTelegramTyping(telegramToken, telegramChatId);
     try {
       const internalApiKey = (this.config.get<string>('INTERNAL_API_SECRET') ?? this.config.get<string>('AI_SERVICE_SECRET') ?? '').trim();
       const response = await firstValueFrom(
@@ -1382,7 +1385,33 @@ export class TelegramProcessor {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`AI service error for conversation ${conversationId}: ${msg}`);
+    } finally {
+      stopTyping();
     }
+  }
+
+  /**
+   * Show Telegram's "typing…" indicator for the duration of the AI call. Telegram clears a chat
+   * action after ~5s, so we re-send every 4s until stop() is called (or a 30s safety cap trips, so a
+   * missed stop can never loop forever). All sends are fire-and-forget — a failed indicator must
+   * never affect message handling. Telegram auto-clears the indicator the moment the reply arrives.
+   */
+  private startTelegramTyping(telegramToken: string, telegramChatId: string): () => void {
+    const post = () => {
+      void firstValueFrom(
+        this.http.post(`https://api.telegram.org/bot${telegramToken}/sendChatAction`, {
+          chat_id: telegramChatId,
+          action: 'typing',
+        }),
+      ).catch(() => undefined);
+    };
+    post();
+    const interval = setInterval(post, 4000);
+    const cap = setTimeout(() => clearInterval(interval), 30000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(cap);
+    };
   }
 
   private async findOrgSystemSender(organizationId: string): Promise<string> {
