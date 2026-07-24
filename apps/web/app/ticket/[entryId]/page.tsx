@@ -140,7 +140,7 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
               <>
                 <p style={{ fontSize: 10, fontWeight: 600, color: '#52525b', letterSpacing: '0.15em', margin: '0 0 10px' }}>SCAN AT ENTRANCE</p>
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={ticket.qrDataUrl} alt="Admission QR code" style={{ width: 200, height: 200, borderRadius: 12, background: '#fff', padding: 10 }} />
+                <img src={ticket.qrDataUrl} alt="Admission QR code" style={{ display: 'block', margin: '0 auto', width: 200, height: 200, borderRadius: 12, background: '#fff', padding: 10 }} />
                 <p style={{ fontSize: 11, color: '#71717a', margin: '10px 0 0' }}>Present this code at the door for admission.</p>
               </>
             ) : null}
