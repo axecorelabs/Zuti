@@ -87,13 +87,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
 
   return (
     <div style={{ position: 'relative', minHeight: '100vh', background: '#0a0a0e', fontFamily }}>
-      {/* Fixed, blurred flier backdrop (filter: blur works everywhere) + dark layer for legibility. */}
-      {ev.flierUrl && (
-        <div aria-hidden style={{ position: 'fixed', inset: 0, zIndex: 0, backgroundImage: `url("${ev.flierUrl}")`, backgroundSize: 'cover', backgroundPosition: 'center', filter: 'blur(34px)', transform: 'scale(1.2)' }} />
-      )}
-      <div aria-hidden style={{ position: 'fixed', inset: 0, zIndex: 0, background: ev.flierUrl ? 'rgba(8,8,11,0.84)' : '#0a0a0e' }} />
-
-      <div style={{ position: 'relative', zIndex: 1, maxWidth: 560, margin: '0 auto', paddingBottom: 96 }}>
+      <div style={{ position: 'relative', zIndex: 1, maxWidth: 560, margin: '0 auto', paddingBottom: 96, background: '#0d0d12', minHeight: '100vh', boxShadow: '0 0 80px rgba(0,0,0,0.5)' }}>
         {/* Hero */}
         <div style={{ position: 'relative', width: '100%' }}>
           {heroImg ? (
@@ -146,7 +140,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
       </div>
 
       {/* Sticky bottom bar: price + jump-to-form CTA */}
-      <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 3, background: 'rgba(12,12,16,0.92)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+      <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 3, background: '#0d0d12', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
         <div style={{ maxWidth: 560, margin: '0 auto', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div>
             {!allFree && <p style={{ fontSize: 11, color: '#8b8b94', margin: 0 }}>{multiPriced ? 'From' : 'Price'}</p>}
@@ -164,7 +158,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
 }
 
 const fontFamily = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-const sheet: React.CSSProperties = { background: 'rgba(20,20,25,0.66)', backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 18 };
+const sheet: React.CSSProperties = { background: '#16161c', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 18 };
 const titleStyle: React.CSSProperties = { fontSize: 'clamp(24px, 6.5vw, 34px)', fontWeight: 800, color: '#fff', margin: 0, lineHeight: 1.15, letterSpacing: '-0.4px', textShadow: '0 2px 20px rgba(0,0,0,0.55)' };
 const sectionHeading: React.CSSProperties = { fontSize: 17, fontWeight: 700, color: '#f4f4f5', margin: '0 0 12px', letterSpacing: '-0.2px' };
 const buyBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', padding: '13px 28px', borderRadius: 12, background: '#6366f1', color: '#fff', fontSize: 15, fontWeight: 700, textDecoration: 'none', whiteSpace: 'nowrap' };
