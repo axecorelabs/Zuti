@@ -417,10 +417,15 @@ function EventImageField({ label, orgId, value, onChange }: { label: string; org
     <div>
       <label className="block text-xs text-zinc-400 mb-1.5 font-medium">{label}</label>
       {value ? (
-        <div className="relative">
+        <div className="relative group">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={value} alt={label} className="w-full h-24 object-cover rounded-xl border border-zinc-800" />
-          <button type="button" onClick={() => onChange('')} className="absolute top-1 right-1 p-1 rounded-lg bg-black/60 text-zinc-300 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+          {/* Click the image to replace it directly (opens the file picker). */}
+          <label className="absolute inset-0 flex items-center justify-center rounded-xl cursor-pointer bg-black/0 group-hover:bg-black/55 text-transparent group-hover:text-white text-xs font-medium transition-colors">
+            {uploading ? <RefreshCw className="w-4 h-4 animate-spin text-white" /> : <span className="flex items-center gap-1"><ImagePlus className="w-3.5 h-3.5" /> Replace</span>}
+            <input type="file" accept="image/*" className="hidden" onChange={onFile} disabled={uploading} />
+          </label>
+          <button type="button" onClick={() => onChange('')} className="absolute top-1 right-1 z-10 p-1 rounded-lg bg-black/60 text-zinc-300 hover:text-white"><X className="w-3.5 h-3.5" /></button>
         </div>
       ) : (
         <label className="flex flex-col items-center justify-center gap-1 h-24 rounded-xl border border-dashed border-zinc-700 bg-zinc-900/50 cursor-pointer hover:border-zinc-600 text-zinc-500 text-xs">
