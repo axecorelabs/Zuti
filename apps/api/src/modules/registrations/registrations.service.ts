@@ -425,7 +425,10 @@ export class RegistrationsService {
   async getPublicEventBySlug(slug: string) {
     const product = await this.prisma.registrationProduct.findFirst({
       where: { slug, isPublic: true, isActive: true },
-      include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
+      include: {
+        ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] },
+        organization: { select: { name: true } },
+      },
     });
     if (!product) throw new NotFoundException('Event not found');
 
@@ -462,6 +465,7 @@ export class RegistrationsService {
       capacity: product.capacity,
       spotsLeft: product.capacity != null ? Math.max(0, product.capacity - usedTotal) : null,
       soldOut: product.capacity != null && usedTotal >= product.capacity,
+      organizerName: product.organization?.name ?? null,
     };
   }
 
