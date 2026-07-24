@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean, IsInt, IsArray, IsDateString, Min, ValidateNested, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, IsInt, IsArray, IsDateString, IsEmail, Min, Max, MaxLength, ValidateNested, IsIn, IsObject } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class RegistrationFieldDto {
@@ -23,6 +23,15 @@ export class CreateRegistrationProductDto {
   @IsArray() @ValidateNested({ each: true }) @Type(() => RegistrationFieldDto) fields: RegistrationFieldDto[];
   @IsOptional() @IsString() botId?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
+  // Public event page + branding.
+  @IsOptional() @IsBoolean() isPublic?: boolean;
+  @IsOptional() @IsString() @MaxLength(80) slug?: string;
+  @IsOptional() @IsString() bannerUrl?: string;
+  @IsOptional() @IsString() flierUrl?: string;
+  @IsOptional() @IsString() @MaxLength(200) venue?: string;
+  // Optional ticket tiers to create alongside the event (atomic). When present they supersede the
+  // single price above.
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => CreateTicketTypeDto) ticketTypes?: CreateTicketTypeDto[];
 }
 
 export class UpdateRegistrationProductDto {
@@ -39,8 +48,42 @@ export class UpdateRegistrationProductDto {
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RegistrationFieldDto) fields?: RegistrationFieldDto[];
   @IsOptional() @IsString() botId?: string;
   @IsOptional() @IsBoolean() isActive?: boolean;
+  @IsOptional() @IsBoolean() isPublic?: boolean;
+  @IsOptional() @IsString() @MaxLength(80) slug?: string;
+  @IsOptional() @IsString() bannerUrl?: string;
+  @IsOptional() @IsString() flierUrl?: string;
+  @IsOptional() @IsString() @MaxLength(200) venue?: string;
 }
 
 export class UpdateRegistrationEntryDto {
   @IsIn(['CONFIRMED', 'CANCELLED']) status: 'CONFIRMED' | 'CANCELLED';
+}
+
+// ── Ticket tiers ────────────────────────────────────────────────────────────
+export class CreateTicketTypeDto {
+  @IsString() @MaxLength(80) name: string;
+  @IsOptional() @IsString() @MaxLength(300) description?: string;
+  @IsOptional() @IsInt() @Min(0) priceMinor?: number;
+  @IsOptional() @IsString() currency?: string;
+  @IsOptional() @IsInt() @Min(1) capacity?: number;
+  @IsOptional() @IsInt() @Min(0) sortOrder?: number;
+}
+
+export class UpdateTicketTypeDto {
+  @IsOptional() @IsString() @MaxLength(80) name?: string;
+  @IsOptional() @IsString() @MaxLength(300) description?: string;
+  @IsOptional() @IsInt() @Min(0) priceMinor?: number;
+  @IsOptional() @IsString() currency?: string;
+  @IsOptional() @IsInt() @Min(1) capacity?: number;
+  @IsOptional() @IsInt() @Min(0) sortOrder?: number;
+  @IsOptional() @IsBoolean() isActive?: boolean;
+}
+
+// ── Public event page: self-serve registration/purchase ─────────────────────
+export class PublicRegisterDto {
+  @IsOptional() @IsString() @MaxLength(120) customerName?: string;
+  @IsEmail() customerEmail: string;
+  @IsOptional() @IsString() ticketTypeId?: string;
+  @IsOptional() @IsInt() @Min(1) @Max(50) quantity?: number;
+  @IsOptional() @IsObject() fields?: Record<string, string>;
 }

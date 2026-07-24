@@ -3,7 +3,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 import { RegistrationsService } from './registrations.service';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto } from './dto/registrations.dto';
 
 @UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
 @Controller('organizations/:id/registrations')
@@ -78,5 +78,38 @@ export class RegistrationsController {
     @Body() dto: UpdateRegistrationEntryDto,
   ) {
     return this.svc.updateEntryStatus(orgId, entryId, dto);
+  }
+
+  // ── Ticket tiers ────────────────────────────────────────────────────────────
+
+  @Get(':productId/ticket-types')
+  listTicketTypes(@Param('id') orgId: string, @Param('productId') productId: string) {
+    return this.svc.listTicketTypes(orgId, productId);
+  }
+
+  @Post(':productId/ticket-types')
+  @RequireRole('OWNER', 'ADMIN')
+  createTicketType(
+    @Param('id') orgId: string,
+    @Param('productId') productId: string,
+    @Body() dto: CreateTicketTypeDto,
+  ) {
+    return this.svc.createTicketType(orgId, productId, dto);
+  }
+
+  @Patch('ticket-types/:ticketTypeId')
+  @RequireRole('OWNER', 'ADMIN')
+  updateTicketType(
+    @Param('id') orgId: string,
+    @Param('ticketTypeId') ticketTypeId: string,
+    @Body() dto: UpdateTicketTypeDto,
+  ) {
+    return this.svc.updateTicketType(orgId, ticketTypeId, dto);
+  }
+
+  @Delete('ticket-types/:ticketTypeId')
+  @RequireRole('OWNER', 'ADMIN')
+  deleteTicketType(@Param('id') orgId: string, @Param('ticketTypeId') ticketTypeId: string) {
+    return this.svc.deleteTicketType(orgId, ticketTypeId);
   }
 }

@@ -8,7 +8,7 @@ import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto } from './dto/registrations.dto';
 
 type PaystackInitResponse = {
   status: boolean;
@@ -42,6 +42,10 @@ export class RegistrationsService {
       const bot = await this.prisma.bot.findFirst({ where: { id: dto.botId, organizationId: orgId }, select: { id: true } });
       if (!bot) throw new NotFoundException('Bot not found');
     }
+    // A public event needs a shareable slug; generate one from the name if none was supplied.
+    const slug = dto.slug?.trim()
+      ? await this.ensureUniqueSlug(this.slugifyBase(dto.slug))
+      : (dto.isPublic ? await this.ensureUniqueSlug(this.slugifyBase(dto.name)) : null);
     return this.prisma.registrationProduct.create({
       data: {
         orgId,
@@ -58,8 +62,49 @@ export class RegistrationsService {
         confirmationMessage: dto.confirmationMessage ?? null,
         fields: (dto.fields ?? []) as any,
         isActive: dto.isActive ?? true,
+        isPublic: dto.isPublic ?? false,
+        slug,
+        bannerUrl: dto.bannerUrl ?? null,
+        flierUrl: dto.flierUrl ?? null,
+        venue: dto.venue ?? null,
+        // Create any tiers in the same transaction so an event is never left half-configured.
+        ...(dto.ticketTypes && dto.ticketTypes.length > 0
+          ? {
+              ticketTypes: {
+                create: dto.ticketTypes.map((t, i) => ({
+                  name: t.name,
+                  description: t.description ?? null,
+                  priceMinor: t.priceMinor ?? null,
+                  currency: t.currency ?? dto.currency ?? 'NGN',
+                  capacity: t.capacity ?? null,
+                  sortOrder: t.sortOrder ?? i,
+                })),
+              },
+            }
+          : {}),
       },
+      include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
+  }
+
+  // ── Public-page slug helpers ────────────────────────────────────────────────
+  private slugifyBase(value: string): string {
+    return (value || 'event')
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'event';
+  }
+
+  /** Global-unique slug: try the base, then append a short random suffix on collision. */
+  private async ensureUniqueSlug(base: string, ignoreProductId?: string): Promise<string> {
+    for (let i = 0; i < 5; i++) {
+      const candidate = i === 0 ? base : `${base}-${randomBytes(3).toString('hex')}`;
+      const existing = await this.prisma.registrationProduct.findUnique({ where: { slug: candidate }, select: { id: true } });
+      if (!existing || existing.id === ignoreProductId) return candidate;
+    }
+    return `${base}-${randomBytes(6).toString('hex')}`;
   }
 
   async listProducts(orgId: string, botId?: string) {
@@ -91,6 +136,14 @@ export class RegistrationsService {
       const bot = await this.prisma.bot.findFirst({ where: { id: dto.botId, organizationId: orgId }, select: { id: true } });
       if (!bot) throw new NotFoundException('Bot not found');
     }
+    // Resolve slug: explicit new slug wins; otherwise auto-generate one the first time an event is
+    // made public without one. Never null out an existing slug (shared links must keep working).
+    let slugUpdate: string | undefined;
+    if (dto.slug !== undefined && dto.slug.trim()) {
+      slugUpdate = await this.ensureUniqueSlug(this.slugifyBase(dto.slug), productId);
+    } else if (dto.isPublic === true && !existing.slug) {
+      slugUpdate = await this.ensureUniqueSlug(this.slugifyBase(dto.name ?? existing.name), productId);
+    }
     return this.prisma.registrationProduct.update({
       where: { id: productId },
       data: {
@@ -107,8 +160,13 @@ export class RegistrationsService {
         ...(dto.fields !== undefined && { fields: dto.fields as any }),
         ...(dto.botId !== undefined && { botId: dto.botId || null }),
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(dto.isPublic !== undefined && { isPublic: dto.isPublic }),
+        ...(slugUpdate !== undefined && { slug: slugUpdate }),
+        ...(dto.bannerUrl !== undefined && { bannerUrl: dto.bannerUrl || null }),
+        ...(dto.flierUrl !== undefined && { flierUrl: dto.flierUrl || null }),
+        ...(dto.venue !== undefined && { venue: dto.venue || null }),
       },
-      include: { _count: { select: { entries: true } } },
+      include: { _count: { select: { entries: true } }, ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
   }
 
@@ -171,13 +229,75 @@ export class RegistrationsService {
   }
 
   /** Spots consumed by an event = SUM of quantities across non-cancelled entries. */
-  async getUsedSpots(productId: string, tx?: any): Promise<number> {
+  async getUsedSpots(productId: string, tx?: any, ticketTypeId?: string): Promise<number> {
     const client = tx ?? this.prisma;
     const agg = await client.registrationEntry.aggregate({
-      where: { productId, status: { not: 'CANCELLED' } },
+      where: { productId, status: { not: 'CANCELLED' }, ...(ticketTypeId ? { ticketTypeId } : {}) },
       _sum: { quantity: true },
     });
     return agg._sum.quantity ?? 0;
+  }
+
+  // ── Ticket tiers (CRUD) ─────────────────────────────────────────────────────
+  private async assertProduct(orgId: string, productId: string) {
+    const product = await this.prisma.registrationProduct.findFirst({ where: { id: productId, orgId }, select: { id: true } });
+    if (!product) throw new NotFoundException('Registration product not found');
+    return product;
+  }
+
+  async listTicketTypes(orgId: string, productId: string) {
+    await this.assertProduct(orgId, productId);
+    const tiers = await this.prisma.registrationTicketType.findMany({
+      where: { productId, isActive: true },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+    });
+    return Promise.all(tiers.map(async (t) => ({ ...t, usedSpots: await this.getUsedSpots(productId, undefined, t.id) })));
+  }
+
+  async createTicketType(orgId: string, productId: string, dto: CreateTicketTypeDto) {
+    await this.assertProduct(orgId, productId);
+    return this.prisma.registrationTicketType.create({
+      data: {
+        productId,
+        name: dto.name,
+        description: dto.description ?? null,
+        priceMinor: dto.priceMinor ?? null,
+        currency: dto.currency ?? 'NGN',
+        capacity: dto.capacity ?? null,
+        sortOrder: dto.sortOrder ?? 0,
+      },
+    });
+  }
+
+  async updateTicketType(orgId: string, ticketTypeId: string, dto: UpdateTicketTypeDto) {
+    const tier = await this.prisma.registrationTicketType.findFirst({
+      where: { id: ticketTypeId, product: { orgId } },
+      select: { id: true },
+    });
+    if (!tier) throw new NotFoundException('Ticket type not found');
+    return this.prisma.registrationTicketType.update({
+      where: { id: ticketTypeId },
+      data: {
+        ...(dto.name !== undefined && { name: dto.name }),
+        ...(dto.description !== undefined && { description: dto.description || null }),
+        ...(dto.priceMinor !== undefined && { priceMinor: dto.priceMinor }),
+        ...(dto.currency !== undefined && { currency: dto.currency }),
+        ...(dto.capacity !== undefined && { capacity: dto.capacity }),
+        ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
+        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+      },
+    });
+  }
+
+  /** Soft-delete: deactivate the tier. Entries keep their (now-inactive) ticketTypeId for history. */
+  async deleteTicketType(orgId: string, ticketTypeId: string) {
+    const tier = await this.prisma.registrationTicketType.findFirst({
+      where: { id: ticketTypeId, product: { orgId } },
+      select: { id: true },
+    });
+    if (!tier) throw new NotFoundException('Ticket type not found');
+    await this.prisma.registrationTicketType.update({ where: { id: ticketTypeId }, data: { isActive: false } });
+    return { ok: true };
   }
 
   /** True when the event is full for the requested quantity. */
@@ -208,6 +328,8 @@ export class RegistrationsService {
     priceMinor?: number | null;
     capacity?: number | null;
     allowDuplicateRegistrations?: boolean;
+    ticketTypeId?: string | null;
+    tierCapacity?: number | null;
   }): Promise<{ outcome: 'CREATED' | 'ALREADY_REGISTERED' | 'PENDING_EXISTS' | 'AT_CAPACITY'; entry?: any; spotsLeft?: number }> {
     const quantity = Math.max(1, Math.min(50, Math.floor(data.quantity ?? 1)));
     const normalizedEmail = this.normalizeEmail(data.customerEmail);
@@ -240,17 +362,24 @@ export class RegistrationsService {
         }
       }
 
-      // Atomic capacity reserve.
+      // Atomic capacity reserve — event-level (overall) first, then per-tier if the tier is capped.
       if (data.capacity !== null && data.capacity !== undefined) {
         const used = await this.getUsedSpots(data.productId, txAny);
         if (used + quantity > data.capacity) {
           return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.capacity - used) };
         }
       }
+      if (data.ticketTypeId && data.tierCapacity !== null && data.tierCapacity !== undefined) {
+        const usedTier = await this.getUsedSpots(data.productId, txAny, data.ticketTypeId);
+        if (usedTier + quantity > data.tierCapacity) {
+          return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.tierCapacity - usedTier) };
+        }
+      }
 
       const entry = await txAny.registrationEntry.create({
         data: {
           productId: data.productId,
+          ticketTypeId: data.ticketTypeId ?? null,
           orgId: data.orgId,
           botId: data.botId ?? null,
           conversationId: data.conversationId ?? null,
@@ -288,6 +417,131 @@ export class RegistrationsService {
     }
   }
 
+  // ── Public event page (self-serve) ─────────────────────────────────────────
+  /** Public, unauthenticated view of an event by slug — only when published (isPublic && isActive).
+   *  Returns a curated payload (no orgId/botId leakage) with per-tier and overall availability. */
+  async getPublicEventBySlug(slug: string) {
+    const product = await this.prisma.registrationProduct.findFirst({
+      where: { slug, isPublic: true, isActive: true },
+      include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
+    });
+    if (!product) throw new NotFoundException('Event not found');
+
+    const usedTotal = await this.getUsedSpots(product.id);
+    const ticketTypes = await Promise.all(product.ticketTypes.map(async (t) => {
+      const used = await this.getUsedSpots(product.id, undefined, t.id);
+      return {
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        priceMinor: t.priceMinor ?? 0,
+        currency: t.currency,
+        isFree: !t.priceMinor,
+        spotsLeft: t.capacity != null ? Math.max(0, t.capacity - used) : null,
+        soldOut: t.capacity != null && used >= t.capacity,
+      };
+    }));
+
+    return {
+      slug: product.slug,
+      name: product.name,
+      description: product.description,
+      eventDate: product.eventDate,
+      venue: product.venue,
+      bannerUrl: product.bannerUrl,
+      flierUrl: product.flierUrl,
+      currency: product.currency,
+      isFree: product.isFree,
+      priceMinor: product.priceMinor ?? 0, // legacy single price (used only when there are no tiers)
+      requiresApproval: product.requiresApproval,
+      fields: Array.isArray(product.fields) ? product.fields : [],
+      hasTiers: ticketTypes.length > 0,
+      ticketTypes,
+      capacity: product.capacity,
+      spotsLeft: product.capacity != null ? Math.max(0, product.capacity - usedTotal) : null,
+      soldOut: product.capacity != null && usedTotal >= product.capacity,
+    };
+  }
+
+  /** Self-serve registration/purchase from the public page. Resolves the tier (price authoritative
+   *  from the tier, never the client), validates required fields, reserves capacity, and either
+   *  returns a Paystack link (paid) or confirms + issues a ticket (free). Reuses the same entry +
+   *  payment + ticket pipeline as the bot. */
+  async registerPublic(slug: string, dto: PublicRegisterDto): Promise<{
+    outcome: 'PENDING_PAYMENT' | 'CONFIRMED' | 'AWAITING_APPROVAL' | 'ALREADY_REGISTERED' | 'AT_CAPACITY';
+    paymentUrl?: string; reference?: string; ticketUrl?: string; entryId?: string; spotsLeft?: number;
+  }> {
+    const product = await this.prisma.registrationProduct.findFirst({
+      where: { slug, isPublic: true, isActive: true },
+      include: { ticketTypes: { where: { isActive: true } } },
+    });
+    if (!product) throw new NotFoundException('Event not found');
+
+    // Resolve the tier — price and per-tier capacity come from the catalog, never the request body.
+    let ticketTypeId: string | null = null;
+    let priceMinor: number | null = product.priceMinor ?? null;
+    let isFree = product.isFree;
+    let tierCapacity: number | null = null;
+    if (product.ticketTypes.length > 0) {
+      if (!dto.ticketTypeId) throw new BadRequestException('Please select a ticket type');
+      const tier = product.ticketTypes.find((t) => t.id === dto.ticketTypeId);
+      if (!tier) throw new BadRequestException('That ticket type is not available for this event');
+      ticketTypeId = tier.id;
+      priceMinor = tier.priceMinor ?? null;
+      isFree = !tier.priceMinor;
+      tierCapacity = tier.capacity ?? null;
+    }
+
+    // Required custom fields (plus name/email).
+    const collected: Record<string, string> = { ...(dto.fields ?? {}) };
+    if (dto.customerName) collected.customer_name = dto.customerName.trim();
+    collected.customer_email = dto.customerEmail.trim();
+    const productFields = (Array.isArray(product.fields) ? product.fields : []) as { key: string; label: string; required: boolean }[];
+    const requiredKeys = ['customer_name', 'customer_email', ...productFields.filter((f) => f.required).map((f) => f.key)];
+    const missing = requiredKeys.filter((k) => !collected[k] || String(collected[k]).trim().length === 0);
+    if (missing.length > 0) {
+      const labels = missing.map((k) => (k === 'customer_name' ? 'full name' : k === 'customer_email' ? 'email address' : (productFields.find((f) => f.key === k)?.label ?? k)));
+      throw new BadRequestException(`Missing required details: ${labels.join(', ')}`);
+    }
+
+    const quantity = Math.max(1, Math.min(50, Math.floor(dto.quantity ?? 1)));
+    const result = await this.createEntry({
+      productId: product.id,
+      orgId: product.orgId,
+      customerName: collected.customer_name,
+      customerEmail: collected.customer_email,
+      collectedFields: collected,
+      isFree,
+      requiresApproval: product.requiresApproval,
+      quantity,
+      priceMinor,
+      capacity: product.capacity,
+      allowDuplicateRegistrations: product.allowDuplicateRegistrations === true,
+      ticketTypeId,
+      tierCapacity,
+    });
+
+    const appUrl = this.getPublicAppUrl();
+    if (result.outcome === 'AT_CAPACITY') {
+      return { outcome: 'AT_CAPACITY', spotsLeft: result.spotsLeft ?? 0 };
+    }
+    if (result.outcome === 'ALREADY_REGISTERED') {
+      return { outcome: 'ALREADY_REGISTERED', ticketUrl: `${appUrl}/ticket/${result.entry.id}`, entryId: result.entry.id };
+    }
+
+    const entry = result.entry;
+    // Paid (or an unpaid entry already exists) → hand back a Paystack checkout link (idempotent).
+    if (!isFree && entry.customerEmail) {
+      const { paymentUrl, reference } = await this.initializePayment(entry.id, product.orgId);
+      return { outcome: 'PENDING_PAYMENT', paymentUrl, reference, entryId: entry.id };
+    }
+    return {
+      outcome: entry.status === 'AWAITING_APPROVAL' ? 'AWAITING_APPROVAL' : 'CONFIRMED',
+      ticketUrl: `${appUrl}/ticket/${entry.id}`,
+      entryId: entry.id,
+    };
+  }
+
   // ── Tool-use entrypoint ─────────────────────────────────────────────────────
   // Single self-contained "register_for_event" tool the AI agent calls. It does the real work
   // (dedup, atomic capacity reserve, entry creation, payment init) and returns a structured,
@@ -298,25 +552,50 @@ export class RegistrationsService {
     botId?: string;
     conversationId?: string;
     productId: string;
+    ticketTypeId?: string;
     quantity?: number;
     customerName?: string;
     customerEmail?: string;
     fields?: Record<string, string>;
   }): Promise<{
-    outcome: 'PENDING_PAYMENT' | 'CONFIRMED' | 'AWAITING_APPROVAL' | 'ALREADY_REGISTERED' | 'AT_CAPACITY' | 'PRODUCT_NOT_FOUND' | 'MISSING_FIELDS';
+    outcome: 'PENDING_PAYMENT' | 'CONFIRMED' | 'AWAITING_APPROVAL' | 'ALREADY_REGISTERED' | 'AT_CAPACITY' | 'PRODUCT_NOT_FOUND' | 'MISSING_FIELDS' | 'NEEDS_TICKET_TYPE';
     message: string;
     payment_url?: string;
     ticket_url?: string;
     spots_left?: number;
     missing_fields?: string[];
     amount?: string;
+    ticket_types?: Array<{ id: string; name: string; price: string; spots_left: number | null }>;
   }> {
     const prismaAny = this.prisma as any;
     const product = await prismaAny.registrationProduct.findFirst({
       where: { id: params.productId, orgId: params.orgId, isActive: true },
+      include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
     if (!product) {
       return { outcome: 'PRODUCT_NOT_FOUND', message: 'No active event matches that id. Ask the customer which event they mean.' };
+    }
+
+    // Tiered events: the customer must pick a tier, and the PRICE comes from the tier (never typed).
+    // If no valid tier was chosen, hand the model the list so it can ask — mirrors search_products.
+    const tiers = (product.ticketTypes ?? []) as Array<{ id: string; name: string; priceMinor: number | null; currency: string; capacity: number | null }>;
+    let chosenTier: (typeof tiers)[number] | null = null;
+    if (tiers.length > 0) {
+      chosenTier = tiers.find((t) => t.id === params.ticketTypeId) ?? null;
+      if (!chosenTier) {
+        const moneyT = (m: number | null) => (m && m > 0 ? `${product.currency ?? 'NGN'} ${(m / 100).toFixed(2)}` : 'Free');
+        const ticket_types = await Promise.all(tiers.map(async (t) => ({
+          id: t.id,
+          name: t.name,
+          price: moneyT(t.priceMinor),
+          spots_left: t.capacity != null ? Math.max(0, t.capacity - (await this.getUsedSpots(product.id, undefined, t.id))) : null,
+        })));
+        return {
+          outcome: 'NEEDS_TICKET_TYPE',
+          ticket_types,
+          message: `"${product.name}" has ticket tiers. Ask the customer which one they want, then call register_for_event again with its ticket_type_id. Options: ${ticket_types.map((t) => `${t.name} (${t.price}${t.spots_left != null ? `, ${t.spots_left} left` : ''})`).join('; ')}.`,
+        };
+      }
     }
 
     const collected: Record<string, string> = { ...(params.fields ?? {}) };
@@ -340,14 +619,19 @@ export class RegistrationsService {
       customerName: collected.customer_name,
       customerEmail: collected.customer_email,
       collectedFields: collected,
-      isFree: product.isFree,
+      // Price/free-ness come from the chosen tier when the event is tiered; otherwise the event's own.
+      isFree: chosenTier ? !chosenTier.priceMinor : product.isFree,
       requiresApproval: product.requiresApproval,
       quantity,
-      priceMinor: product.priceMinor,
+      priceMinor: chosenTier ? (chosenTier.priceMinor ?? null) : product.priceMinor,
       capacity: product.capacity,
       allowDuplicateRegistrations: product.allowDuplicateRegistrations === true,
+      ticketTypeId: chosenTier?.id ?? null,
+      tierCapacity: chosenTier?.capacity ?? null,
     });
 
+    const resolvedIsFree = chosenTier ? !chosenTier.priceMinor : product.isFree;
+    const resolvedUnit = chosenTier ? (chosenTier.priceMinor ?? 0) : (product.priceMinor ?? 0);
     const appUrl = this.getPublicAppUrl();
     const money = (minor: number) => `${product.currency ?? 'NGN'} ${(minor / 100).toFixed(2)}`;
 
@@ -371,10 +655,10 @@ export class RegistrationsService {
     }
 
     const entry = result.entry;
-    if (!product.isFree && entry.customerEmail) {
+    if (!resolvedIsFree && entry.customerEmail) {
       try {
         const { paymentUrl } = await this.initializePayment(entry.id, params.orgId);
-        const total = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : (product.priceMinor ?? 0) * quantity;
+        const total = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : resolvedUnit * quantity;
         return {
           outcome: 'PENDING_PAYMENT',
           payment_url: paymentUrl,
@@ -404,7 +688,10 @@ export class RegistrationsService {
       include: { product: true },
     });
     if (!entry) throw new NotFoundException('Registration entry not found');
-    if (entry.product.isFree) throw new BadRequestException('Product is free — no payment needed');
+    // Guard on the actual amount to charge (captured on the entry from its tier/price), not the
+    // event-level isFree flag — a paid tier on an otherwise-"free" event must still be chargeable.
+    const chargeBasis = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : (entry.product.priceMinor ?? 0) * (entry.quantity ?? 1);
+    if (chargeBasis <= 0) throw new BadRequestException('No payment is required for this registration');
     if (!entry.customerEmail) throw new BadRequestException('Customer email is required for payment');
     if (entry.status !== 'PENDING_PAYMENT') throw new BadRequestException('Entry is not awaiting payment');
 

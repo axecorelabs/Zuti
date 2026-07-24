@@ -31,12 +31,15 @@ REGISTER_FOR_EVENT_TOOL = {
             "Call this ONLY once you have the customer's full name, email, and every required field "
             "for the chosen event. It performs the real registration (capacity, dedup, payment) and "
             "returns the actual result — including a payment link for paid events. Do not claim a "
-            "registration succeeded unless this tool returns a success outcome."
+            "registration succeeded unless this tool returns a success outcome. If the event has "
+            "ticket tiers, this tool returns NEEDS_TICKET_TYPE listing them — ask the customer which "
+            "tier they want, then call again with that ticket_type_id."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "product_id": {"type": "string", "description": "The exact 'ID:' of the event from the available registrations context."},
+                "ticket_type_id": {"type": "string", "description": "The chosen ticket tier's id — required only when the event has tiers (the tool tells you and lists them). Never invent it."},
                 "quantity": {"type": "integer", "description": "Number of tickets/spots the customer wants. Default 1."},
                 "customer_name": {"type": "string", "description": "The customer's full name."},
                 "customer_email": {"type": "string", "description": "The customer's email address. Never invent or auto-complete this."},

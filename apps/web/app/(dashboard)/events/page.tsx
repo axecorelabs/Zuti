@@ -4,13 +4,13 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   Plus, Pencil, Trash2, Users, ChevronRight, Download,
   CalendarDays, DollarSign, Tag, CheckCircle, XCircle,
-  Clock, RefreshCw, X, AlertCircle,
+  Clock, RefreshCw, X, AlertCircle, Globe, ImagePlus, Ticket, Copy, ExternalLink,
 } from 'lucide-react';
 import {
   AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import toast from 'react-hot-toast';
-import { registrationsApi, botsApi } from '@/lib/api';
+import { registrationsApi, botsApi, commerceApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -38,9 +38,26 @@ interface RegistrationProduct {
   fields: ProductField[];
   isActive: boolean;
   botId: string | null;
+  isPublic?: boolean;
+  slug?: string | null;
+  bannerUrl?: string | null;
+  flierUrl?: string | null;
+  venue?: string | null;
   _count: { entries: number };
   usedSpots?: number;
   createdAt: string;
+}
+
+interface TicketType {
+  id: string;
+  name: string;
+  description: string | null;
+  priceMinor: number | null;
+  currency: string;
+  capacity: number | null;
+  sortOrder: number;
+  isActive: boolean;
+  usedSpots?: number;
 }
 
 interface RegistrationEntry {
@@ -322,24 +339,25 @@ function useProductForm(existing?: RegistrationProduct) {
     existing?.eventDate ? existing.eventDate.split('T')[0] : '',
   );
   const [capacity, setCapacity] = useState(existing?.capacity?.toString() ?? '');
-  const [isFree, setIsFree] = useState(existing?.isFree ?? true);
-  const [priceMinor, setPriceMinor] = useState(
-    existing?.priceMinor != null ? (existing.priceMinor / 100).toFixed(2) : '',
-  );
   const [requiresApproval, setRequiresApproval] = useState(existing?.requiresApproval ?? false);
   const [allowDuplicateRegistrations, setAllowDuplicateRegistrations] = useState(existing?.allowDuplicateRegistrations ?? false);
   const [confirmationMessage, setConfirmationMessage] = useState(existing?.confirmationMessage ?? '');
   const [fields, setFields] = useState<ProductField[]>(existing?.fields ?? []);
   const [botId, setBotId] = useState(existing?.botId ?? '');
   const [isActive, setIsActive] = useState(existing?.isActive ?? true);
+  const [isPublic, setIsPublic] = useState(existing?.isPublic ?? false);
+  const [venue, setVenue] = useState(existing?.venue ?? '');
+  const [bannerUrl, setBannerUrl] = useState(existing?.bannerUrl ?? '');
+  const [flierUrl, setFlierUrl] = useState(existing?.flierUrl ?? '');
+  // Ticket tiers drafted during CREATE (UI strings). Seed one row so pricing starts as a tier, not a
+  // single "base" price. In edit mode tiers are managed live via the API.
+  const [draftTiers, setDraftTiers] = useState<DraftTier[]>(existing ? [] : [{ name: 'General Admission', price: '', capacity: '' }]);
 
   const buildPayload = (): Record<string, unknown> => ({
     name: name.trim(),
     description: description.trim() || null,
     eventDate: eventDate || null,
     capacity: capacity ? parseInt(capacity, 10) : null,
-    isFree,
-    priceMinor: !isFree && priceMinor ? Math.round(parseFloat(priceMinor) * 100) : null,
     currency: 'NGN', // Only Naira is supported for now
     requiresApproval,
     allowDuplicateRegistrations,
@@ -347,29 +365,218 @@ function useProductForm(existing?: RegistrationProduct) {
     fields: fields.filter((f) => f.key && f.label),
     botId: botId || null,
     isActive,
+    isPublic,
+    venue: venue.trim() || null,
+    bannerUrl: bannerUrl || null,
+    flierUrl: flierUrl || null,
   });
 
   return {
     name, setName, description, setDescription, eventDate, setEventDate,
-    capacity, setCapacity, isFree, setIsFree, priceMinor, setPriceMinor,
+    capacity, setCapacity,
     requiresApproval, setRequiresApproval, allowDuplicateRegistrations, setAllowDuplicateRegistrations,
     confirmationMessage, setConfirmationMessage,
     fields, setFields, botId, setBotId, isActive, setIsActive,
+    isPublic, setIsPublic, venue, setVenue, bannerUrl, setBannerUrl, flierUrl, setFlierUrl,
+    draftTiers, setDraftTiers,
     buildPayload,
   };
 }
 
+interface DraftTier { name: string; price: string; capacity: string }
+
+// Convert drafted tiers (UI strings) → the API shape. Blank price = free tier, blank capacity = unlimited.
+function draftTiersToPayload(draft: DraftTier[]): Array<Record<string, unknown>> {
+  return draft
+    .filter((t) => t.name.trim())
+    .map((t, i) => ({
+      name: t.name.trim(),
+      priceMinor: t.price ? Math.round(parseFloat(t.price) * 100) : null,
+      capacity: t.capacity ? parseInt(t.capacity, 10) : null,
+      sortOrder: i,
+    }));
+}
+
 type ProductFormApi = ReturnType<typeof useProductForm>;
+
+// ── Banner/flier upload (reuses the commerce Supabase image upload → public URL) ─
+function EventImageField({ label, orgId, value, onChange }: { label: string; orgId: string; value: string; onChange: (url: string) => void }) {
+  const [uploading, setUploading] = useState(false);
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const res = await commerceApi.uploadImage(orgId, file);
+      onChange((res.data as { url: string }).url);
+    } catch { toast.error(`${label} upload failed`); }
+    finally { setUploading(false); }
+  };
+  return (
+    <div>
+      <label className="block text-xs text-zinc-400 mb-1.5 font-medium">{label}</label>
+      {value ? (
+        <div className="relative">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={value} alt={label} className="w-full h-24 object-cover rounded-xl border border-zinc-800" />
+          <button type="button" onClick={() => onChange('')} className="absolute top-1 right-1 p-1 rounded-lg bg-black/60 text-zinc-300 hover:text-white"><X className="w-3.5 h-3.5" /></button>
+        </div>
+      ) : (
+        <label className="flex flex-col items-center justify-center gap-1 h-24 rounded-xl border border-dashed border-zinc-700 bg-zinc-900/50 cursor-pointer hover:border-zinc-600 text-zinc-500 text-xs">
+          {uploading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
+          <span>{uploading ? 'Uploading…' : `Upload ${label.toLowerCase()}`}</span>
+          <input type="file" accept="image/*" className="hidden" onChange={onFile} disabled={uploading} />
+        </label>
+      )}
+    </div>
+  );
+}
+
+// ── Draft ticket tiers (in-memory, for the CREATE modal — persisted with the event) ──
+function TierDraftEditor({ tiers, onChange }: { tiers: DraftTier[]; onChange: (t: DraftTier[]) => void }) {
+  const inputCls = 'bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600';
+  const add = () => onChange([...tiers, { name: '', price: '', capacity: '' }]);
+  const remove = (i: number) => onChange(tiers.filter((_, idx) => idx !== i));
+  const update = (i: number, patch: Partial<DraftTier>) => onChange(tiers.map((t, idx) => (idx === i ? { ...t, ...patch } : t)));
+  return (
+    <div className="space-y-2">
+      {tiers.map((t, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-2">
+          <input className={`${inputCls} flex-1 min-w-[120px]`} placeholder="Tier name (e.g. VIP)" value={t.name} onChange={(e) => update(i, { name: e.target.value })} />
+          <div className="flex items-center rounded-lg border border-zinc-800 bg-zinc-900 overflow-hidden w-28">
+            <span className="px-2.5 py-2 text-xs text-zinc-500 bg-zinc-950/60 border-r border-zinc-800">₦</span>
+            <input className="w-full min-w-0 bg-transparent px-2 py-2 text-sm text-zinc-200 focus:outline-none" type="number" min="0" step="0.01" placeholder="Free" value={t.price} onChange={(e) => update(i, { price: e.target.value })} />
+          </div>
+          <input className={`${inputCls} w-24`} type="number" min="1" placeholder="Cap" value={t.capacity} onChange={(e) => update(i, { capacity: e.target.value })} />
+          <button type="button" onClick={() => remove(i)} className="p-1.5 text-zinc-500 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+        </div>
+      ))}
+      <button type="button" onClick={add} className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300"><Plus className="w-3.5 h-3.5" /> Add ticket tier</button>
+    </div>
+  );
+}
+
+// ── Ticket tiers manager (operates on an existing event via the tier CRUD API) ──
+function TicketTypesEditor({ orgId, productId, tiers, loading, onReload }: {
+  orgId: string; productId: string; tiers: TicketType[]; loading: boolean; onReload: () => Promise<void> | void;
+}) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ name: '', priceMinor: '', capacity: '' });
+  const inputCls = 'bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600';
+
+  const add = async () => {
+    if (!draft.name.trim()) { toast.error('Tier name is required'); return; }
+    setAdding(true);
+    try {
+      await registrationsApi.createTicketType(orgId, productId, {
+        name: draft.name.trim(),
+        priceMinor: draft.priceMinor ? Math.round(parseFloat(draft.priceMinor) * 100) : null,
+        capacity: draft.capacity ? parseInt(draft.capacity, 10) : null,
+      });
+      setDraft({ name: '', priceMinor: '', capacity: '' });
+      await onReload();
+      toast.success('Ticket type added');
+    } catch { toast.error('Failed to add ticket type'); } finally { setAdding(false); }
+  };
+  const remove = async (id: string) => {
+    if (tiers.length <= 1) { toast.error('An event needs at least one ticket type'); return; }
+    if (!confirm('Remove this ticket type? Existing tickets keep their record.')) return;
+    try { await registrationsApi.deleteTicketType(orgId, id); await onReload(); toast.success('Removed'); }
+    catch { toast.error('Failed to remove'); }
+  };
+
+  const money = (minor: number | null) => (minor && minor > 0 ? `₦${(minor / 100).toLocaleString()}` : 'Free');
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-zinc-600">Every event is priced by its ticket types (a simple event just has one). Price is charged from the type the customer picks. Leave a price blank for a free type.</p>
+      {loading ? (
+        <div className="h-10 bg-zinc-900 animate-pulse rounded-lg" />
+      ) : tiers.length > 0 && (
+        <div className="space-y-2">
+          {tiers.map((t) => (
+            <div key={t.id} className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2.5">
+              <Ticket className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-zinc-200 truncate">{t.name}</p>
+                <p className="text-[11px] text-zinc-500">{money(t.priceMinor)}{t.capacity != null ? ` · ${t.usedSpots ?? 0}/${t.capacity} sold` : ''}</p>
+              </div>
+              <button type="button" onClick={() => remove(t.id)} className="p-1.5 text-zinc-500 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-dashed border-zinc-700 bg-zinc-900/40 p-2">
+        <input className={`${inputCls} flex-1 min-w-[120px]`} placeholder="Tier name (e.g. VIP)" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} />
+        <input className={`${inputCls} w-24`} type="number" min="0" step="0.01" placeholder="₦ price" value={draft.priceMinor} onChange={(e) => setDraft((d) => ({ ...d, priceMinor: e.target.value }))} />
+        <input className={`${inputCls} w-24`} type="number" min="1" placeholder="Capacity" value={draft.capacity} onChange={(e) => setDraft((d) => ({ ...d, capacity: e.target.value }))} />
+        <button type="button" onClick={add} disabled={adding} className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium"><Plus className="w-3.5 h-3.5" /> Add</button>
+      </div>
+    </div>
+  );
+}
 
 // ── Shared field inputs (used by both the create modal and the settings panel) ─
 
-function ProductFormFields({ form, bots, variant }: {
+type WizardStep = 'details' | 'tickets' | 'branding' | 'options';
+
+function ProductFormFields({ form, bots, variant, orgId, product, wizardStep }: {
   form: ProductFormApi;
   bots: BotOption[];
   variant: 'compact' | 'sectioned';
+  orgId: string;
+  product?: RegistrationProduct;
+  wizardStep?: WizardStep;
 }) {
   const inputCls = 'w-full bg-zinc-900 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 focus:ring-1 focus:ring-zinc-700 transition-colors';
   const labelCls = 'block text-xs text-zinc-400 mb-1.5 font-medium';
+  const shareUrl = product?.slug ? `${(process.env.NEXT_PUBLIC_APP_URL ?? (typeof window !== 'undefined' ? window.location.origin : ''))}/e/${product.slug}` : '';
+
+  // Load this event's ticket tiers (edit mode only). When any exist, the single price is superseded.
+  const [tiers, setTiers] = useState<TicketType[]>([]);
+  const [tiersLoading, setTiersLoading] = useState<boolean>(Boolean(product));
+  const reloadTiers = useCallback(async () => {
+    if (!product) return;
+    try { const res = await registrationsApi.listTicketTypes(orgId, product.id); setTiers((res.data as TicketType[]) ?? []); }
+    catch { /* ignore */ } finally { setTiersLoading(false); }
+  }, [orgId, product]);
+  useEffect(() => { reloadTiers(); }, [reloadTiers]);
+
+  const brandingSection = (
+    <div className="space-y-4">
+      <div>
+        <label className={labelCls}>Banner & flier</label>
+        <p className="text-xs text-zinc-600 mb-2">Shown on the public event page. Banner sits at the top; the flier is a full poster below.</p>
+        <div className="grid grid-cols-2 gap-3">
+          <EventImageField label="Banner" orgId={orgId} value={form.bannerUrl} onChange={form.setBannerUrl} />
+          <EventImageField label="Flier" orgId={orgId} value={form.flierUrl} onChange={form.setFlierUrl} />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between rounded-xl border border-zinc-800 bg-zinc-950/60 px-4 py-3">
+        <div>
+          <p className="text-sm text-zinc-300 font-medium">Publish public page</p>
+          <p className="text-xs text-zinc-500 mt-0.5">Make a shareable page where anyone can view the event and buy tickets</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => form.setIsPublic((v: boolean) => !v)}
+          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ml-4 ${form.isPublic ? 'bg-emerald-600' : 'bg-zinc-700'}`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${form.isPublic ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
+        </button>
+      </div>
+
+      {form.isPublic && shareUrl && (
+        <div className="flex items-center gap-2 rounded-xl border border-emerald-600/20 bg-emerald-600/5 px-3 py-2">
+          <Globe className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+          <span className="text-xs text-emerald-300 truncate flex-1 font-mono">{shareUrl}</span>
+          <button type="button" onClick={() => { navigator.clipboard.writeText(shareUrl).catch(() => {}); toast.success('Link copied'); }} className="p-1 text-zinc-400 hover:text-white" title="Copy link"><Copy className="w-3.5 h-3.5" /></button>
+          <a href={shareUrl} target="_blank" rel="noreferrer" className="p-1 text-zinc-400 hover:text-white" title="Open"><ExternalLink className="w-3.5 h-3.5" /></a>
+        </div>
+      )}
+    </div>
+  );
 
   const generalSection = (
     <div className="space-y-5">
@@ -391,42 +598,18 @@ function ProductFormFields({ form, bots, variant }: {
           <input type="number" min="1" value={form.capacity} onChange={(e) => form.setCapacity(e.target.value)} placeholder="e.g. 100" className={inputCls} />
         </div>
       </div>
+      <div>
+        <label className={labelCls}>Venue / location</label>
+        <input value={form.venue} onChange={(e) => form.setVenue(e.target.value)} placeholder="e.g. Eko Hotel, Lagos (or a virtual link)" className={inputCls} />
+      </div>
     </div>
   );
 
-  const pricingSection = (
+  const ticketsSection = (
     <div>
-      <label className={labelCls}>Pricing</label>
-      <div className="flex gap-2 mb-3">
-        <button
-          type="button"
-          onClick={() => form.setIsFree(true)}
-          className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-colors ${form.isFree ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
-        >
-          Free
-        </button>
-        <button
-          type="button"
-          onClick={() => form.setIsFree(false)}
-          className={`flex-1 py-2 rounded-xl text-xs font-medium border transition-colors ${!form.isFree ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' : 'bg-zinc-900 text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
-        >
-          Paid
-        </button>
-      </div>
-      {!form.isFree && (
-        <div className="flex items-center rounded-xl border border-zinc-800 bg-zinc-900 overflow-hidden focus-within:border-zinc-600 focus-within:ring-1 focus-within:ring-zinc-700 transition-colors">
-          <span className="px-4 py-2.5 text-sm text-zinc-500 font-medium bg-zinc-950/60 border-r border-zinc-800 shrink-0">₦</span>
-          <input
-            type="number"
-            min="0"
-            step="0.01"
-            value={form.priceMinor}
-            onChange={(e) => form.setPriceMinor(e.target.value)}
-            placeholder="0.00"
-            className="flex-1 min-w-0 bg-transparent px-4 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none"
-          />
-        </div>
-      )}
+      <label className={labelCls}>Ticket types <span className="text-zinc-600">(pricing)</span></label>
+      <p className="text-xs text-zinc-600 mb-2">Every event is priced by its ticket types. Add one for a simple event (leave the price blank for free), or several tiers like Regular / VIP — customers pick one when registering.</p>
+      <TierDraftEditor tiers={form.draftTiers} onChange={form.setDraftTiers} />
     </div>
   );
 
@@ -501,14 +684,14 @@ function ProductFormFields({ form, bots, variant }: {
   );
 
   if (variant === 'compact') {
-    return (
-      <div className="space-y-5">
-        {generalSection}
-        {pricingSection}
-        {behaviorSection}
-        {messagingSection}
-      </div>
-    );
+    // Multi-step wizard (create modal): render only the current step's section(s).
+    const stepContent: Record<WizardStep, React.ReactNode> = {
+      details: generalSection,
+      tickets: ticketsSection,
+      branding: brandingSection,
+      options: <div className="space-y-6">{behaviorSection}{messagingSection}</div>,
+    };
+    return <div className="space-y-5">{stepContent[wizardStep ?? 'details']}</div>;
   }
 
   return (
@@ -524,19 +707,6 @@ function ProductFormFields({ form, bots, variant }: {
           </div>
         </div>
         {generalSection}
-      </div>
-
-      <div className="card p-6 border border-zinc-800">
-        <div className="flex items-center gap-3 mb-5">
-          <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
-            <DollarSign className="w-4 h-4 text-zinc-400" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-white">Pricing</h2>
-            <p className="text-xs text-zinc-500 font-light">Whether registrants pay, and how much.</p>
-          </div>
-        </div>
-        {pricingSection}
       </div>
 
       <div className="card p-6 border border-zinc-800">
@@ -564,6 +734,34 @@ function ProductFormFields({ form, bots, variant }: {
         </div>
         {messagingSection}
       </div>
+
+      <div className="card p-6 border border-zinc-800">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+            <Globe className="w-4 h-4 text-zinc-400" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">Public event page</h2>
+            <p className="text-xs text-zinc-500 font-light">A shareable, brandable page for self-serve ticket sales.</p>
+          </div>
+        </div>
+        {brandingSection}
+      </div>
+
+      {product && (
+        <div className="card p-6 border border-zinc-800">
+          <div className="flex items-center gap-3 mb-5">
+            <div className="w-8 h-8 rounded-lg bg-zinc-800 border border-zinc-700 flex items-center justify-center shrink-0">
+              <Ticket className="w-4 h-4 text-zinc-400" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-white">Ticket types</h2>
+              <p className="text-xs text-zinc-500 font-light">Tiers with their own price and capacity (Regular, VIP, …).</p>
+            </div>
+          </div>
+          <TicketTypesEditor orgId={orgId} productId={product.id} tiers={tiers} loading={tiersLoading} onReload={reloadTiers} />
+        </div>
+      )}
     </div>
   );
 }
@@ -577,16 +775,34 @@ interface ProductModalProps {
   onClose: () => void;
 }
 
+const WIZARD_STEPS: { key: WizardStep; label: string }[] = [
+  { key: 'details', label: 'Details' },
+  { key: 'tickets', label: 'Tickets' },
+  { key: 'branding', label: 'Branding' },
+  { key: 'options', label: 'Options' },
+];
+
 function ProductModal({ orgId, bots, onSaved, onClose }: ProductModalProps) {
   const form = useProductForm();
   const [saving, setSaving] = useState(false);
+  const [stepIdx, setStepIdx] = useState(0);
+  const step = WIZARD_STEPS[stepIdx].key;
+  const isLast = stepIdx === WIZARD_STEPS.length - 1;
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.name.trim()) { toast.error('Name is required'); return; }
+  const validateStep = (): boolean => {
+    if (step === 'details' && !form.name.trim()) { toast.error('Event name is required'); return false; }
+    if (step === 'tickets' && draftTiersToPayload(form.draftTiers).length === 0) { toast.error('Add at least one ticket type (leave the price blank for a free type)'); return false; }
+    return true;
+  };
+
+  const create = async () => {
+    if (!form.name.trim()) { setStepIdx(0); toast.error('Event name is required'); return; }
+    const tiers = draftTiersToPayload(form.draftTiers);
+    if (tiers.length === 0) { setStepIdx(1); toast.error('Add at least one ticket type'); return; }
+    const isFree = tiers.every((t) => !t.priceMinor);
     setSaving(true);
     try {
-      await registrationsApi.createProduct(orgId, form.buildPayload());
+      await registrationsApi.createProduct(orgId, { ...form.buildPayload(), isFree, priceMinor: null, ticketTypes: tiers });
       toast.success('Event created');
       onSaved();
     } catch (err: unknown) {
@@ -595,6 +811,12 @@ function ProductModal({ orgId, bots, onSaved, onClose }: ProductModalProps) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isLast) { void create(); return; }
+    if (validateStep()) setStepIdx((i) => i + 1);
   };
 
   return (
@@ -609,7 +831,7 @@ function ProductModal({ orgId, bots, onSaved, onClose }: ProductModalProps) {
             </div>
             <div>
               <h2 className="text-sm font-semibold text-white">Create event</h2>
-              <p className="text-xs text-zinc-500">Set up a new registration event for your bot</p>
+              <p className="text-xs text-zinc-500">Step {stepIdx + 1} of {WIZARD_STEPS.length} · {WIZARD_STEPS[stepIdx].label}</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800 transition-colors">
@@ -617,18 +839,42 @@ function ProductModal({ orgId, bots, onSaved, onClose }: ProductModalProps) {
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="px-6 py-5 space-y-5">
-          <ProductFormFields form={form} bots={bots} variant="compact" />
+        {/* Step progress */}
+        <div className="flex items-center gap-2 px-6 pt-4">
+          {WIZARD_STEPS.map((s, i) => (
+            <button
+              key={s.key}
+              type="button"
+              onClick={() => { if (i < stepIdx || validateStep()) setStepIdx(i); }}
+              className="flex items-center gap-2 flex-1 group"
+            >
+              <span className={`flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-medium border transition-colors ${i < stepIdx ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-400' : i === stepIdx ? 'bg-blue-600 border-blue-500 text-white' : 'bg-zinc-900 border-zinc-800 text-zinc-600'}`}>
+                {i < stepIdx ? <CheckCircle className="w-3.5 h-3.5" /> : i + 1}
+              </span>
+              <span className={`text-xs hidden sm:inline ${i === stepIdx ? 'text-white' : 'text-zinc-600'}`}>{s.label}</span>
+              {i < WIZARD_STEPS.length - 1 && <span className="flex-1 h-px bg-zinc-800" />}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={onSubmit} className="px-6 py-5 space-y-5">
+          <div className="min-h-[220px]">
+            <ProductFormFields form={form} bots={bots} variant="compact" orgId={orgId} wizardStep={step} />
+          </div>
 
           {/* Footer */}
           <div className="flex gap-2 pt-2 border-t border-zinc-800">
-            <button type="button" onClick={onClose} className="flex-1 btn-secondary text-sm py-2.5">Cancel</button>
+            {stepIdx === 0 ? (
+              <button type="button" onClick={onClose} className="flex-1 btn-secondary text-sm py-2.5">Cancel</button>
+            ) : (
+              <button type="button" onClick={() => setStepIdx((i) => i - 1)} className="flex-1 btn-secondary text-sm py-2.5">Back</button>
+            )}
             <button
               type="submit"
               disabled={saving}
               className="flex-1 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-sm font-medium py-2.5 rounded-xl transition-colors"
             >
-              {saving ? 'Saving…' : 'Create event'}
+              {isLast ? (saving ? 'Creating…' : 'Create event') : 'Next'}
             </button>
           </div>
         </form>
@@ -682,7 +928,7 @@ function EventSettingsTab({ orgId, bots, product, onSaved, onDeleted }: EventSet
 
   return (
     <div className="max-w-3xl space-y-5">
-      <ProductFormFields form={form} bots={bots} variant="sectioned" />
+      <ProductFormFields form={form} bots={bots} variant="sectioned" orgId={orgId} product={product} />
 
       {/* Save bar */}
       <div className="flex justify-end gap-2 sticky bottom-0 bg-gradient-to-t from-black/40 to-transparent pt-2">

@@ -654,6 +654,15 @@ export const registrationsApi = {
     api.post(`/organizations/${orgId}/registrations/dead-letter/${jobId}/retry`),
   discardFailedReceipt: (orgId: string, jobId: string) =>
     api.delete(`/organizations/${orgId}/registrations/dead-letter/${jobId}`),
+  // Ticket tiers
+  listTicketTypes: (orgId: string, productId: string) =>
+    api.get(`/organizations/${orgId}/registrations/${productId}/ticket-types`),
+  createTicketType: (orgId: string, productId: string, data: Record<string, unknown>) =>
+    api.post(`/organizations/${orgId}/registrations/${productId}/ticket-types`, data),
+  updateTicketType: (orgId: string, ticketTypeId: string, data: Record<string, unknown>) =>
+    api.patch(`/organizations/${orgId}/registrations/ticket-types/${ticketTypeId}`, data),
+  deleteTicketType: (orgId: string, ticketTypeId: string) =>
+    api.delete(`/organizations/${orgId}/registrations/ticket-types/${ticketTypeId}`),
 };
 
 // ── Activity ──────────────────────────────────────────────────────────────────

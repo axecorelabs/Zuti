@@ -1307,19 +1307,52 @@ model RegistrationProduct {
   isActive            Boolean   @default(true)
   // When false (default), a given email can hold only one active registration for this event.
   allowDuplicateRegistrations Boolean @default(false)
+  // Public event page (shareable + brandable). slug is GLOBALLY unique for clean URLs (/e/<slug>);
+  // isPublic gates whether the page is live (separate from isActive). priceMinor above is the legacy
+  // single-price fallback used only when the event has no ticketTypes.
+  slug                String?   @unique
+  isPublic            Boolean   @default(false)
+  bannerUrl           String?
+  flierUrl            String?
+  venue               String?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
   organization        Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
   entries             RegistrationEntry[]
+  ticketTypes         RegistrationTicketType[]
 
   @@index([orgId, isActive])
   @@index([botId, isActive])
 }
 
+/// A ticket tier for an event (e.g. Regular, VIP). Price lives HERE and is authoritative — never
+/// client-typed — mirroring how CommerceVariant owns price, which kills the mistyped-price bug class.
+/// An event with no ticketTypes falls back to the legacy single price on RegistrationProduct.
+model RegistrationTicketType {
+  id           String   @id @default(cuid())
+  productId    String
+  name         String
+  description  String?
+  priceMinor   Int?     // null / 0 = free tier
+  currency     String   @default("NGN")
+  capacity     Int?     // per-tier cap; null = bounded only by the event's overall capacity
+  sortOrder    Int      @default(0)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  product      RegistrationProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  entries      RegistrationEntry[]
+
+  @@index([productId, isActive, sortOrder])
+}
+
 model RegistrationEntry {
   id                  String                  @id @default(cuid())
   productId           String
+  // The chosen tier (null for legacy single-price events). Price is read from the tier, never the client.
+  ticketTypeId        String?
   orgId               String
   botId               String?
   conversationId      String?
@@ -1340,9 +1373,11 @@ model RegistrationEntry {
   updatedAt           DateTime                @updatedAt
 
   product             RegistrationProduct     @relation(fields: [productId], references: [id], onDelete: Cascade)
+  ticketType          RegistrationTicketType? @relation(fields: [ticketTypeId], references: [id], onDelete: SetNull)
   organization        Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@index([productId, status])
+  @@index([ticketTypeId, status])
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([paystackReference])
   @@index([productId, customerEmail, status])

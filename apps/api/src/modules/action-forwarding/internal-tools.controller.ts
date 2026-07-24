@@ -76,6 +76,7 @@ export class InternalToolsController {
         botId: body.botId,
         conversationId: body.conversationId,
         productId,
+        ticketTypeId: String(args.ticket_type_id ?? '').trim() || undefined,
         quantity: typeof args.quantity === 'number' ? args.quantity : Number(args.quantity) || 1,
         customerName: typeof args.customer_name === 'string' ? args.customer_name : undefined,
         customerEmail: typeof args.customer_email === 'string' ? args.customer_email : undefined,
