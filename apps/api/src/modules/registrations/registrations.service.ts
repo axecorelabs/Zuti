@@ -10,7 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto, PublicCartDto } from './dto/registrations.dto';
 
 type PaystackInitResponse = {
   status: boolean;
@@ -276,9 +276,17 @@ export class RegistrationsService {
   async updateTicketType(orgId: string, ticketTypeId: string, dto: UpdateTicketTypeDto) {
     const tier = await this.prisma.registrationTicketType.findFirst({
       where: { id: ticketTypeId, product: { orgId } },
-      select: { id: true },
+      select: { id: true, productId: true },
     });
     if (!tier) throw new NotFoundException('Ticket type not found');
+    // Capacity can be raised, lowered, or removed (null = unlimited) — but never set below the number
+    // already sold or held for this tier, or those tickets would be stranded above the cap.
+    if (dto.capacity !== undefined && dto.capacity !== null) {
+      const used = await this.getUsedSpots(tier.productId, undefined, ticketTypeId);
+      if (dto.capacity < used) {
+        throw new BadRequestException(`Capacity can't be lower than the ${used} ticket(s) already sold or reserved for this type.`);
+      }
+    }
     return this.prisma.registrationTicketType.update({
       where: { id: ticketTypeId },
       data: {
@@ -551,6 +559,191 @@ export class RegistrationsService {
     };
   }
 
+  // ── Cart checkout (multi-ticket, multi-attendee, one payment) ────────────────
+  /** Public-page cart: resolve the published event by slug, then run the cart checkout. */
+  async registerPublicCart(slug: string, dto: PublicCartDto) {
+    const product = await this.prisma.registrationProduct.findFirst({
+      where: { slug, isPublic: true, isActive: true },
+      select: { id: true, orgId: true },
+    });
+    if (!product) throw new NotFoundException('Event not found');
+    return this.registerCart({
+      productId: product.id,
+      orgId: product.orgId,
+      payerName: dto.customerName,
+      payerEmail: dto.customerEmail,
+      items: dto.items ?? [],
+    });
+  }
+
+  /**
+   * Buy multiple tickets in one purchase — across tiers and/or for different people — paid once.
+   * Every unit becomes its OWN entry with its own QR (so attendees arrive independently), all grouped
+   * by purchaseGroupId under a single Paystack payment. Capacity for the whole cart is reserved
+   * atomically. Shared by the public page and the AI agent.
+   */
+  async registerCart(params: {
+    productId: string;
+    orgId: string;
+    botId?: string;
+    conversationId?: string;
+    payerName?: string;
+    payerEmail: string;
+    items: Array<{ ticketTypeId?: string; ticketTypeName?: string; quantity?: number; attendees?: Array<{ name?: string; email?: string; fields?: Record<string, string> }> }>;
+  }): Promise<{
+    outcome: 'PENDING_PAYMENT' | 'CONFIRMED' | 'AWAITING_APPROVAL' | 'AT_CAPACITY' | 'PRODUCT_NOT_FOUND' | 'MISSING_FIELDS' | 'NEEDS_TICKET_TYPE';
+    paymentUrl?: string; reference?: string; groupId?: string; amount?: string; spotsLeft?: number;
+    message?: string; missing?: string[];
+    ticketTypes?: Array<{ id: string; name: string; price: string; spots_left: number | null }>;
+    tickets?: Array<{ entryId: string; ticketUrl: string; attendeeName: string | null; ticketType: string | null }>;
+  }> {
+    const prismaAny = this.prisma as any;
+    const product = await prismaAny.registrationProduct.findFirst({
+      where: { id: params.productId, orgId: params.orgId, isActive: true },
+      include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
+    });
+    if (!product) return { outcome: 'PRODUCT_NOT_FOUND', message: 'No active event matches that id.' };
+
+    const tiers = product.ticketTypes as Array<{ id: string; name: string; priceMinor: number | null; capacity: number | null }>;
+    const payerName = params.payerName?.trim() || null;
+    const payerEmail = this.normalizeEmail(params.payerEmail) ?? '';
+    if (!payerEmail) return { outcome: 'MISSING_FIELDS', message: 'A payer email is required.', missing: ['customer_email'] };
+
+    const productFields = (Array.isArray(product.fields) ? product.fields : []) as { key: string; label: string; required: boolean }[];
+    const requiredFieldKeys = productFields.filter((f) => f.required).map((f) => f.key);
+
+    // Expand each cart line into individual tickets (one per unit), resolving the tier for each.
+    type Ticket = { ticketTypeId: string | null; tierName: string | null; priceMinor: number | null; isFree: boolean; name: string | null; email: string; fields: Record<string, string> };
+    const tickets: Ticket[] = [];
+    for (const item of params.items) {
+      let tier: (typeof tiers)[number] | null = null;
+      if (tiers.length > 0) {
+        const nameQ = (item.ticketTypeName ?? '').trim().toLowerCase();
+        tier =
+          tiers.find((t) => t.id === item.ticketTypeId) ??
+          (nameQ
+            ? tiers.find((t) => t.name.trim().toLowerCase() === nameQ) ??
+              tiers.find((t) => { const tn = t.name.trim().toLowerCase(); return tn.includes(nameQ) || nameQ.includes(tn); }) ?? null
+            : null) ??
+          (tiers.length === 1 ? tiers[0] : null);
+        if (!tier) {
+          const money = (m: number | null) => (m && m > 0 ? `${product.currency} ${(m / 100).toFixed(2)}` : 'Free');
+          const ticket_types = await Promise.all(tiers.map(async (t) => ({ id: t.id, name: t.name, price: money(t.priceMinor), spots_left: t.capacity != null ? Math.max(0, t.capacity - (await this.getUsedSpots(product.id, undefined, t.id))) : null })));
+          return { outcome: 'NEEDS_TICKET_TYPE', ticketTypes: ticket_types, message: `"${product.name}" has ticket tiers — specify which tier for each ticket.` };
+        }
+      }
+      const explicitCount = item.attendees?.length ?? 0;
+      const qty = Math.max(1, Math.min(50, Math.floor(item.quantity ?? explicitCount ?? 1)));
+      const priceMinor = tier ? tier.priceMinor : product.priceMinor;
+      const isFree = tier ? !tier.priceMinor : product.isFree;
+      for (let i = 0; i < qty; i++) {
+        const att = item.attendees?.[i] ?? {};
+        tickets.push({
+          ticketTypeId: tier?.id ?? null,
+          tierName: tier?.name ?? null,
+          priceMinor,
+          isFree,
+          name: (att.name ?? payerName ?? '') || null,
+          email: this.normalizeEmail(att.email) ?? payerEmail,
+          fields: { ...(att.fields ?? {}) },
+        });
+      }
+    }
+    if (tickets.length === 0) return { outcome: 'MISSING_FIELDS', message: 'No tickets selected.' };
+
+    // Each ticket needs a name, email, and the event's required fields.
+    for (let i = 0; i < tickets.length; i++) {
+      const t = tickets[i];
+      const missing: string[] = [];
+      if (!t.name) missing.push('name');
+      if (!t.email) missing.push('email');
+      for (const k of requiredFieldKeys) if (!t.fields[k] || !String(t.fields[k]).trim()) missing.push(k);
+      if (missing.length) return { outcome: 'MISSING_FIELDS', message: `Ticket ${i + 1} is missing: ${missing.join(', ')}.`, missing };
+    }
+
+    const totalMinor = tickets.reduce((s, t) => s + (t.isFree ? 0 : (t.priceMinor ?? 0)), 0);
+    const paidCart = totalMinor > 0;
+    const groupId = randomBytes(12).toString('hex');
+
+    // Reserve the whole cart's capacity atomically, then create every ticket, in one transaction.
+    const reserve = await this.prisma.$transaction(async (tx) => {
+      const txAny = tx as any;
+      await tx.$queryRawUnsafe(`SELECT id FROM "RegistrationProduct" WHERE id = $1 FOR UPDATE`, product.id);
+      if (product.capacity != null) {
+        const used = await this.getUsedSpots(product.id, txAny);
+        if (used + tickets.length > product.capacity) return { ok: false as const, spotsLeft: Math.max(0, product.capacity - used) };
+      }
+      const byTier = new Map<string, number>();
+      for (const t of tickets) if (t.ticketTypeId) byTier.set(t.ticketTypeId, (byTier.get(t.ticketTypeId) ?? 0) + 1);
+      for (const [tierId, count] of byTier) {
+        const tier = tiers.find((t) => t.id === tierId);
+        if (tier?.capacity != null) {
+          const usedTier = await this.getUsedSpots(product.id, txAny, tierId);
+          if (usedTier + count > tier.capacity) return { ok: false as const, spotsLeft: Math.max(0, tier.capacity - usedTier) };
+        }
+      }
+      const ids: string[] = [];
+      for (const t of tickets) {
+        const status = paidCart ? 'PENDING_PAYMENT' : (product.requiresApproval ? 'AWAITING_APPROVAL' : 'CONFIRMED');
+        const e = await txAny.registrationEntry.create({
+          data: {
+            productId: product.id, ticketTypeId: t.ticketTypeId, orgId: params.orgId, botId: params.botId ?? null, conversationId: params.conversationId ?? null,
+            purchaseGroupId: groupId, customerName: t.name, customerEmail: t.email, collectedFields: t.fields as any,
+            status: status as any, quantity: 1, amountMinor: t.isFree ? 0 : (t.priceMinor ?? 0), checkInCode: this.newCheckInCode(),
+          },
+          select: { id: true },
+        });
+        ids.push(e.id);
+      }
+      return { ok: true as const, ids };
+    });
+
+    if (!reserve.ok) {
+      return { outcome: 'AT_CAPACITY', spotsLeft: reserve.spotsLeft, message: reserve.spotsLeft > 0 ? `Only ${reserve.spotsLeft} spot(s) left — fewer than requested.` : `${product.name} is fully booked.` };
+    }
+
+    const appUrl = this.getPublicAppUrl();
+    const ticketsOut = reserve.ids.map((id, i) => ({ entryId: id, ticketUrl: `${appUrl}/ticket/${id}`, attendeeName: tickets[i].name, ticketType: tickets[i].tierName }));
+    const money = (m: number) => `${product.currency} ${(m / 100).toFixed(2)}`;
+
+    if (paidCart) {
+      try {
+        const pay = await this.initializeGroupPayment(groupId, payerEmail, totalMinor, product.currency, params.orgId);
+        await this.prisma.registrationEntry.updateMany({ where: { purchaseGroupId: groupId }, data: { paystackReference: pay.reference, paystackAccessCode: pay.accessCode } });
+        return { outcome: 'PENDING_PAYMENT', paymentUrl: pay.paymentUrl, reference: pay.reference, groupId, amount: money(totalMinor), tickets: ticketsOut, message: `${tickets.length} ticket(s) held. Payment of ${money(totalMinor)} confirms all of them.` };
+      } catch (err) {
+        this.logger.warn(`registerCart: payment init failed for group ${groupId}: ${String(err)}`);
+        return { outcome: 'PENDING_PAYMENT', groupId, tickets: ticketsOut, message: 'Tickets held, but the payment link could not be generated right now. A teammate will follow up.' };
+      }
+    }
+
+    // Free cart — issue each attendee their own ticket.
+    for (const id of reserve.ids) await this.enqueueRegistrationReceipt(id, params.orgId);
+    return { outcome: product.requiresApproval ? 'AWAITING_APPROVAL' : 'CONFIRMED', groupId, tickets: ticketsOut, message: `${tickets.length} ticket(s) confirmed.` };
+  }
+
+  /** Initialize ONE Paystack payment covering a whole cart (group of ticket entries). */
+  private async initializeGroupPayment(groupId: string, email: string, totalMinor: number, currency: string, orgId: string): Promise<{ paymentUrl: string; reference: string; accessCode: string }> {
+    const paystackSecret = this.config.get<string>('PAYSTACK_SECRET_KEY');
+    if (!paystackSecret) throw new InternalServerErrorException('PAYSTACK_SECRET_KEY is not configured');
+    const reference = `zuti_reg_${randomBytes(16).toString('hex')}`;
+    const apiBase = (this.config.get<string>('API_URL') ?? 'http://localhost:3001').replace(/\/$/, '');
+    const response = await firstValueFrom(
+      this.http.post<PaystackInitResponse>('https://api.paystack.co/transaction/initialize', {
+        amount: totalMinor,
+        email,
+        currency,
+        reference,
+        callback_url: `${apiBase}/api/public/tickets/payment/callback`,
+        metadata: { organizationId: orgId, registrationGroupId: groupId, source: 'zuti-registration-cart' },
+      }, { headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' } }),
+    );
+    if (!response.data?.status || !response.data.data?.authorization_url) {
+      throw new BadRequestException(`Paystack initialization failed: ${response.data?.message ?? 'Unknown error'}`);
+    }
+    return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference, accessCode: response.data.data.access_code };
+  }
+
   // ── Tool-use entrypoint ─────────────────────────────────────────────────────
   // Single self-contained "register_for_event" tool the AI agent calls. It does the real work
   // (dedup, atomic capacity reserve, entry creation, payment init) and returns a structured,
@@ -700,6 +893,86 @@ export class RegistrationsService {
         ? `Registration recorded for ${product.name}; it needs organizer approval. Tell the customer it's pending approval and their ticket has been emailed.`
         : `Registration confirmed for ${quantity} ticket(s) to ${product.name}. Confirm to the customer and mention their ticket has been emailed.`,
     };
+  }
+
+  /**
+   * Cart variant of the AI tool: the customer is buying multiple tickets, possibly across tiers and
+   * for different attendees, paid once. Each element of `tickets` becomes its own ticket (own QR).
+   * Delegates the real work to registerCart (atomic reserve-all + one grouped payment) and adapts
+   * the result into the same flat shape register_for_event returns, so the model's reply logic is
+   * unchanged.
+   */
+  async executeRegistrationCartTool(params: {
+    orgId: string;
+    botId?: string;
+    conversationId?: string;
+    productId: string;
+    customerName?: string;
+    customerEmail?: string;
+    tickets: Array<{ ticketTypeId?: string; ticketTypeName?: string; name?: string; email?: string; fields?: Record<string, string> }>;
+  }): Promise<{
+    outcome: 'PENDING_PAYMENT' | 'CONFIRMED' | 'AWAITING_APPROVAL' | 'AT_CAPACITY' | 'PRODUCT_NOT_FOUND' | 'MISSING_FIELDS' | 'NEEDS_TICKET_TYPE';
+    message: string;
+    payment_url?: string;
+    ticket_url?: string;
+    ticket_urls?: string[];
+    spots_left?: number;
+    missing_fields?: string[];
+    amount?: string;
+    ticket_types?: Array<{ id: string; name: string; price: string; spots_left: number | null }>;
+  }> {
+    const tickets = Array.isArray(params.tickets) ? params.tickets : [];
+    if (tickets.length === 0) return { outcome: 'MISSING_FIELDS', message: 'No tickets specified — ask the customer how many tickets and for whom.' };
+
+    // One tool "ticket" = one cart item of quantity 1 with a single attendee (own QR).
+    const items = tickets.map((t) => ({
+      ticketTypeId: t.ticketTypeId?.trim() || undefined,
+      ticketTypeName: t.ticketTypeName?.trim() || undefined,
+      quantity: 1,
+      attendees: [{ name: t.name?.trim() || undefined, email: t.email?.trim() || undefined, fields: t.fields ?? {} }],
+    }));
+
+    const res = await this.registerCart({
+      orgId: params.orgId,
+      botId: params.botId,
+      conversationId: params.conversationId,
+      productId: params.productId,
+      payerName: params.customerName,
+      payerEmail: params.customerEmail ?? '',
+      items,
+    });
+
+    const ticketUrls = (res.tickets ?? []).map((t) => t.ticketUrl);
+    switch (res.outcome) {
+      case 'PENDING_PAYMENT':
+        return {
+          outcome: 'PENDING_PAYMENT',
+          payment_url: res.paymentUrl,
+          amount: res.amount,
+          message: res.paymentUrl
+            ? `${tickets.length} ticket(s) held (one per attendee). A single payment of ${res.amount} confirms them all — give the customer THIS payment link in the chat now; do not say it will be emailed. Nothing is booked until they pay.`
+            : (res.message ?? 'Tickets held, but the payment link could not be generated. Tell the customer a teammate will follow up.'),
+        };
+      case 'CONFIRMED':
+        return { outcome: 'CONFIRMED', ticket_url: ticketUrls[0], ticket_urls: ticketUrls, message: `${tickets.length} ticket(s) confirmed — each attendee has been emailed their own ticket. Confirm to the customer.` };
+      case 'AWAITING_APPROVAL':
+        return { outcome: 'AWAITING_APPROVAL', ticket_url: ticketUrls[0], ticket_urls: ticketUrls, message: `${tickets.length} ticket(s) recorded; they need organizer approval. Tell the customer it's pending approval.` };
+      case 'AT_CAPACITY':
+        return { outcome: 'AT_CAPACITY', spots_left: res.spotsLeft, message: res.message ?? 'Not enough spots left for the requested tickets.' };
+      case 'NEEDS_TICKET_TYPE':
+        return {
+          outcome: 'NEEDS_TICKET_TYPE',
+          ticket_types: res.ticketTypes,
+          message: res.ticketTypes?.length
+            ? `This event has ticket tiers. Ask which tier each ticket should be, then call again with ticket_type_name per ticket. Options: ${res.ticketTypes.map((t) => `${t.name} (${t.price}${t.spots_left != null ? `, ${t.spots_left} left` : ''})`).join('; ')}.`
+            : (res.message ?? 'Specify the ticket tier for each ticket.'),
+        };
+      case 'MISSING_FIELDS':
+        return { outcome: 'MISSING_FIELDS', missing_fields: res.missing, message: res.message ?? 'Missing details — ask the customer for the required information.' };
+      case 'PRODUCT_NOT_FOUND':
+      default:
+        return { outcome: 'PRODUCT_NOT_FOUND', message: res.message ?? 'No active event matches that id.' };
+    }
   }
 
   // ── Paystack ──────────────────────────────────────────────────────────────
@@ -854,23 +1127,24 @@ export class RegistrationsService {
   }
 
   async handlePaymentConfirmed(paystackReference: string): Promise<{ entry: any; product: any } | null> {
-    const entry = await this.prisma.registrationEntry.findFirst({
+    // A reference covers ALL tickets bought in one purchase (a cart shares one reference; a single
+    // registration is just a group of one). Confirm every entry under the reference together.
+    const entries = await this.prisma.registrationEntry.findMany({
       where: { paystackReference },
       include: { product: true },
     });
-    if (!entry) return null;
+    if (entries.length === 0) return null;
 
-    // Idempotent: already in a terminal post-payment state
-    if (entry.status === 'CONFIRMED' || entry.status === 'AWAITING_APPROVAL') {
-      return { entry, product: entry.product };
-    }
-    // Never resurrect a cancelled entry via a payment webhook replay
-    if (entry.status === 'CANCELLED') {
-      this.logger.warn(`Registration entry ${entry.id} is CANCELLED — ignoring payment webhook for reference ${paystackReference}`);
+    const pending = entries.filter((e) => e.status === 'PENDING_PAYMENT');
+    if (pending.length === 0) {
+      // Idempotent: all already resolved. Return a confirmed one; never resurrect a cancelled group.
+      const settled = entries.find((e) => e.status === 'CONFIRMED' || e.status === 'AWAITING_APPROVAL');
+      if (settled) return { entry: settled, product: settled.product };
+      this.logger.warn(`All entries for reference ${paystackReference} are cancelled — ignoring payment webhook.`);
       return null;
     }
 
-    // Verify the transaction server-side with Paystack before confirming
+    // Verify the transaction server-side with Paystack before confirming.
     const verification = await this.verifyPaystackTransaction(paystackReference);
     if (!verification || verification.data?.status !== 'success') {
       this.logger.warn(`Paystack server-side verification failed for reference ${paystackReference}`);
@@ -880,33 +1154,28 @@ export class RegistrationsService {
       this.logger.warn(`Reference mismatch in Paystack verification response for ${paystackReference}`);
       return null;
     }
-    // Verify against the entry's charged total (unit price × quantity), not the unit price.
-    const expectedAmount = (entry.amountMinor && entry.amountMinor > 0)
-      ? entry.amountMinor
-      : (entry.product.priceMinor ?? 0) * (entry.quantity ?? 1);
+    // Verify against the SUM charged across every ticket under this reference.
+    const expectedAmount = entries.reduce((sum, e) => sum + ((e.amountMinor && e.amountMinor > 0) ? e.amountMinor : (e.product.priceMinor ?? 0) * (e.quantity ?? 1)), 0);
     if (verification.data.amount !== expectedAmount) {
       this.logger.warn(`Amount mismatch for ${paystackReference}: expected ${expectedAmount}, got ${verification.data.amount}`);
       return null;
     }
 
-    const newStatus = entry.product.requiresApproval ? 'AWAITING_APPROVAL' : 'CONFIRMED';
-
-    // Atomic update with status precondition — prevents double-confirmation under concurrent webhook delivery
+    // Confirm all still-pending entries atomically (status precondition dedups concurrent webhooks).
+    // A group's tickets share one product, so they share the same post-payment status.
+    const newStatus = pending[0].product.requiresApproval ? 'AWAITING_APPROVAL' : 'CONFIRMED';
+    const pendingIds = pending.map((e) => e.id);
     const result = await this.prisma.registrationEntry.updateMany({
-      where: { id: entry.id, status: 'PENDING_PAYMENT' },
+      where: { id: { in: pendingIds }, status: 'PENDING_PAYMENT' },
       data: { status: newStatus as any, paidAt: new Date() },
     });
 
-    if (result.count === 0) {
-      // Another webhook delivery won the race — re-fetch and return current state
-      const current = await this.prisma.registrationEntry.findFirst({ where: { id: entry.id }, include: { product: true } });
-      return current ? { entry: current, product: current.product } : null;
+    // Only the delivery that actually flipped them enqueues receipts — one ticket per attendee.
+    if (result.count > 0) {
+      for (const e of pending) await this.enqueueRegistrationReceipt(e.id, e.orgId);
     }
 
-    // This delivery won the race — it is the only one that enqueues the receipt job
-    await this.enqueueRegistrationReceipt(entry.id, entry.orgId);
-
-    const updated = await this.prisma.registrationEntry.findFirst({ where: { id: entry.id }, include: { product: true } });
+    const updated = await this.prisma.registrationEntry.findFirst({ where: { id: pending[0].id }, include: { product: true } });
     return updated ? { entry: updated, product: updated.product } : null;
   }
 

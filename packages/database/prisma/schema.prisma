@@ -1373,6 +1373,9 @@ model RegistrationEntry {
   // (single-use — a second scan is rejected as "already admitted").
   checkInCode         String?                 @unique
   checkedInAt         DateTime?
+  // Groups the individual tickets bought in one purchase (each ticket is its own entry + QR, but
+  // they share one payment). Null for standalone/legacy single registrations.
+  purchaseGroupId     String?
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
 
@@ -1385,6 +1388,7 @@ model RegistrationEntry {
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([paystackReference])
   @@index([productId, customerEmail, status])
+  @@index([purchaseGroupId])
 }
 
 enum RegistrationEntryStatus {

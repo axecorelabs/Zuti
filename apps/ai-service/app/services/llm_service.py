@@ -28,6 +28,7 @@ REGISTER_FOR_EVENT_TOOL = {
         "name": "register_for_event",
         "description": (
             "Register the customer for one of the events in the available registrations context. "
+            "ALWAYS ask how many tickets they want before registering — do not assume 1. "
             "Call this ONLY once you have the customer's full name, email, and every required field "
             "for the chosen event. It performs the real registration (capacity, dedup, payment) and "
             "returns the actual result — including a payment link for paid events. Do not claim a "
@@ -36,20 +37,41 @@ REGISTER_FOR_EVENT_TOOL = {
             "customer which tier they want, then call again passing ticket_type_name (the tier's name "
             "they chose, e.g. 'VIP'). You do NOT need to remember tier ids. When a tool returns "
             "PENDING_PAYMENT it includes a payment link — give that link to the customer IN THIS CHAT; "
-            "never tell them it will be emailed."
+            "never tell them it will be emailed.\n\n"
+            "MULTIPLE TICKETS / DIFFERENT ATTENDEES: when the customer wants more than one ticket, ask "
+            "whether the tickets are for different people. If they are (or the tickets span different "
+            "tiers), pass the `tickets` array — one object per ticket, each its own tier and attendee — "
+            "instead of quantity. Every entry in `tickets` becomes a separate ticket with its own QR, "
+            "and the whole cart is paid once. If all tickets are the same tier and for the same person, "
+            "just use quantity. Only include an attendee's name/email in a ticket if the customer gave "
+            "you that person's details; otherwise leave them off and the buyer's details are used."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "product_id": {"type": "string", "description": "The exact 'ID:' of the event from the available registrations context."},
-                "ticket_type_name": {"type": "string", "description": "The name of the ticket tier the customer chose (e.g. 'VIP', 'General Admission'). Pass this — not an id — once they pick, for tiered events."},
+                "ticket_type_name": {"type": "string", "description": "The name of the ticket tier the customer chose (e.g. 'VIP', 'General Admission'). Pass this — not an id — once they pick, for tiered events. Ignored when `tickets` is provided."},
                 "ticket_type_id": {"type": "string", "description": "Optional: the chosen tier's id if you have it. Prefer ticket_type_name. Never invent an id."},
-                "quantity": {"type": "integer", "description": "Number of tickets/spots the customer wants. Default 1."},
-                "customer_name": {"type": "string", "description": "The customer's full name."},
-                "customer_email": {"type": "string", "description": "The customer's email address. Never invent or auto-complete this."},
+                "quantity": {"type": "integer", "description": "Number of tickets when they're all the same tier and for the same person. Ask the customer — do not default silently. Use `tickets` instead for different tiers or different attendees."},
+                "customer_name": {"type": "string", "description": "The customer's (buyer's) full name."},
+                "customer_email": {"type": "string", "description": "The customer's (buyer's) email address. Never invent or auto-complete this."},
+                "tickets": {
+                    "type": "array",
+                    "description": "One object per ticket, for multi-tier or multi-attendee purchases paid once. Provide instead of quantity when tickets differ. Each ticket gets its own QR.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ticket_type_name": {"type": "string", "description": "The tier for THIS ticket (e.g. 'VIP'). Omit for single-tier events."},
+                            "ticket_type_id": {"type": "string", "description": "Optional tier id for this ticket. Prefer ticket_type_name."},
+                            "name": {"type": "string", "description": "This attendee's full name. Omit to use the buyer's name."},
+                            "email": {"type": "string", "description": "This attendee's email. Omit to use the buyer's email. Never invent it."},
+                            "fields": {"type": "object", "description": "Event-specific required fields for this attendee, keyed by field key.", "additionalProperties": {"type": "string"}},
+                        },
+                    },
+                },
                 "fields": {
                     "type": "object",
-                    "description": "Any additional event-specific fields, keyed by their exact field key (e.g. phone_number).",
+                    "description": "Any additional event-specific fields for the buyer, keyed by their exact field key (e.g. phone_number).",
                     "additionalProperties": {"type": "string"},
                 },
             },
@@ -721,9 +743,12 @@ class LlmService:
             )
         if "register_for_event" in action_tool_names:
             tool_guidance += (
-                " For event registration: if register_for_event returns PENDING_PAYMENT, give the payment "
-                "link and make clear they are NOT registered until they pay; relay AT_CAPACITY / "
-                "ALREADY_REGISTERED honestly; only say confirmed when the tool says CONFIRMED."
+                " For event registration: ALWAYS ask how many tickets they want (don't assume 1), and if "
+                "it's more than one, ask whether the tickets are for different people — if so, collect each "
+                "attendee's details and pass the `tickets` array (one per person). If register_for_event "
+                "returns PENDING_PAYMENT, give the payment link and make clear they are NOT registered until "
+                "they pay; relay AT_CAPACITY / ALREADY_REGISTERED honestly; only say confirmed when the tool "
+                "says CONFIRMED."
             )
         if "search_products" in tool_names:
             tool_guidance += (

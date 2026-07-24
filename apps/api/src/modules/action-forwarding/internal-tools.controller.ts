@@ -71,6 +71,28 @@ export class InternalToolsController {
       if (!productId) {
         return { outcome: 'PRODUCT_NOT_FOUND', message: 'Missing product id.' };
       }
+      // Cart path: `tickets` is an array of per-attendee tickets (multi-tier / multi-person, one
+      // payment). Each element becomes its own ticket with its own QR.
+      if (Array.isArray(args.tickets) && args.tickets.length > 0) {
+        const tickets = (args.tickets as unknown[])
+          .filter((t): t is Record<string, unknown> => !!t && typeof t === 'object')
+          .map((t) => ({
+            ticketTypeId: typeof t.ticket_type_id === 'string' ? t.ticket_type_id : undefined,
+            ticketTypeName: typeof t.ticket_type_name === 'string' ? t.ticket_type_name : undefined,
+            name: typeof t.name === 'string' ? t.name : undefined,
+            email: typeof t.email === 'string' ? t.email : undefined,
+            fields: t.fields && typeof t.fields === 'object' ? (t.fields as Record<string, string>) : undefined,
+          }));
+        return this.registrations.executeRegistrationCartTool({
+          orgId: body.orgId,
+          botId: body.botId,
+          conversationId: body.conversationId,
+          productId,
+          customerName: typeof args.customer_name === 'string' ? args.customer_name : undefined,
+          customerEmail: typeof args.customer_email === 'string' ? args.customer_email : undefined,
+          tickets,
+        });
+      }
       return this.registrations.executeRegistrationTool({
         orgId: body.orgId,
         botId: body.botId,

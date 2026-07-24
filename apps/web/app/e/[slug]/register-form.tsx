@@ -30,172 +30,201 @@ interface Props {
   ticketTypes: Tier[];
   fields: Field[];
   soldOut: boolean;
-  eventSpotsLeft: number | null; // overall remaining across all tiers (null = no overall cap)
+  eventSpotsLeft: number | null;
 }
 
 const MAX_PER_ORDER = 50;
-
 function money(minor: number, currency: string) {
   return `${currency} ${(minor / 100).toLocaleString(undefined, { minimumFractionDigits: 0 })}`;
 }
 
-export default function RegisterForm(props: Props) {
-  const { slug, hasTiers, ticketTypes, fields } = props;
-  const eventLeft = props.eventSpotsLeft; // null = uncapped overall
+type Attendee = { name: string; email: string; fields: Record<string, string> };
 
-  // The real remaining for a tier is the tighter of its own limit and the overall event cap — so a
-  // tier with room can still be constrained (or sold out) by the event being nearly/entirely full.
-  const effLeft = (tierLeft: number | null): number | null => {
-    const a = tierLeft ?? Infinity;
-    const b = eventLeft ?? Infinity;
-    const m = Math.min(a, b);
-    return m === Infinity ? null : m; // null = effectively unlimited
+export default function RegisterForm(props: Props) {
+  const { slug, fields } = props;
+  const eventLeft = props.eventSpotsLeft;
+
+  // Legacy no-tier events → one synthetic tier from the product price, so the cart UI is uniform.
+  const tiers: Tier[] = props.hasTiers
+    ? props.ticketTypes
+    : [{ id: '__single__', name: 'Ticket', description: null, priceMinor: props.priceMinor, currency: props.currency, isFree: props.isFree, spotsLeft: props.eventSpotsLeft, soldOut: props.soldOut }];
+
+  const tierEffLeft = (tierLeft: number | null): number | null => {
+    const m = Math.min(tierLeft ?? Infinity, eventLeft ?? Infinity);
+    return m === Infinity ? null : m;
   };
   const isSoldOut = (t: Tier) => t.soldOut || (eventLeft != null && eventLeft <= 0);
 
-  const buyableTiers = ticketTypes.filter((t) => !isSoldOut(t));
-  const [ticketTypeId, setTicketTypeId] = useState(buyableTiers[0]?.id ?? '');
-  const [quantity, setQuantity] = useState(1);
-  const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
-  const [custom, setCustom] = useState<Record<string, string>>({});
+  const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [buyerName, setBuyerName] = useState('');
+  const [buyerEmail, setBuyerEmail] = useState('');
+  const [buyerFields, setBuyerFields] = useState<Record<string, string>>({});
+  const [individual, setIndividual] = useState(false);
+  const [attendees, setAttendees] = useState<Record<number, Partial<Attendee>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const selectedTier = ticketTypes.find((t) => t.id === ticketTypeId);
-  const unitMinor = hasTiers ? (selectedTier?.priceMinor ?? 0) : props.priceMinor;
-  const free = hasTiers ? (selectedTier?.isFree ?? false) : props.isFree;
+  const totalTickets = Object.values(quantities).reduce((s, n) => s + n, 0);
+  const totalMinor = tiers.reduce((s, t) => s + (quantities[t.id] ?? 0) * (t.priceMinor || 0), 0);
+  const anyPaid = totalMinor > 0;
 
-  if (props.soldOut || (hasTiers && buyableTiers.length === 0)) {
+  if (props.soldOut || tiers.every(isSoldOut)) {
     return <div style={soldOutBox}>This event is sold out.</div>;
   }
 
-  // Cap the quantity to what's actually available for the current selection.
-  const selectionLeft = hasTiers ? effLeft(selectedTier?.spotsLeft ?? null) : (eventLeft ?? null);
-  const maxQty = Math.min(selectionLeft ?? MAX_PER_ORDER, MAX_PER_ORDER);
-  const qty = Math.max(1, Math.min(quantity, maxQty)); // clamped value used everywhere
-  const totalMinor = unitMinor * qty;
+  // Flattened ticket slots (for per-attendee entry), in tier order.
+  const slots: { tierId: string; tierName: string }[] = [];
+  for (const t of tiers) for (let i = 0; i < (quantities[t.id] ?? 0); i++) slots.push({ tierId: t.id, tierName: t.name });
+
+  const setQty = (t: Tier, next: number) => {
+    // Cap by the tier's own remaining AND the event's remaining across everything already picked.
+    const others = totalTickets - (quantities[t.id] ?? 0);
+    const eventRoom = eventLeft != null ? Math.max(0, eventLeft - others) : Infinity;
+    const cap = Math.min(tierEffLeft(t.spotsLeft) ?? MAX_PER_ORDER, eventRoom, MAX_PER_ORDER);
+    setQuantities((q) => ({ ...q, [t.id]: Math.max(0, Math.min(cap, next)) }));
+  };
+  const patchAttendee = (i: number, patch: Partial<Attendee>) =>
+    setAttendees((prev) => ({ ...prev, [i]: { ...prev[i], ...patch } }));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError(null);
+    if (totalTickets === 0) { setError('Select at least one ticket.'); return; }
+    const perAttendee = individual && totalTickets > 1;
+    // Payer / contact for the payment + receipt: the buyer block when shared, else the first ticket.
+    const payerName = perAttendee ? (attendees[0]?.name ?? '') : buyerName;
+    const payerEmail = perAttendee ? (attendees[0]?.email ?? '') : buyerEmail;
+    if (perAttendee) {
+      for (let i = 0; i < slots.length; i++) {
+        if (!attendees[i]?.name?.trim() || !attendees[i]?.email?.trim()) { setError(`Fill in the name and email for ticket ${i + 1}.`); return; }
+      }
+    } else if (!buyerEmail.trim()) { setError('Your email is required.'); return; }
     setSubmitting(true);
     try {
-      const res = await fetch(`${API_URL}/api/public/events/${slug}/register`, {
+      const items = tiers
+        .filter((t) => (quantities[t.id] ?? 0) > 0)
+        .map((t) => {
+          const slotIdxs = slots.map((s, i) => (s.tierId === t.id ? i : -1)).filter((i) => i >= 0);
+          const att = slotIdxs.map((i) => {
+            if (perAttendee) {
+              const a = attendees[i] ?? {};
+              return { name: a.name || undefined, email: a.email || undefined, fields: a.fields ?? {} };
+            }
+            return { name: buyerName || undefined, email: buyerEmail || undefined, fields: { ...buyerFields } };
+          });
+          return { ...(props.hasTiers ? { ticketTypeId: t.id } : {}), quantity: quantities[t.id], attendees: att };
+        });
+
+      const res = await fetch(`${API_URL}/api/public/events/${slug}/register-cart`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          customerName: name || undefined,
-          customerEmail: email,
-          ticketTypeId: hasTiers ? ticketTypeId : undefined,
-          quantity: qty,
-          fields: custom,
-        }),
+        body: JSON.stringify({ customerName: payerName || undefined, customerEmail: payerEmail, items }),
       });
       const data = await res.json();
-      if (!res.ok) {
-        setError(typeof data?.message === 'string' ? data.message : 'Could not complete registration.');
-        setSubmitting(false);
-        return;
-      }
-      if (data.paymentUrl) {
-        window.location.href = data.paymentUrl; // → Paystack checkout
-        return;
-      }
-      if (data.ticketUrl) {
-        window.location.href = data.ticketUrl; // free/confirmed/already-registered → ticket page
-        return;
-      }
-      if (data.outcome === 'AT_CAPACITY') {
-        setError(data.spotsLeft > 0 ? `Only ${data.spotsLeft} spot(s) left — try a smaller quantity.` : 'This event is sold out.');
-      } else {
-        setError('Could not complete registration. Please try again.');
-      }
-      setSubmitting(false);
+      if (!res.ok) { setError(typeof data?.message === 'string' ? data.message : 'Could not complete registration.'); setSubmitting(false); return; }
+      if (data.paymentUrl) { window.location.href = data.paymentUrl; return; } // → Paystack
+      if (data.tickets?.[0]?.ticketUrl) { window.location.href = data.tickets[0].ticketUrl; return; } // free → ticket
+      setError('Could not complete registration. Please try again.'); setSubmitting(false);
     } catch {
-      setError('Something went wrong. Please try again.');
-      setSubmitting(false);
+      setError('Something went wrong. Please try again.'); setSubmitting(false);
     }
   };
 
+  const fieldInput = (f: Field, value: string, onChange: (v: string) => void, key?: string) => (
+    <input
+      key={key}
+      style={inputStyle}
+      type={f.type === 'number' ? 'number' : f.type === 'email' ? 'email' : 'text'}
+      placeholder={f.label + (f.required ? ' *' : '')}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+
   return (
     <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      {hasTiers && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <label style={labelStyle}>Select ticket</label>
-          {ticketTypes.map((t) => {
-            const active = t.id === ticketTypeId;
-            const soldOut = isSoldOut(t);
-            const left = effLeft(t.spotsLeft);
-            return (
-              <button
-                key={t.id}
-                type="button"
-                disabled={soldOut}
-                onClick={() => setTicketTypeId(t.id)}
-                style={{
-                  ...tierRow,
-                  borderColor: active ? '#6366f1' : '#26262c',
-                  background: active ? 'rgba(99,102,241,0.08)' : '#151519',
-                  opacity: soldOut ? 0.5 : 1,
-                  cursor: soldOut ? 'not-allowed' : 'pointer',
-                }}
-              >
-                <div style={{ textAlign: 'left' }}>
-                  <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14 }}>{t.name}</div>
-                  {t.description && <div style={{ color: '#9ca3af', fontSize: 12 }}>{t.description}</div>}
-                  {left != null && !soldOut && <div style={{ color: left <= 5 ? '#fbbf24' : '#71717a', fontSize: 11, marginTop: 2 }}>{left === 1 ? 'Last one' : `${left} left`}</div>}
-                </div>
-                <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap' }}>
+      {/* Ticket selection with quantity steppers */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <label style={labelStyle}>Tickets</label>
+        {tiers.map((t) => {
+          const soldOut = isSoldOut(t);
+          const left = tierEffLeft(t.spotsLeft);
+          const qty = quantities[t.id] ?? 0;
+          return (
+            <div key={t.id} style={{ ...tierRow, opacity: soldOut ? 0.5 : 1 }}>
+              <div style={{ textAlign: 'left', minWidth: 0 }}>
+                <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14 }}>{t.name}</div>
+                {t.description && <div style={{ color: '#9ca3af', fontSize: 12 }}>{t.description}</div>}
+                <div style={{ color: '#71717a', fontSize: 12, marginTop: 2 }}>
                   {soldOut ? 'Sold out' : t.isFree ? 'Free' : money(t.priceMinor, t.currency)}
+                  {left != null && !soldOut ? ` · ${left <= 5 ? (left === 1 ? 'last one' : `${left} left`) : `${left} left`}` : ''}
                 </div>
-              </button>
-            );
-          })}
-        </div>
+              </div>
+              {!soldOut && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <button type="button" onClick={() => setQty(t, qty - 1)} disabled={qty <= 0} style={stepBtn(qty <= 0)}>−</button>
+                  <span style={{ minWidth: 18, textAlign: 'center', color: '#f4f4f5', fontWeight: 600 }}>{qty}</span>
+                  <button type="button" onClick={() => setQty(t, qty + 1)} style={stepBtn(false)}>+</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Per-attendee option — sits above the details so the choice drives which form shows */}
+      {totalTickets > 1 && (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={individual}
+          onClick={() => setIndividual((v) => !v)}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, width: '100%', textAlign: 'left', cursor: 'pointer', background: '#151519', border: `1px solid ${individual ? '#6366f1' : '#26262c'}`, borderRadius: 12, padding: '12px 14px', transition: 'border-color 0.15s' }}
+        >
+          <span style={{ minWidth: 0 }}>
+            <span style={{ display: 'block', color: '#f4f4f5', fontSize: 13, fontWeight: 600 }}>These tickets are for different people</span>
+            <span style={{ display: 'block', color: '#71717a', fontSize: 12, marginTop: 1 }}>Enter each attendee’s details separately</span>
+          </span>
+          <span style={{ position: 'relative', flexShrink: 0, width: 40, height: 22, borderRadius: 999, background: individual ? '#6366f1' : '#3f3f46', transition: 'background 0.15s' }}>
+            <span style={{ position: 'absolute', top: 2, left: individual ? 20 : 2, width: 18, height: 18, borderRadius: '50%', background: '#fff', transition: 'left 0.15s', boxShadow: '0 1px 2px rgba(0,0,0,0.3)' }} />
+          </span>
+        </button>
       )}
 
-      {maxQty > 1 ? (
+      {/* Shared buyer details — one form applied to every ticket (when NOT entering each attendee) */}
+      {!(individual && totalTickets > 1) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-            <label style={labelStyle}>Quantity</label>
-            {maxQty < MAX_PER_ORDER && <span style={{ color: '#71717a', fontSize: 11 }}>{maxQty} available</span>}
-          </div>
-          <input
-            type="number"
-            min={1}
-            max={maxQty}
-            value={qty}
-            onChange={(e) => setQuantity(Math.max(1, Math.min(maxQty, Number(e.target.value) || 1)))}
-            style={inputStyle}
-          />
+          <label style={labelStyle}>Your details</label>
+          <input style={inputStyle} placeholder="Full name" value={buyerName} onChange={(e) => setBuyerName(e.target.value)} required />
+          <input style={inputStyle} type="email" placeholder="Email address" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} required />
+          {fields.map((f) => fieldInput(f, buyerFields[f.key] ?? '', (v) => setBuyerFields((p) => ({ ...p, [f.key]: v })), f.key))}
         </div>
-      ) : (
-        <div style={{ color: '#fbbf24', fontSize: 12 }}>Only 1 ticket left — quantity limited to 1.</div>
       )}
 
-      <input style={inputStyle} placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
-      <input style={inputStyle} type="email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} required />
-
-      {fields.map((f) => (
-        <input
-          key={f.key}
-          style={inputStyle}
-          type={f.type === 'number' ? 'number' : f.type === 'email' ? 'email' : 'text'}
-          placeholder={f.label + (f.required ? ' *' : '')}
-          required={f.required}
-          value={custom[f.key] ?? ''}
-          onChange={(e) => setCustom((prev) => ({ ...prev, [f.key]: e.target.value }))}
-        />
-      ))}
+      {/* Per-attendee forms — every ticket filled explicitly, including the buyer's own */}
+      {individual && totalTickets > 1 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {slots.map((s, i) => (
+            <div key={i} style={{ border: '1px solid #26262c', borderRadius: 12, padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ color: '#a5b4fc', fontSize: 12, fontWeight: 600 }}>Ticket {i + 1} · {s.tierName}</div>
+                {i === 0 && <div style={{ color: '#71717a', fontSize: 10 }}>payment &amp; receipt contact</div>}
+              </div>
+              <input style={inputStyle} placeholder="Attendee full name" value={attendees[i]?.name ?? ''} onChange={(e) => patchAttendee(i, { name: e.target.value })} />
+              <input style={inputStyle} type="email" placeholder="Attendee email" value={attendees[i]?.email ?? ''} onChange={(e) => patchAttendee(i, { email: e.target.value })} />
+              {fields.map((f) => fieldInput(f, attendees[i]?.fields?.[f.key] ?? '', (v) => patchAttendee(i, { fields: { ...(attendees[i]?.fields ?? {}), [f.key]: v } }), `${i}-${f.key}`))}
+            </div>
+          ))}
+        </div>
+      )}
 
       {error && <div style={errorBox}>{error}</div>}
 
-      <button type="submit" disabled={submitting || (hasTiers && !ticketTypeId)} style={submitBtn}>
-        {submitting ? 'Processing…' : free ? 'Register' : `Pay ${money(totalMinor, props.currency)}`}
+      <button type="submit" disabled={submitting || totalTickets === 0} style={{ ...submitBtn, opacity: submitting || totalTickets === 0 ? 0.6 : 1 }}>
+        {submitting ? 'Processing…' : anyPaid ? `Pay ${money(totalMinor, props.currency)}` : `Register ${totalTickets || ''} ticket${totalTickets === 1 ? '' : 's'}`.trim()}
       </button>
       <p style={{ color: '#71717a', fontSize: 11, textAlign: 'center', margin: 0 }}>
-        {free ? 'You’ll receive your ticket by email.' : 'Secure payment via Paystack. Your ticket is issued once payment is confirmed.'}
+        {anyPaid ? 'Secure payment via Paystack. Tickets are issued once payment is confirmed.' : 'You’ll receive your ticket by email.'}
       </p>
     </form>
   );
@@ -203,7 +232,8 @@ export default function RegisterForm(props: Props) {
 
 const labelStyle: React.CSSProperties = { color: '#9ca3af', fontSize: 12, fontWeight: 500 };
 const inputStyle: React.CSSProperties = { background: '#151519', border: '1px solid #26262c', borderRadius: 10, padding: '11px 13px', color: '#f4f4f5', fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box' };
-const tierRow: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, border: '1px solid', borderRadius: 12, padding: '12px 14px' };
+const tierRow: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, border: '1px solid #26262c', borderRadius: 12, padding: '12px 14px', background: '#151519' };
+const stepBtn = (disabled: boolean): React.CSSProperties => ({ width: 30, height: 30, borderRadius: 8, border: '1px solid #3f3f46', background: disabled ? '#1a1a1f' : '#26262c', color: disabled ? '#52525b' : '#f4f4f5', fontSize: 18, lineHeight: 1, cursor: disabled ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' });
 const submitBtn: React.CSSProperties = { background: '#6366f1', color: '#fff', border: 'none', borderRadius: 10, padding: '13px', fontSize: 15, fontWeight: 600, cursor: 'pointer', marginTop: 4 };
 const errorBox: React.CSSProperties = { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', borderRadius: 10, padding: '10px 12px', fontSize: 13 };
 const soldOutBox: React.CSSProperties = { background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', borderRadius: 12, padding: '16px', fontSize: 14, textAlign: 'center' };

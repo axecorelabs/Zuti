@@ -3,7 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { ApiExcludeController } from '@nestjs/swagger';
 import { Public } from '../../common/decorators/public.decorator';
 import { RegistrationsService } from './registrations.service';
-import { PublicRegisterDto } from './dto/registrations.dto';
+import { PublicRegisterDto, PublicCartDto } from './dto/registrations.dto';
 
 /**
  * Public, unauthenticated event pages. Powers the shareable /e/<slug> landing page: view a published
@@ -28,5 +28,13 @@ export class EventPublicController {
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   register(@Param('slug') slug: string, @Body() dto: PublicRegisterDto) {
     return this.svc.registerPublic(slug, dto);
+  }
+
+  // Cart: multiple tickets (tiers/attendees) in one purchase, paid once.
+  @Post(':slug/register-cart')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  registerCart(@Param('slug') slug: string, @Body() dto: PublicCartDto) {
+    return this.svc.registerPublicCart(slug, dto);
   }
 }

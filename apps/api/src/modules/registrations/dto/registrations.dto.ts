@@ -65,6 +65,26 @@ export class CheckInDto {
   @IsOptional() @IsString() productId?: string;
 }
 
+// ── Cart checkout: multiple tickets (tiers/attendees) in one purchase ────────
+export class CartAttendeeDto {
+  @IsOptional() @IsString() @MaxLength(120) name?: string;
+  @IsOptional() @IsEmail() email?: string;
+  @IsOptional() @IsObject() fields?: Record<string, string>;
+}
+
+export class CartItemDto {
+  @IsOptional() @IsString() ticketTypeId?: string;
+  @IsOptional() @IsString() ticketTypeName?: string;
+  @IsOptional() @IsInt() @Min(1) @Max(50) quantity?: number;
+  @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => CartAttendeeDto) attendees?: CartAttendeeDto[];
+}
+
+export class PublicCartDto {
+  @IsOptional() @IsString() @MaxLength(120) customerName?: string;
+  @IsEmail() customerEmail: string;
+  @IsArray() @ValidateNested({ each: true }) @Type(() => CartItemDto) items: CartItemDto[];
+}
+
 // ── Ticket tiers ────────────────────────────────────────────────────────────
 export class CreateTicketTypeDto {
   @IsString() @MaxLength(80) name: string;

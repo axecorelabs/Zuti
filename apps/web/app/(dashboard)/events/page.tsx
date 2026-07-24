@@ -518,7 +518,38 @@ function TicketTypesEditor({ orgId, productId, tiers, loading, onReload }: {
 }) {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState({ name: '', priceMinor: '', capacity: '' });
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState({ name: '', priceMinor: '', capacity: '' });
+  const [saving, setSaving] = useState(false);
   const inputCls = 'bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600';
+
+  const startEdit = (t: TicketType) => {
+    setEditId(t.id);
+    setEditDraft({
+      name: t.name,
+      priceMinor: t.priceMinor != null && t.priceMinor > 0 ? String(t.priceMinor / 100) : '',
+      capacity: t.capacity != null ? String(t.capacity) : '',
+    });
+  };
+  const saveEdit = async (t: TicketType) => {
+    if (!editDraft.name.trim()) { toast.error('Tier name is required'); return; }
+    const sold = t.usedSpots ?? 0;
+    const nextCap = editDraft.capacity ? parseInt(editDraft.capacity, 10) : null;
+    if (nextCap != null && nextCap < sold) { toast.error(`Capacity can't be below ${sold} already sold/reserved`); return; }
+    setSaving(true);
+    try {
+      await registrationsApi.updateTicketType(orgId, t.id, {
+        name: editDraft.name.trim(),
+        priceMinor: editDraft.priceMinor ? Math.round(parseFloat(editDraft.priceMinor) * 100) : null,
+        capacity: nextCap,
+      });
+      setEditId(null);
+      await onReload();
+      toast.success('Ticket type updated');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message ?? 'Failed to update ticket type');
+    } finally { setSaving(false); }
+  };
 
   const add = async () => {
     if (!draft.name.trim()) { toast.error('Tier name is required'); return; }
@@ -550,16 +581,38 @@ function TicketTypesEditor({ orgId, productId, tiers, loading, onReload }: {
         <div className="h-10 bg-zinc-900 animate-pulse rounded-lg" />
       ) : tiers.length > 0 && (
         <div className="space-y-2">
-          {tiers.map((t) => (
-            <div key={t.id} className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2.5">
-              <Ticket className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm text-zinc-200 truncate">{t.name}</p>
-                <p className="text-[11px] text-zinc-500">{money(t.priceMinor)}{t.capacity != null ? ` · ${t.usedSpots ?? 0}/${t.capacity} sold` : ''}</p>
+          {tiers.map((t) => {
+            const sold = t.usedSpots ?? 0;
+            if (editId === t.id) {
+              return (
+                <div key={t.id} className="rounded-xl border border-blue-800/60 bg-zinc-950/60 px-3 py-2.5 space-y-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input className={`${inputCls} flex-1 min-w-[120px]`} placeholder="Tier name" value={editDraft.name} onChange={(e) => setEditDraft((d) => ({ ...d, name: e.target.value }))} />
+                    <input className={`${inputCls} w-24`} type="number" min="0" step="0.01" placeholder="₦ price" value={editDraft.priceMinor} onChange={(e) => setEditDraft((d) => ({ ...d, priceMinor: e.target.value }))} />
+                    <input className={`${inputCls} w-24`} type="number" min={sold || 1} placeholder="Capacity" value={editDraft.capacity} onChange={(e) => setEditDraft((d) => ({ ...d, capacity: e.target.value }))} />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-[11px] text-zinc-500">{sold > 0 ? `${sold} sold/reserved — capacity can't go below this. Blank = unlimited.` : 'Blank capacity = unlimited.'}</p>
+                    <div className="flex items-center gap-1.5">
+                      <button type="button" onClick={() => setEditId(null)} className="px-2.5 py-1.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200">Cancel</button>
+                      <button type="button" onClick={() => saveEdit(t)} disabled={saving} className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white text-xs font-medium">Save</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <div key={t.id} className="flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2.5">
+                <Ticket className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-zinc-200 truncate">{t.name}</p>
+                  <p className="text-[11px] text-zinc-500">{money(t.priceMinor)}{t.capacity != null ? ` · ${sold}/${t.capacity} sold` : ` · ${sold} sold · unlimited`}</p>
+                </div>
+                <button type="button" onClick={() => startEdit(t)} className="p-1.5 text-zinc-500 hover:text-blue-400"><Pencil className="w-3.5 h-3.5" /></button>
+                <button type="button" onClick={() => remove(t.id)} className="p-1.5 text-zinc-500 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
               </div>
-              <button type="button" onClick={() => remove(t.id)} className="p-1.5 text-zinc-500 hover:text-red-400"><Trash2 className="w-3.5 h-3.5" /></button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-dashed border-zinc-700 bg-zinc-900/40 p-2">
