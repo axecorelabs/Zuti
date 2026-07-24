@@ -559,6 +559,7 @@ export class RegistrationsService {
     conversationId?: string;
     productId: string;
     ticketTypeId?: string;
+    ticketTypeName?: string;
     quantity?: number;
     customerName?: string;
     customerEmail?: string;
@@ -587,7 +588,19 @@ export class RegistrationsService {
     const tiers = (product.ticketTypes ?? []) as Array<{ id: string; name: string; priceMinor: number | null; currency: string; capacity: number | null }>;
     let chosenTier: (typeof tiers)[number] | null = null;
     if (tiers.length > 0) {
-      chosenTier = tiers.find((t) => t.id === params.ticketTypeId) ?? null;
+      // Resolve the tier robustly so the model never gets stuck: (a) exact id, (b) by NAME — the
+      // customer said the tier name, so the model shouldn't have to carry an opaque id across turns,
+      // (c) if there's only ONE tier there is nothing to choose, so auto-select it. Only fall back to
+      // asking when there are genuinely multiple tiers and none was matched.
+      const nameQ = (params.ticketTypeName ?? '').trim().toLowerCase();
+      chosenTier =
+        tiers.find((t) => t.id === params.ticketTypeId) ??
+        (nameQ
+          ? tiers.find((t) => t.name.trim().toLowerCase() === nameQ) ??
+            tiers.find((t) => { const tn = t.name.trim().toLowerCase(); return tn.includes(nameQ) || nameQ.includes(tn); }) ??
+            null
+          : null) ??
+        (tiers.length === 1 ? tiers[0] : null);
       if (!chosenTier) {
         const moneyT = (m: number | null) => (m && m > 0 ? `${product.currency ?? 'NGN'} ${(m / 100).toFixed(2)}` : 'Free');
         const ticket_types = await Promise.all(tiers.map(async (t) => ({

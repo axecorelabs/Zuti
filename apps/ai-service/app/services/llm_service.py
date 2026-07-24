@@ -32,14 +32,18 @@ REGISTER_FOR_EVENT_TOOL = {
             "for the chosen event. It performs the real registration (capacity, dedup, payment) and "
             "returns the actual result — including a payment link for paid events. Do not claim a "
             "registration succeeded unless this tool returns a success outcome. If the event has "
-            "ticket tiers, this tool returns NEEDS_TICKET_TYPE listing them — ask the customer which "
-            "tier they want, then call again with that ticket_type_id."
+            "MULTIPLE ticket tiers, this tool returns NEEDS_TICKET_TYPE listing them — ask the "
+            "customer which tier they want, then call again passing ticket_type_name (the tier's name "
+            "they chose, e.g. 'VIP'). You do NOT need to remember tier ids. When a tool returns "
+            "PENDING_PAYMENT it includes a payment link — give that link to the customer IN THIS CHAT; "
+            "never tell them it will be emailed."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "product_id": {"type": "string", "description": "The exact 'ID:' of the event from the available registrations context."},
-                "ticket_type_id": {"type": "string", "description": "The chosen ticket tier's id — required only when the event has tiers (the tool tells you and lists them). Never invent it."},
+                "ticket_type_name": {"type": "string", "description": "The name of the ticket tier the customer chose (e.g. 'VIP', 'General Admission'). Pass this — not an id — once they pick, for tiered events."},
+                "ticket_type_id": {"type": "string", "description": "Optional: the chosen tier's id if you have it. Prefer ticket_type_name. Never invent an id."},
                 "quantity": {"type": "integer", "description": "Number of tickets/spots the customer wants. Default 1."},
                 "customer_name": {"type": "string", "description": "The customer's full name."},
                 "customer_email": {"type": "string", "description": "The customer's email address. Never invent or auto-complete this."},
