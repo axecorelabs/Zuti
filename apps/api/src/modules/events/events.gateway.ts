@@ -125,6 +125,16 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
+   * Emit a ticket check-in (admission) so any dashboard viewing that event updates live.
+   */
+  emitRegistrationCheckIn(
+    organizationId: string,
+    payload: { productId: string; entryId: string; checkedInAt: Date; customerName?: string | null },
+  ) {
+    this.server.to(`org:${organizationId}`).emit('registration:checkin', payload);
+  }
+
+  /**
    * Emit a conversation update (status/mode change) to the org room.
    */
   emitConversationUpdate(

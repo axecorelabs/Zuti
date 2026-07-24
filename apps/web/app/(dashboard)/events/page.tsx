@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import { io } from 'socket.io-client';
 import {
   Plus, Pencil, Trash2, Users, ChevronRight, Download,
   CalendarDays, DollarSign, Tag, CheckCircle, XCircle,
@@ -70,8 +71,11 @@ interface RegistrationEntry {
   status: 'PENDING_PAYMENT' | 'AWAITING_APPROVAL' | 'CONFIRMED' | 'CANCELLED';
   quantity?: number;
   amountMinor?: number | null;
+  ticketTypeId?: string | null;
+  ticketType?: { id: string; name: string } | null;
   paystackReference: string | null;
   paidAt: string | null;
+  checkedInAt?: string | null;
   createdAt: string;
 }
 
@@ -128,6 +132,10 @@ function EventStats({ product, entries }: { product: RegistrationProduct; entrie
   const pendingRevenue = pending.reduce((s, e) => s + amt(e), 0) / 100;
   const ticketsSold = confirmed.reduce((s, e) => s + qty(e), 0);
   const ticketsActive = active.reduce((s, e) => s + qty(e), 0);
+  // Check-in: admitted tickets vs the admissible base (confirmed for paid, active for free).
+  const admitted = active.filter((e) => e.checkedInAt).reduce((s, e) => s + qty(e), 0);
+  const admissionBase = product.isFree ? ticketsActive : ticketsSold;
+  const checkinPct = admissionBase > 0 ? Math.round((admitted / admissionBase) * 100) : 0;
   const decided = confirmed.length + pending.length;
   const paidRate = decided > 0 ? Math.round((confirmed.length / decided) * 100) : 0;
   const capacityPct = product.capacity ? Math.min(100, Math.round((ticketsActive / product.capacity) * 100)) : null;
@@ -154,6 +162,17 @@ function EventStats({ product, entries }: { product: RegistrationProduct; entrie
     { name: 'Cancelled', value: entries.length - active.length, color: STATUS_COLORS.CANCELLED },
   ].filter((s) => s.value > 0);
 
+  // Per-ticket-type breakdown (tickets, not rows) — sold = confirmed quantity, held = active quantity.
+  const tierMap = new Map<string, { name: string; sold: number; held: number; revenue: number }>();
+  for (const e of entries) {
+    if (!e.ticketType) continue;
+    const cur = tierMap.get(e.ticketType.id) ?? { name: e.ticketType.name, sold: 0, held: 0, revenue: 0 };
+    if (e.status === 'CONFIRMED') { cur.sold += qty(e); cur.revenue += amt(e); }
+    if (e.status !== 'CANCELLED') cur.held += qty(e);
+    tierMap.set(e.ticketType.id, cur);
+  }
+  const tierStats = Array.from(tierMap.values()).sort((a, b) => b.held - a.held);
+
   const cards: { label: string; value: string; sub: string }[] = [
     product.isFree
       ? { label: 'Revenue', value: 'Free', sub: 'No charge' }
@@ -178,6 +197,37 @@ function EventStats({ product, entries }: { product: RegistrationProduct; entrie
           </div>
         ))}
       </div>
+
+      {admissionBase > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+          <div className="flex items-center justify-between mb-2.5">
+            <p className="text-xs font-medium text-zinc-400">Check-in</p>
+            <p className="text-xs text-zinc-500"><span className="text-emerald-400 font-semibold">{admitted}</span> / {admissionBase} admitted · {checkinPct}%</p>
+          </div>
+          <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
+            <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${checkinPct}%` }} />
+          </div>
+          {admissionBase > admitted && <p className="text-[11px] text-zinc-600 mt-2">{admissionBase - admitted} yet to arrive</p>}
+        </div>
+      )}
+
+      {tierStats.length > 0 && (
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+          <p className="text-xs font-medium text-zinc-400 mb-3">By ticket type</p>
+          <div className="space-y-2.5">
+            {tierStats.map((t) => (
+              <div key={t.name} className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-zinc-300 truncate">{t.name}</span>
+                <span className="text-zinc-500 text-xs shrink-0">
+                  {product.isFree
+                    ? `${t.held} ticket${t.held === 1 ? '' : 's'}`
+                    : `${t.sold} sold${t.held > t.sold ? ` · ${t.held - t.sold} pending` : ''}${t.revenue > 0 ? ` · ${money(t.revenue / 100)}` : ''}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
@@ -548,6 +598,16 @@ function ProductFormFields({ form, bots, variant, orgId, product, wizardStep }: 
   }, [orgId, product]);
   useEffect(() => { reloadTiers(); }, [reloadTiers]);
 
+  // Footgun guard: if every tier is capped and their sum exceeds the overall event cap, the tiers can
+  // never fully sell — warn so the organizer notices the contradiction.
+  const tierCaps: (number | null)[] = product
+    ? tiers.map((t) => t.capacity)
+    : form.draftTiers.map((t) => (t.capacity ? Number(t.capacity) : null));
+  const allTiersCapped = tierCaps.length > 0 && tierCaps.every((c) => c != null && c > 0);
+  const sumTierCap = allTiersCapped ? tierCaps.reduce((s: number, c) => s + (c as number), 0) : null;
+  const eventCapNum = form.capacity ? Number(form.capacity) : null;
+  const capInconsistent = eventCapNum != null && sumTierCap != null && eventCapNum < sumTierCap;
+
   const brandingSection = (
     <div className="space-y-4">
       <div>
@@ -600,10 +660,14 @@ function ProductFormFields({ form, bots, variant, orgId, product, wizardStep }: 
           <input type="date" value={form.eventDate} onChange={(e) => form.setEventDate(e.target.value)} className={inputCls} />
         </div>
         <div>
-          <label className={labelCls}>Capacity <span className="text-zinc-600">(blank = unlimited)</span></label>
-          <input type="number" min="1" value={form.capacity} onChange={(e) => form.setCapacity(e.target.value)} placeholder="e.g. 100" className={inputCls} />
+          <label className={labelCls}>Overall capacity <span className="text-zinc-600">(optional)</span></label>
+          <input type="number" min="1" value={form.capacity} onChange={(e) => form.setCapacity(e.target.value)} placeholder="e.g. venue limit" className={inputCls} />
         </div>
       </div>
+      <p className="text-xs text-zinc-600 -mt-2">Total cap across all ticket types (e.g. a venue limit). Leave blank to let each ticket type&apos;s own quantity define the total.</p>
+      {capInconsistent && (
+        <p className="text-xs text-amber-400">Your ticket types total {sumTierCap} but the overall cap is {eventCapNum} — you won&apos;t be able to sell more than {eventCapNum}.</p>
+      )}
       <div>
         <label className={labelCls}>Venue / location</label>
         <input value={form.venue} onChange={(e) => form.setVenue(e.target.value)} placeholder="e.g. Eko Hotel, Lagos (or a virtual link)" className={inputCls} />
@@ -1021,6 +1085,25 @@ export default function EventsPage() {
     }
   }, [orgId]);
 
+  // Live check-in: subscribe to the org's websocket and patch an entry's checkedInAt the moment a
+  // ticket is scanned, so the check-in view and column update instantly (no polling).
+  useEffect(() => {
+    if (!orgId) return;
+    const rawUrl = process.env.NEXT_PUBLIC_API_URL || '';
+    const apiUrl = /^https?:\/\/.+/.test(rawUrl) ? rawUrl : 'http://localhost:3001';
+    const socketUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
+    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
+    if (!token) return;
+
+    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'], auth: { token } });
+    socket.on('connect', () => socket.emit('join', orgId));
+    socket.on('registration:checkin', (p: { productId: string; entryId: string; checkedInAt: string }) => {
+      // Only entries for the event currently loaded will match; others are a no-op.
+      setEntries((prev) => prev.map((e) => (e.id === p.entryId ? { ...e, checkedInAt: p.checkedInAt } : e)));
+    });
+    return () => { socket.disconnect(); };
+  }, [orgId]);
+
   useEffect(() => {
     loadProducts();
     loadBots();
@@ -1154,17 +1237,16 @@ export default function EventsPage() {
                   <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-400 transition-colors shrink-0 mt-0.5" />
                 </div>
                 <div className="flex items-center gap-3 text-xs text-zinc-500">
-                  <span className="flex items-center gap-1">
-                    <Users className="w-3 h-3" />
-                    {p._count.entries} registrant{p._count.entries !== 1 ? 's' : ''}
+                  <span className="flex items-center gap-1" title="Tickets (sum of quantities)">
+                    <Tag className="w-3 h-3" />
+                    {(p.usedSpots ?? p._count.entries)} ticket{(p.usedSpots ?? p._count.entries) !== 1 ? 's' : ''}
                   </span>
-                  <span className="flex items-center gap-1">
-                    <DollarSign className="w-3 h-3" />
-                    {formatPrice(p)}
+                  <span className="flex items-center gap-1" title="Registrants (people)">
+                    <Users className="w-3 h-3" />
+                    {p._count.entries}
                   </span>
                   {p.capacity && (
                     <span className="flex items-center gap-1">
-                      <Tag className="w-3 h-3" />
                       {Math.max(0, p.capacity - (p.usedSpots ?? p._count.entries))} left
                     </span>
                   )}
@@ -1306,8 +1388,10 @@ export default function EventsPage() {
                       {selectedProduct.fields.filter((f) => f.required).map((f) => (
                         <th key={f.key} className="text-left py-2 px-3 text-xs font-medium text-zinc-500">{f.label}</th>
                       ))}
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Ticket type</th>
                       <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Tickets</th>
                       <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Status</th>
+                      <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Checked in</th>
                       <th className="text-left py-2 px-3 text-xs font-medium text-zinc-500">Registered</th>
                       <th className="py-2 px-3" />
                     </tr>
@@ -1322,11 +1406,21 @@ export default function EventsPage() {
                             {entry.collectedFields?.[f.key] ?? '—'}
                           </td>
                         ))}
+                        <td className="py-3 px-3 text-zinc-400">{entry.ticketType?.name ?? '—'}</td>
                         <td className="py-3 px-3 text-zinc-300 font-medium">{entry.quantity ?? 1}</td>
                         <td className="py-3 px-3">
                           <span className={`text-[10px] px-2 py-0.5 rounded-lg font-medium border ${STATUS_CLASS[entry.status] ?? 'bg-zinc-800 text-zinc-500 border-zinc-700'}`}>
                             {STATUS_LABEL[entry.status] ?? entry.status}
                           </span>
+                        </td>
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          {entry.checkedInAt ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] text-emerald-400" title={new Date(entry.checkedInAt).toLocaleString()}>
+                              <CheckCircle className="w-3 h-3" /> {new Date(entry.checkedInAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          ) : (
+                            <span className="text-zinc-600 text-xs">—</span>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-zinc-500 text-xs whitespace-nowrap">
                           {new Date(entry.createdAt).toLocaleDateString()}

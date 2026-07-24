@@ -60,7 +60,7 @@ interface InboundActionSignalInput {
 
 /** Result shape returned to the AI tool-use loop for a non-registration action tool. */
 export interface ActionToolResult {
-  outcome: 'SUBMITTED' | 'ALREADY_SUBMITTED' | 'MISSING_FIELDS' | 'NOT_AVAILABLE' | 'NOT_SUBMITTED' | 'ERROR' | 'NEEDS_CHOICE' | 'NOT_FOUND';
+  outcome: 'SUBMITTED' | 'ALREADY_SUBMITTED' | 'MISSING_FIELDS' | 'NOT_AVAILABLE' | 'NOT_SUBMITTED' | 'ERROR' | 'NEEDS_CHOICE' | 'NOT_FOUND' | 'OUT_OF_STOCK';
   message: string;
   missing_fields?: string[];
   reference?: string;
@@ -2354,6 +2354,28 @@ export class ActionForwardingService {
         fields.unit_price = (resolved.priceMinor / 100).toFixed(2);
         fields.product = resolved.product;
         fields.variant_id = resolved.variantId;
+
+        // Availability gate — never hand out a payment link for stock we don't have. Only enforced
+        // when the variant's inventory is actually TRACKED (has inventory levels); a variant with no
+        // levels is treated as untracked/unlimited so it doesn't block merchants who don't stock-count.
+        const requestedQty = Math.max(1, Math.floor(Number(fields.quantity) || 1));
+        const inv = await prismaAny.commerceInventoryLevel.aggregate({
+          where: { variantId: resolved.variantId },
+          _sum: { onHand: true, reserved: true },
+          _count: { _all: true },
+        });
+        const tracked = (inv._count?._all ?? 0) > 0;
+        if (tracked) {
+          const available = Math.max(0, (inv._sum.onHand ?? 0) - (inv._sum.reserved ?? 0));
+          if (available < requestedQty) {
+            return {
+              outcome: 'OUT_OF_STOCK',
+              message: available > 0
+                ? `Only ${available} of "${resolved.product}" left in stock — fewer than the ${requestedQty} requested. Offer the customer the available quantity; do NOT place an order for more than ${available}.`
+                : `"${resolved.product}" is out of stock. Tell the customer it's currently unavailable — do NOT place the order or send a payment link.`,
+            };
+          }
+        }
       } else if (commerceStoreBot) {
         // Couldn't resolve to a catalog item — never create an unpriced/mystery store order, and never
         // ask the customer for an internal id. Tell the model to look it up itself.
@@ -2660,6 +2682,46 @@ export class ActionForwardingService {
     });
   }
 
+  /**
+   * Atomically reserve `qty` of a variant's stock inside the given transaction, greedy across
+   * locations (most-available first). Returns the per-location allocation (so it can be released or
+   * settled later), 'UNTRACKED' when the variant has no inventory levels (nothing to reserve), or
+   * null when it can't be fully reserved. Each increment is a row-conditional UPDATE, so it only
+   * reserves stock that is genuinely still there even under concurrency.
+   */
+  private async reserveVariantStock(
+    tx: any,
+    variantId: string | null,
+    qty: number,
+  ): Promise<Array<{ locationId: string; quantity: number }> | 'UNTRACKED' | null> {
+    if (!variantId || qty <= 0) return 'UNTRACKED';
+    const levels = await tx.commerceInventoryLevel.findMany({
+      where: { variantId },
+      select: { id: true, locationId: true, onHand: true, reserved: true },
+      orderBy: { onHand: 'desc' },
+    });
+    if (levels.length === 0) return 'UNTRACKED';
+
+    const allocation: Array<{ locationId: string; quantity: number }> = [];
+    let remaining = qty;
+    for (const lvl of levels) {
+      if (remaining <= 0) break;
+      const take = Math.min(Math.max(0, lvl.onHand - lvl.reserved), remaining);
+      if (take <= 0) continue;
+      const updated: number = await tx.$executeRawUnsafe(
+        `UPDATE "CommerceInventoryLevel" SET "reserved" = "reserved" + $1 WHERE "id" = $2 AND ("onHand" - "reserved") >= $1`,
+        take,
+        lvl.id,
+      );
+      if (updated > 0) {
+        allocation.push({ locationId: lvl.locationId, quantity: take });
+        remaining -= take;
+      }
+    }
+    // Could not fully reserve (raced) — throwing in the caller rolls back these partial increments.
+    return remaining <= 0 ? allocation : null;
+  }
+
   private async bridgeToCommerceOrder(options: {
     organizationId: string;
     botId: string;
@@ -2739,36 +2801,51 @@ export class ActionForwardingService {
         if (!okVariant) linkedVariantId = null;
       }
 
-      const order = await prismaAny.commerceOrder.create({
-        data: {
-          organizationId: options.organizationId,
-          storeId: store.id,
-          customerName: salesOrder.customerName ?? null,
-          customerEmail: salesOrder.customerEmail ?? null,
-          customerPhone: salesOrder.customerPhone ?? null,
-          currency: store.currency,
-          subtotalMinor: lineTotal,
-          totalMinor: lineTotal,
-          notes: `Bot order — ${salesOrder.product ?? 'product'}`,
-          status: 'DRAFT',
-          metadata: { source: 'bot', actionTaskId: options.actionTaskId, botId: options.botId, conversationId: options.conversationId },
-          items: {
-            create: {
-              variantId: linkedVariantId,
-              lineDescription: salesOrder.product ?? null,
-              quantity,
-              unitPriceMinor,
-              lineTotalMinor: lineTotal,
-              metadata: { source: 'bot' },
+      // Create the order and ATOMICALLY reserve stock in one transaction. The reservation holds the
+      // units while the customer pays, so a raced last-unit can't be sold twice; if it can't be fully
+      // reserved (someone grabbed it in the tiny window since the Phase-1 read-check), the whole thing
+      // rolls back and no payment link is issued. Untracked variants (no inventory levels) skip this.
+      let order: any;
+      try {
+        order = await this.prisma.$transaction(async (tx) => {
+          const txAny = tx as any;
+          const alloc = await this.reserveVariantStock(txAny, linkedVariantId, quantity);
+          if (alloc === null) throw new Error('BRIDGE_OUT_OF_STOCK');
+          const created = await txAny.commerceOrder.create({
+            data: {
+              organizationId: options.organizationId,
+              storeId: store.id,
+              customerName: salesOrder.customerName ?? null,
+              customerEmail: salesOrder.customerEmail ?? null,
+              customerPhone: salesOrder.customerPhone ?? null,
+              currency: store.currency,
+              subtotalMinor: lineTotal,
+              totalMinor: lineTotal,
+              notes: `Bot order — ${salesOrder.product ?? 'product'}`,
+              status: 'DRAFT',
+              metadata: { source: 'bot', actionTaskId: options.actionTaskId, botId: options.botId, conversationId: options.conversationId },
+              items: {
+                create: {
+                  variantId: linkedVariantId,
+                  lineDescription: salesOrder.product ?? null,
+                  quantity,
+                  unitPriceMinor,
+                  lineTotalMinor: lineTotal,
+                  metadata: { source: 'bot', ...(alloc !== 'UNTRACKED' ? { reservation: alloc } : {}) },
+                },
+              },
             },
-          },
-        },
-      });
-
-      await prismaAny.salesOrder.update({
-        where: { id: salesOrder.id },
-        data: { commerceOrderId: order.id },
-      });
+          });
+          await txAny.salesOrder.update({ where: { id: salesOrder.id }, data: { commerceOrderId: created.id } });
+          return created;
+        });
+      } catch (err) {
+        if (err instanceof Error && err.message === 'BRIDGE_OUT_OF_STOCK') {
+          this.logger.warn(`bridgeToCommerceOrder: insufficient stock for variant ${linkedVariantId} (task ${options.actionTaskId})`);
+          return null;
+        }
+        throw err;
+      }
 
       const paystackSecret = this.config.get<string>('PAYSTACK_SECRET_KEY');
       if (!paystackSecret || !salesOrder.customerEmail) {

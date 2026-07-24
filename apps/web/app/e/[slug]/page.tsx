@@ -146,6 +146,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
                 ticketTypes={ev.ticketTypes}
                 fields={ev.fields}
                 soldOut={ev.soldOut}
+                eventSpotsLeft={ev.spotsLeft}
               />
             </div>
           </div>

@@ -30,7 +30,10 @@ interface Props {
   ticketTypes: Tier[];
   fields: Field[];
   soldOut: boolean;
+  eventSpotsLeft: number | null; // overall remaining across all tiers (null = no overall cap)
 }
+
+const MAX_PER_ORDER = 50;
 
 function money(minor: number, currency: string) {
   return `${currency} ${(minor / 100).toLocaleString(undefined, { minimumFractionDigits: 0 })}`;
@@ -38,7 +41,19 @@ function money(minor: number, currency: string) {
 
 export default function RegisterForm(props: Props) {
   const { slug, hasTiers, ticketTypes, fields } = props;
-  const buyableTiers = ticketTypes.filter((t) => !t.soldOut);
+  const eventLeft = props.eventSpotsLeft; // null = uncapped overall
+
+  // The real remaining for a tier is the tighter of its own limit and the overall event cap — so a
+  // tier with room can still be constrained (or sold out) by the event being nearly/entirely full.
+  const effLeft = (tierLeft: number | null): number | null => {
+    const a = tierLeft ?? Infinity;
+    const b = eventLeft ?? Infinity;
+    const m = Math.min(a, b);
+    return m === Infinity ? null : m; // null = effectively unlimited
+  };
+  const isSoldOut = (t: Tier) => t.soldOut || (eventLeft != null && eventLeft <= 0);
+
+  const buyableTiers = ticketTypes.filter((t) => !isSoldOut(t));
   const [ticketTypeId, setTicketTypeId] = useState(buyableTiers[0]?.id ?? '');
   const [quantity, setQuantity] = useState(1);
   const [name, setName] = useState('');
@@ -50,11 +65,16 @@ export default function RegisterForm(props: Props) {
   const selectedTier = ticketTypes.find((t) => t.id === ticketTypeId);
   const unitMinor = hasTiers ? (selectedTier?.priceMinor ?? 0) : props.priceMinor;
   const free = hasTiers ? (selectedTier?.isFree ?? false) : props.isFree;
-  const totalMinor = unitMinor * quantity;
 
   if (props.soldOut || (hasTiers && buyableTiers.length === 0)) {
     return <div style={soldOutBox}>This event is sold out.</div>;
   }
+
+  // Cap the quantity to what's actually available for the current selection.
+  const selectionLeft = hasTiers ? effLeft(selectedTier?.spotsLeft ?? null) : (eventLeft ?? null);
+  const maxQty = Math.min(selectionLeft ?? MAX_PER_ORDER, MAX_PER_ORDER);
+  const qty = Math.max(1, Math.min(quantity, maxQty)); // clamped value used everywhere
+  const totalMinor = unitMinor * qty;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -68,7 +88,7 @@ export default function RegisterForm(props: Props) {
           customerName: name || undefined,
           customerEmail: email,
           ticketTypeId: hasTiers ? ticketTypeId : undefined,
-          quantity,
+          quantity: qty,
           fields: custom,
         }),
       });
@@ -105,27 +125,29 @@ export default function RegisterForm(props: Props) {
           <label style={labelStyle}>Select ticket</label>
           {ticketTypes.map((t) => {
             const active = t.id === ticketTypeId;
+            const soldOut = isSoldOut(t);
+            const left = effLeft(t.spotsLeft);
             return (
               <button
                 key={t.id}
                 type="button"
-                disabled={t.soldOut}
+                disabled={soldOut}
                 onClick={() => setTicketTypeId(t.id)}
                 style={{
                   ...tierRow,
                   borderColor: active ? '#6366f1' : '#26262c',
                   background: active ? 'rgba(99,102,241,0.08)' : '#151519',
-                  opacity: t.soldOut ? 0.5 : 1,
-                  cursor: t.soldOut ? 'not-allowed' : 'pointer',
+                  opacity: soldOut ? 0.5 : 1,
+                  cursor: soldOut ? 'not-allowed' : 'pointer',
                 }}
               >
                 <div style={{ textAlign: 'left' }}>
                   <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14 }}>{t.name}</div>
                   {t.description && <div style={{ color: '#9ca3af', fontSize: 12 }}>{t.description}</div>}
-                  {t.spotsLeft != null && !t.soldOut && <div style={{ color: '#71717a', fontSize: 11, marginTop: 2 }}>{t.spotsLeft} left</div>}
+                  {left != null && !soldOut && <div style={{ color: left <= 5 ? '#fbbf24' : '#71717a', fontSize: 11, marginTop: 2 }}>{left === 1 ? 'Last one' : `${left} left`}</div>}
                 </div>
                 <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14, whiteSpace: 'nowrap' }}>
-                  {t.soldOut ? 'Sold out' : t.isFree ? 'Free' : money(t.priceMinor, t.currency)}
+                  {soldOut ? 'Sold out' : t.isFree ? 'Free' : money(t.priceMinor, t.currency)}
                 </div>
               </button>
             );
@@ -133,10 +155,24 @@ export default function RegisterForm(props: Props) {
         </div>
       )}
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <label style={labelStyle}>Quantity</label>
-        <input type="number" min={1} max={50} value={quantity} onChange={(e) => setQuantity(Math.max(1, Math.min(50, Number(e.target.value) || 1)))} style={inputStyle} />
-      </div>
+      {maxQty > 1 ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+            <label style={labelStyle}>Quantity</label>
+            {maxQty < MAX_PER_ORDER && <span style={{ color: '#71717a', fontSize: 11 }}>{maxQty} available</span>}
+          </div>
+          <input
+            type="number"
+            min={1}
+            max={maxQty}
+            value={qty}
+            onChange={(e) => setQuantity(Math.max(1, Math.min(maxQty, Number(e.target.value) || 1)))}
+            style={inputStyle}
+          />
+        </div>
+      ) : (
+        <div style={{ color: '#fbbf24', fontSize: 12 }}>Only 1 ticket left — quantity limited to 1.</div>
+      )}
 
       <input style={inputStyle} placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} required />
       <input style={inputStyle} type="email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} required />

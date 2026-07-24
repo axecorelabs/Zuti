@@ -7,6 +7,7 @@ import { firstValueFrom } from 'rxjs';
 import { randomBytes } from 'crypto';
 import * as QRCode from 'qrcode';
 import { PrismaService } from '../prisma/prisma.service';
+import { EventsGateway } from '../events/events.gateway';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto } from './dto/registrations.dto';
@@ -33,6 +34,7 @@ export class RegistrationsService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly http: HttpService,
+    private readonly events: EventsGateway,
     @InjectQueue(RECEIPTS_QUEUE) private readonly receiptsQueue: Queue,
   ) {}
 
@@ -185,6 +187,7 @@ export class RegistrationsService {
     return this.prisma.registrationEntry.findMany({
       where: { productId, orgId },
       orderBy: { createdAt: 'desc' },
+      include: { ticketType: { select: { id: true, name: true } } },
     });
   }
 
@@ -836,8 +839,16 @@ export class RegistrationsService {
       }
     }
 
-    if (stuck.length > 0) {
-      this.logger.log(`Payment reconciliation: checked ${stuck.length} pending entr${stuck.length === 1 ? 'y' : 'ies'}, confirmed ${confirmed}`);
+    // Expire abandoned holds: an entry still PENDING_PAYMENT beyond the window is treated as
+    // abandoned and CANCELLED, which frees its spot (capacity counts only non-cancelled entries).
+    // By this age the 5-min reconcile has re-verified it many times, so it is genuinely unpaid.
+    const expired = await this.prisma.registrationEntry.updateMany({
+      where: { status: 'PENDING_PAYMENT', createdAt: { lt: maxAge } },
+      data: { status: 'CANCELLED' },
+    });
+
+    if (stuck.length > 0 || expired.count > 0) {
+      this.logger.log(`Payment reconciliation: checked ${stuck.length}, confirmed ${confirmed}, expired ${expired.count}`);
     }
     return { checked: stuck.length, confirmed };
   }
@@ -1005,6 +1016,10 @@ export class RegistrationsService {
       const fresh = await this.prisma.registrationEntry.findUnique({ where: { id: entry.id }, select: { checkedInAt: true } });
       return { outcome: 'ALREADY_CHECKED_IN', entry: { ...info, checkedInAt: fresh?.checkedInAt ?? entry.checkedInAt } };
     }
+    // Live: push the admission to any dashboard viewing this event.
+    try {
+      this.events.emitRegistrationCheckIn(orgId, { productId: entry.productId, entryId: entry.id, checkedInAt: now, customerName: entry.customerName });
+    } catch { /* non-fatal */ }
     return { outcome: 'ADMITTED', entry: { ...info, checkedInAt: now } };
   }
 

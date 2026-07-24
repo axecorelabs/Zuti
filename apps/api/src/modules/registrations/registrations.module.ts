@@ -3,6 +3,7 @@ import { HttpModule } from '@nestjs/axios';
 import { BullModule } from '@nestjs/bull';
 import { PrismaModule } from '../prisma/prisma.module';
 import { MailModule } from '../mail/mail.module';
+import { EventsModule } from '../events/events.module';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RegistrationsService } from './registrations.service';
 import { RegistrationsController } from './registrations.controller';
@@ -17,6 +18,7 @@ import { ReceiptsProcessor } from '../queue/receipts.processor';
     PrismaModule,
     HttpModule,
     MailModule,
+    EventsModule,
     BullModule.registerQueue({ name: RECEIPTS_QUEUE }),
   ],
   controllers: [RegistrationsController, TicketController, EventPublicController, InternalRegistrationController],

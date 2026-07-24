@@ -97,6 +97,42 @@ export class CommerceService {
     }
   }
 
+  /**
+   * Apply the stock reservation an order is holding (stored on each item's metadata by the bot bridge):
+   *  - 'settle' (order paid): stock physically leaves → decrement onHand AND release the hold (reserved).
+   *  - 'release' (order cancelled/expired): just drop the hold (reserved), onHand untouched.
+   * Idempotent: the reservation marker is cleared after applying, so repeated calls (webhook + callback
+   * + reconcile all confirm the same order) can't double-count.
+   */
+  private async adjustReservations(orderId: string, mode: 'settle' | 'release') {
+    const items = await this.prisma.commerceOrderItem.findMany({
+      where: { orderId },
+      select: { id: true, variantId: true, metadata: true },
+    });
+    for (const item of items) {
+      const meta = (item.metadata && typeof item.metadata === 'object' ? item.metadata : {}) as Record<string, unknown>;
+      const reservation = Array.isArray(meta.reservation)
+        ? (meta.reservation as Array<{ locationId?: string; quantity?: number }>)
+        : [];
+      if (!item.variantId || reservation.length === 0) continue;
+
+      for (const r of reservation) {
+        if (!r.locationId || !r.quantity || r.quantity <= 0) continue;
+        await this.prisma.commerceInventoryLevel.updateMany({
+          where: { variantId: item.variantId, locationId: r.locationId },
+          data: mode === 'settle'
+            ? { onHand: { decrement: r.quantity }, reserved: { decrement: r.quantity } }
+            : { reserved: { decrement: r.quantity } },
+        });
+      }
+      // Clear the marker so the reservation can't be applied twice.
+      await this.prisma.commerceOrderItem.update({
+        where: { id: item.id },
+        data: { metadata: { ...meta, reservation: [], reservationApplied: mode } as Prisma.InputJsonValue },
+      });
+    }
+  }
+
   private async recordMutation(
     orgId: string,
     actor: { id?: string; name?: string | null; email?: string | null } | undefined,
@@ -1347,6 +1383,11 @@ export class CommerceService {
 
     const updated = await this.prisma.commerceOrder.update({ where: { id: order.id }, data });
 
+    // Cancelling an (unpaid) order returns its held stock to the pool.
+    if (status === 'CANCELLED') {
+      await this.adjustReservations(order.id, 'release');
+    }
+
     const label = status.charAt(0) + status.slice(1).toLowerCase();
     await this.recordMutation(
       orgId,
@@ -1588,6 +1629,8 @@ export class CommerceService {
       ]);
 
       if (orderUpdateResult.count > 0) {
+        // Sold: convert the reservation into an actual stock decrement (onHand down, hold released).
+        await this.adjustReservations(order.id, 'settle');
         await this.enqueueEcommerceReceipt(order.id, orgId);
       }
 
@@ -1690,8 +1733,34 @@ export class CommerceService {
       }
     }
 
-    if (stuck.length > 0) {
-      this.logger.log(`Commerce payment reconciliation: checked ${stuck.length}, confirmed ${confirmed}`);
+    // Expire long-abandoned holds: a payment still PENDING beyond the window is treated as abandoned —
+    // fail the order and RELEASE its reserved stock so it returns to the pool. (A very late payment
+    // after this point is a rare edge; the order can still recover to PAID, though its stock hold is
+    // already gone.)
+    const expired = await this.prisma.commercePayment.findMany({
+      where: { status: CommercePaymentStatus.PENDING, createdAt: { lt: maxAge } },
+      take: 50,
+      select: { id: true, orderId: true },
+    });
+    let released = 0;
+    for (const pmt of expired) {
+      try {
+        await this.adjustReservations(pmt.orderId, 'release');
+        await this.prisma.$transaction([
+          this.prisma.commercePayment.update({ where: { id: pmt.id }, data: { status: CommercePaymentStatus.ABANDONED } }),
+          this.prisma.commerceOrder.updateMany({
+            where: { id: pmt.orderId, status: { notIn: [CommerceOrderStatus.PAID, CommerceOrderStatus.CANCELLED] } },
+            data: { status: CommerceOrderStatus.FAILED, paymentStatus: CommercePaymentStatus.FAILED },
+          }),
+        ]);
+        released++;
+      } catch (err) {
+        this.logger.warn(`Commerce hold expiry failed for order ${pmt.orderId}: ${(err as Error).message}`);
+      }
+    }
+
+    if (stuck.length > 0 || released > 0) {
+      this.logger.log(`Commerce payment reconciliation: checked ${stuck.length}, confirmed ${confirmed}, expired ${released}`);
     }
     return { checked: stuck.length, confirmed };
   }
