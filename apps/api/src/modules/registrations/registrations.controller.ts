@@ -3,7 +3,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 import { RegistrationsService } from './registrations.service';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto } from './dto/registrations.dto';
 
 @UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
 @Controller('organizations/:id/registrations')
@@ -78,6 +78,15 @@ export class RegistrationsController {
     @Body() dto: UpdateRegistrationEntryDto,
   ) {
     return this.svc.updateEntryStatus(orgId, entryId, dto);
+  }
+
+  // ── Entry scanning / admission ───────────────────────────────────────────────
+
+  @Post('checkin')
+  @HttpCode(HttpStatus.OK)
+  @RequireRole('OWNER', 'ADMIN', 'AGENT')
+  checkIn(@Param('id') orgId: string, @Body() dto: CheckInDto) {
+    return this.svc.checkInByCode(orgId, dto.code);
   }
 
   // ── Ticket tiers ────────────────────────────────────────────────────────────

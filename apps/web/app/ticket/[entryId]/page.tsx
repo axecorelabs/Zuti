@@ -5,10 +5,14 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 interface TicketData {
   eventName: string;
   eventDate: string | null;
+  venue?: string | null;
   customerName: string | null;
+  ticketType?: string | null;
   status: 'PENDING_PAYMENT' | 'AWAITING_APPROVAL' | 'CONFIRMED' | 'CANCELLED';
   quantity?: number;
   reference: string;
+  checkedInAt?: string | null;
+  qrDataUrl?: string | null;
 }
 
 async function getTicket(entryId: string): Promise<TicketData | null> {
@@ -69,6 +73,9 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
               <CalendarDays style={{ width: 14, height: 14 }} /> {eventDate}
             </p>
           )}
+          {ticket.venue && (
+            <p style={{ fontSize: 13, color: '#71717a', margin: '4px 0 0' }}>{ticket.venue}</p>
+          )}
         </div>
 
         <div style={{ borderTop: '1px dashed #27272a', margin: '20px 0' }} />
@@ -80,6 +87,9 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
           <p style={{ fontSize: 16, fontWeight: 600, color: '#f4f4f5', margin: 0 }}>
             {ticket.customerName ?? 'Guest'}
           </p>
+          {ticket.ticketType && (
+            <p style={{ fontSize: 12, color: '#818cf8', margin: '4px 0 0', fontWeight: 600 }}>{ticket.ticketType}</p>
+          )}
         </div>
 
         <div style={{ textAlign: 'center', margin: '20px 0', display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -115,6 +125,27 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
             Admits {ticket.quantity ?? 1}
           </span>
         </div>
+
+        {ticket.status === 'CONFIRMED' && (ticket.qrDataUrl || ticket.checkedInAt) && (
+          <div style={{ borderTop: '1px dashed #27272a', margin: '20px 0', paddingTop: 20, textAlign: 'center' }}>
+            {ticket.checkedInAt ? (
+              <div style={{ padding: '20px', borderRadius: 12, backgroundColor: 'rgba(16,185,129,0.10)', border: '1px solid rgba(16,185,129,0.3)' }}>
+                <CheckCircle2 style={{ width: 32, height: 32, color: '#10b981', margin: '0 auto 8px' }} />
+                <p style={{ fontSize: 14, fontWeight: 600, color: '#10b981', margin: 0 }}>Admitted</p>
+                <p style={{ fontSize: 12, color: '#71717a', margin: '4px 0 0' }}>
+                  {new Date(ticket.checkedInAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                </p>
+              </div>
+            ) : ticket.qrDataUrl ? (
+              <>
+                <p style={{ fontSize: 10, fontWeight: 600, color: '#52525b', letterSpacing: '0.15em', margin: '0 0 10px' }}>SCAN AT ENTRANCE</p>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={ticket.qrDataUrl} alt="Admission QR code" style={{ width: 200, height: 200, borderRadius: 12, background: '#fff', padding: 10 }} />
+                <p style={{ fontSize: 11, color: '#71717a', margin: '10px 0 0' }}>Present this code at the door for admission.</p>
+              </>
+            ) : null}
+          </div>
+        )}
 
         <div style={{ borderTop: '1px solid #27272a', marginTop: 20, paddingTop: 16, textAlign: 'center' }}>
           <p style={{ fontSize: 10, fontWeight: 600, color: '#52525b', letterSpacing: '0.15em', margin: '0 0 4px' }}>

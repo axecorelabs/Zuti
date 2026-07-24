@@ -59,6 +59,10 @@ export class UpdateRegistrationEntryDto {
   @IsIn(['CONFIRMED', 'CANCELLED']) status: 'CONFIRMED' | 'CANCELLED';
 }
 
+export class CheckInDto {
+  @IsString() @MaxLength(200) code: string;
+}
+
 // ── Ticket tiers ────────────────────────────────────────────────────────────
 export class CreateTicketTypeDto {
   @IsString() @MaxLength(80) name: string;

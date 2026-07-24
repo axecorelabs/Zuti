@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { randomBytes } from 'crypto';
+import * as QRCode from 'qrcode';
 import { PrismaService } from '../prisma/prisma.service';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
@@ -391,6 +392,7 @@ export class RegistrationsService {
           status: status as any,
           quantity,
           amountMinor,
+          checkInCode: this.newCheckInCode(),
         },
         include: { product: true },
       });
@@ -900,20 +902,90 @@ export class RegistrationsService {
   // ── Public ticket verification ───────────────────────────────────────────
   // No auth — deliberately returns only what's needed to display a ticket, nothing sensitive.
 
+  /** Opaque, URL-safe single-use admission code embedded in the ticket QR. */
+  private newCheckInCode(): string {
+    return randomBytes(16).toString('base64url');
+  }
+
   async getPublicTicket(entryId: string) {
     const entry = await this.prisma.registrationEntry.findUnique({
       where: { id: entryId },
-      include: { product: true },
+      include: { product: true, ticketType: { select: { name: true } } },
     });
     if (!entry) throw new NotFoundException('Ticket not found');
+
+    // Lazily mint a check-in code for older entries created before this feature.
+    let checkInCode = entry.checkInCode;
+    if (!checkInCode && entry.status === 'CONFIRMED') {
+      checkInCode = this.newCheckInCode();
+      await this.prisma.registrationEntry.update({ where: { id: entry.id }, data: { checkInCode } }).catch(() => { checkInCode = entry.checkInCode; });
+    }
+
+    // Only confirmed tickets are admittable — generate the scannable QR (as a data URL so the ticket
+    // page needs no QR library) just for those.
+    let qrDataUrl: string | null = null;
+    if (entry.status === 'CONFIRMED' && checkInCode) {
+      try {
+        qrDataUrl = await QRCode.toDataURL(checkInCode, { margin: 1, width: 320, errorCorrectionLevel: 'M' });
+      } catch { qrDataUrl = null; }
+    }
+
     return {
       eventName: entry.product.name,
       eventDate: entry.product.eventDate,
+      venue: entry.product.venue ?? null,
       customerName: entry.customerName,
+      ticketType: entry.ticketType?.name ?? null,
       status: entry.status,
       quantity: entry.quantity ?? 1,
       reference: (entry.paystackReference ?? entry.id).slice(-12).toUpperCase(),
+      checkedInAt: entry.checkedInAt,
+      qrDataUrl,
     };
+  }
+
+  /**
+   * Scan-to-admit: verify a ticket QR's code and mark the entry checked in. Single-use — the
+   * check-in is claimed atomically (updateMany on checkedInAt IS NULL), so a second scan of the same
+   * ticket returns ALREADY_CHECKED_IN instead of admitting twice. Scoped to the caller's org.
+   */
+  async checkInByCode(orgId: string, code: string): Promise<{
+    outcome: 'ADMITTED' | 'ALREADY_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND';
+    entry?: { id: string; customerName: string | null; customerEmail: string | null; eventName: string; ticketType: string | null; quantity: number; checkedInAt: Date | null };
+  }> {
+    const trimmed = (code ?? '').trim();
+    if (!trimmed) return { outcome: 'NOT_FOUND' };
+
+    const entry = await this.prisma.registrationEntry.findFirst({
+      where: { checkInCode: trimmed, orgId },
+      include: { product: { select: { name: true } }, ticketType: { select: { name: true } } },
+    });
+    if (!entry) return { outcome: 'NOT_FOUND' };
+
+    const info = {
+      id: entry.id,
+      customerName: entry.customerName,
+      customerEmail: entry.customerEmail,
+      eventName: entry.product.name,
+      ticketType: entry.ticketType?.name ?? null,
+      quantity: entry.quantity ?? 1,
+      checkedInAt: entry.checkedInAt,
+    };
+
+    if (entry.status !== 'CONFIRMED') return { outcome: 'NOT_CONFIRMED', entry: info };
+    if (entry.checkedInAt) return { outcome: 'ALREADY_CHECKED_IN', entry: info };
+
+    // Atomic claim: only the row that is still un-checked-in flips, so concurrent scans can't both win.
+    const now = new Date();
+    const claimed = await this.prisma.registrationEntry.updateMany({
+      where: { id: entry.id, checkedInAt: null },
+      data: { checkedInAt: now },
+    });
+    if (claimed.count === 0) {
+      const fresh = await this.prisma.registrationEntry.findUnique({ where: { id: entry.id }, select: { checkedInAt: true } });
+      return { outcome: 'ALREADY_CHECKED_IN', entry: { ...info, checkedInAt: fresh?.checkedInAt ?? entry.checkedInAt } };
+    }
+    return { outcome: 'ADMITTED', entry: { ...info, checkedInAt: now } };
   }
 
   // ── Dead letter queue (failed receipt jobs) ──────────────────────────────

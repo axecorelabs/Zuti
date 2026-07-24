@@ -1369,6 +1369,10 @@ model RegistrationEntry {
   paystackReference   String?
   paystackAccessCode  String?
   paidAt              DateTime?
+  // Admission: opaque code embedded in the ticket QR; checkedInAt is set once when scanned at entry
+  // (single-use — a second scan is rejected as "already admitted").
+  checkInCode         String?                 @unique
+  checkedInAt         DateTime?
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
 

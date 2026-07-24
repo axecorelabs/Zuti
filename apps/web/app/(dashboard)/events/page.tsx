@@ -4,8 +4,9 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   Plus, Pencil, Trash2, Users, ChevronRight, Download,
   CalendarDays, DollarSign, Tag, CheckCircle, XCircle,
-  Clock, RefreshCw, X, AlertCircle, Globe, ImagePlus, Ticket, Copy, ExternalLink,
+  Clock, RefreshCw, X, AlertCircle, Globe, ImagePlus, Ticket, Copy, ExternalLink, ScanLine,
 } from 'lucide-react';
+import TicketScanner from './ticket-scanner';
 import {
   AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -976,6 +977,7 @@ export default function EventsPage() {
   const [entries, setEntries] = useState<RegistrationEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
   const [updatingEntry, setUpdatingEntry] = useState<string | null>(null);
 
   const orgId = activeOrgId ?? '';
@@ -1076,6 +1078,12 @@ export default function EventsPage() {
             <div className="flex items-center gap-1">
               <button onClick={loadProducts} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors">
                 <RefreshCw className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={() => setShowScanner(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 text-xs font-medium transition-colors"
+              >
+                <ScanLine className="w-3.5 h-3.5" /> Scan tickets
               </button>
               <button
                 onClick={() => setShowModal(true)}
@@ -1387,6 +1395,9 @@ export default function EventsPage() {
           onClose={() => setShowModal(false)}
         />
       )}
+
+      {/* Scan-to-admit panel */}
+      <TicketScanner orgId={orgId} open={showScanner} onClose={() => setShowScanner(false)} />
     </div>
   );
 }

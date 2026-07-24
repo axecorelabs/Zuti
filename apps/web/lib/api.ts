@@ -663,6 +663,9 @@ export const registrationsApi = {
     api.patch(`/organizations/${orgId}/registrations/ticket-types/${ticketTypeId}`, data),
   deleteTicketType: (orgId: string, ticketTypeId: string) =>
     api.delete(`/organizations/${orgId}/registrations/ticket-types/${ticketTypeId}`),
+  // Scan-to-admit: verify a ticket QR's code and mark the entry checked in (single-use).
+  checkIn: (orgId: string, code: string) =>
+    api.post(`/organizations/${orgId}/registrations/checkin`, { code }),
 };
 
 // ── Activity ──────────────────────────────────────────────────────────────────
