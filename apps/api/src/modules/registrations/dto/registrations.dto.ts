@@ -61,6 +61,8 @@ export class UpdateRegistrationEntryDto {
 
 export class CheckInDto {
   @IsString() @MaxLength(200) code: string;
+  // When set, the scanner is locked to this event — tickets for other events are rejected.
+  @IsOptional() @IsString() productId?: string;
 }
 
 // ── Ticket tiers ────────────────────────────────────────────────────────────

@@ -86,7 +86,7 @@ export class RegistrationsController {
   @HttpCode(HttpStatus.OK)
   @RequireRole('OWNER', 'ADMIN', 'AGENT')
   checkIn(@Param('id') orgId: string, @Body() dto: CheckInDto) {
-    return this.svc.checkInByCode(orgId, dto.code);
+    return this.svc.checkInByCode(orgId, dto.code, dto.productId);
   }
 
   // ── Ticket tiers ────────────────────────────────────────────────────────────

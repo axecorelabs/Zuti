@@ -1085,12 +1085,6 @@ export default function EventsPage() {
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
               <button
-                onClick={() => setShowScanner(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 text-xs font-medium transition-colors"
-              >
-                <ScanLine className="w-3.5 h-3.5" /> Scan tickets
-              </button>
-              <button
                 onClick={() => setShowModal(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
               >
@@ -1204,6 +1198,13 @@ export default function EventsPage() {
               </div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setShowScanner(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 text-xs font-medium transition-colors mr-1"
+                title={`Scan tickets for ${selectedProduct.name}`}
+              >
+                <ScanLine className="w-3.5 h-3.5" /> Scan
+              </button>
               <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800 mr-1">
                 <button
                   onClick={() => setDetailTab('registrants')}
@@ -1401,8 +1402,14 @@ export default function EventsPage() {
         />
       )}
 
-      {/* Scan-to-admit panel */}
-      <TicketScanner orgId={orgId} open={showScanner} onClose={() => setShowScanner(false)} />
+      {/* Scan-to-admit panel — scoped to the open event, so other events' tickets are rejected. */}
+      <TicketScanner
+        orgId={orgId}
+        open={showScanner}
+        onClose={() => setShowScanner(false)}
+        productId={selectedProduct?.id}
+        eventName={selectedProduct?.name}
+      />
     </div>
   );
 }

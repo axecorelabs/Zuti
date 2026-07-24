@@ -953,8 +953,8 @@ export class RegistrationsService {
    * check-in is claimed atomically (updateMany on checkedInAt IS NULL), so a second scan of the same
    * ticket returns ALREADY_CHECKED_IN instead of admitting twice. Scoped to the caller's org.
    */
-  async checkInByCode(orgId: string, code: string): Promise<{
-    outcome: 'ADMITTED' | 'ALREADY_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND';
+  async checkInByCode(orgId: string, code: string, productId?: string): Promise<{
+    outcome: 'ADMITTED' | 'ALREADY_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND' | 'WRONG_EVENT';
     entry?: { id: string; customerName: string | null; customerEmail: string | null; eventName: string; ticketType: string | null; quantity: number; checkedInAt: Date | null };
   }> {
     const trimmed = (code ?? '').trim();
@@ -976,6 +976,9 @@ export class RegistrationsService {
       checkedInAt: entry.checkedInAt,
     };
 
+    // Per-event scoping: when the scanner is locked to an event, a valid ticket for a DIFFERENT
+    // event is rejected (with its real event name) rather than admitted at the wrong door.
+    if (productId && entry.productId !== productId) return { outcome: 'WRONG_EVENT', entry: info };
     if (entry.status !== 'CONFIRMED') return { outcome: 'NOT_CONFIRMED', entry: info };
     if (entry.checkedInAt) return { outcome: 'ALREADY_CHECKED_IN', entry: info };
 

@@ -16,19 +16,20 @@ interface CheckInEntry {
   checkedInAt?: string | null;
 }
 interface CheckInResult {
-  outcome: 'ADMITTED' | 'ALREADY_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND' | 'ERROR';
+  outcome: 'ADMITTED' | 'ALREADY_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND' | 'WRONG_EVENT' | 'ERROR';
   entry?: CheckInEntry;
 }
 
 const OUTCOME_STYLE: Record<CheckInResult['outcome'], { label: string; color: string; bg: string; border: string; Icon: typeof CheckCircle2 }> = {
   ADMITTED:           { label: 'Admitted',            color: '#10b981', bg: 'rgba(16,185,129,0.12)', border: 'rgba(16,185,129,0.35)', Icon: CheckCircle2 },
   ALREADY_CHECKED_IN: { label: 'Already checked in',  color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.35)', Icon: AlertTriangle },
+  WRONG_EVENT:        { label: 'Wrong event',         color: '#f59e0b', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.35)', Icon: AlertTriangle },
   NOT_CONFIRMED:      { label: 'Not a valid ticket',  color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)', Icon: XCircle },
   NOT_FOUND:          { label: 'Ticket not found',    color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)', Icon: XCircle },
   ERROR:              { label: 'Scan failed',         color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)', Icon: XCircle },
 };
 
-export default function TicketScanner({ orgId, open, onClose }: { orgId: string; open: boolean; onClose: () => void }) {
+export default function TicketScanner({ orgId, open, onClose, productId, eventName }: { orgId: string; open: boolean; onClose: () => void; productId?: string; eventName?: string }) {
   const [result, setResult] = useState<CheckInResult | null>(null);
   const [scanning, setScanning] = useState(false);
   const [camError, setCamError] = useState<string | null>(null);
@@ -45,7 +46,7 @@ export default function TicketScanner({ orgId, open, onClose }: { orgId: string;
     lastCodeRef.current = trimmed;
     try { await scannerRef.current?.pause(true); } catch { /* not scanning */ }
     try {
-      const res = await registrationsApi.checkIn(orgId, trimmed);
+      const res = await registrationsApi.checkIn(orgId, trimmed, productId);
       setResult(res.data as CheckInResult);
     } catch {
       setResult({ outcome: 'ERROR' });
@@ -113,9 +114,9 @@ export default function TicketScanner({ orgId, open, onClose }: { orgId: string;
           <div className="flex items-center justify-between px-5 py-4 border-b border-zinc-800">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-lg bg-blue-600/20 border border-blue-500/20 flex items-center justify-center"><ScanLine className="w-4 h-4 text-blue-400" /></div>
-              <div>
-                <h2 className="text-sm font-semibold text-white">Scan tickets</h2>
-                <p className="text-xs text-zinc-500">Point the camera at an attendee&apos;s QR code</p>
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-white truncate">{eventName ? `Scan · ${eventName}` : 'Scan tickets'}</h2>
+                <p className="text-xs text-zinc-500">{eventName ? 'Only this event’s tickets are admitted' : 'Point the camera at an attendee’s QR code'}</p>
               </div>
             </div>
             <button onClick={onClose} className="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800"><X className="w-4 h-4" /></button>

@@ -86,62 +86,77 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
   const heroImg = ev.bannerUrl ?? ev.flierUrl;
 
   return (
-    <div style={{ position: 'relative', minHeight: '100vh', background: '#0a0a0e', fontFamily }}>
-      <div style={{ position: 'relative', zIndex: 1, maxWidth: 560, margin: '0 auto', paddingBottom: 96, background: '#0d0d12', minHeight: '100vh', boxShadow: '0 0 80px rgba(0,0,0,0.5)' }}>
+    <div style={{ minHeight: '100vh', background: '#0a0a0e', fontFamily }}>
+      <div className="mx-auto w-full max-w-5xl pb-28 lg:pb-14">
         {/* Hero */}
-        <div style={{ position: 'relative', width: '100%' }}>
+        <div className="relative">
           {heroImg ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={heroImg} alt={ev.name} style={{ width: '100%', height: 'min(46vh, 380px)', objectFit: 'cover', display: 'block' }} />
+            <img src={heroImg} alt={ev.name} className="block w-full object-cover" style={{ height: 'min(44vh, 420px)' }} />
           ) : (
-            <div style={{ width: '100%', height: 180, background: 'linear-gradient(135deg, #4338ca, #6d28d9)' }} />
+            <div className="w-full" style={{ height: 200, background: 'linear-gradient(135deg, #4338ca, #6d28d9)' }} />
           )}
-          <div aria-hidden style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(10,10,14,1) 0%, rgba(10,10,14,0.35) 45%, rgba(10,10,14,0.15) 100%)' }} />
-          <div style={{ position: 'absolute', top: 16, right: 16 }}>
+          <div aria-hidden style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(10,10,14,1) 0%, rgba(10,10,14,0.30) 45%, rgba(10,10,14,0.12) 100%)' }} />
+          <div className="absolute top-4 right-4 sm:top-5 sm:right-5">
             <ShareButton title={ev.name} />
           </div>
-          <div style={{ position: 'absolute', left: 0, right: 0, bottom: 0, padding: '0 20px 20px' }}>
-            <h1 style={titleStyle}>{ev.name}</h1>
-            {ev.venue && <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)', margin: '8px 0 0', textShadow: '0 1px 8px rgba(0,0,0,0.5)' }}>{ev.venue}</p>}
-          </div>
-        </div>
-
-        {/* Content */}
-        <div style={{ padding: '24px 20px 0' }}>
-          <div style={{ ...sheet, padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {eventDate && <InfoRow icon={CalendarDays} title={eventDate} />}
-            {ev.venue && <InfoRow icon={MapPin} title={ev.venue} subtitle="Location" />}
-            {ev.organizerName && <InfoRow icon={Building2} title={ev.organizerName} subtitle="Organizer" />}
-          </div>
-
-          {ev.description && (
-            <div style={{ marginTop: 28 }}>
-              <h2 style={sectionHeading}>About this event</h2>
-              <EventDescription text={ev.description} />
+          <div className="absolute inset-x-0 bottom-0">
+            <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 pb-5 lg:pb-8">
+              <h1 style={titleStyle}>{ev.name}</h1>
+              {ev.venue && <p className="mt-2" style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)', textShadow: '0 1px 8px rgba(0,0,0,0.5)' }}>{ev.venue}</p>}
             </div>
-          )}
+          </div>
+        </div>
 
-          <div id="register" style={{ ...sheet, marginTop: 28, padding: 22, scrollMarginTop: 16 }}>
-            <h2 style={{ fontSize: 15, fontWeight: 600, color: '#f4f4f5', margin: '0 0 14px' }}>Get your ticket</h2>
-            <RegisterForm
-              slug={ev.slug}
-              currency={ev.currency}
-              isFree={ev.isFree}
-              priceMinor={ev.priceMinor}
-              hasTiers={ev.hasTiers}
-              ticketTypes={ev.ticketTypes}
-              fields={ev.fields}
-              soldOut={ev.soldOut}
-            />
+        {/* Body — two columns on desktop (details | sticky register), one column on mobile */}
+        <div className="px-4 sm:px-6 lg:px-8 pt-6 lg:pt-9 lg:grid lg:grid-cols-[1fr_360px] lg:gap-9 lg:items-start">
+          {/* Left: details */}
+          <div className="min-w-0 space-y-7">
+            <div style={sheet} className="p-5 flex flex-col gap-4">
+              {eventDate && <InfoRow icon={CalendarDays} title={eventDate} />}
+              {ev.venue && <InfoRow icon={MapPin} title={ev.venue} subtitle="Location" />}
+              {ev.organizerName && <InfoRow icon={Building2} title={ev.organizerName} subtitle="Organizer" />}
+            </div>
+
+            {ev.description && (
+              <div>
+                <h2 style={sectionHeading}>About this event</h2>
+                <EventDescription text={ev.description} />
+              </div>
+            )}
           </div>
 
-          <p style={{ color: 'rgba(255,255,255,0.32)', fontSize: 11, textAlign: 'center', margin: '20px 0 0' }}>Powered by Zuti</p>
+          {/* Right: register card (sticky on desktop; sits below the details on mobile) */}
+          <div id="register" className="mt-8 lg:mt-0 lg:sticky lg:top-6 scroll-mt-6" style={sheet}>
+            <div className="p-5">
+              <div className="flex items-baseline justify-between mb-4">
+                <div>
+                  {!allFree && <p style={{ fontSize: 11, color: '#8b8b94', margin: 0 }}>{multiPriced ? 'From' : 'Price'}</p>}
+                  <p style={{ fontSize: 20, fontWeight: 800, color: '#fff', margin: 0, lineHeight: 1.15 }}>
+                    {priceLabel}{!allFree && <span style={{ fontSize: 12, fontWeight: 500, color: '#8b8b94' }}> /ticket</span>}
+                  </p>
+                </div>
+              </div>
+              <RegisterForm
+                slug={ev.slug}
+                currency={ev.currency}
+                isFree={ev.isFree}
+                priceMinor={ev.priceMinor}
+                hasTiers={ev.hasTiers}
+                ticketTypes={ev.ticketTypes}
+                fields={ev.fields}
+                soldOut={ev.soldOut}
+              />
+            </div>
+          </div>
         </div>
+
+        <p className="text-center" style={{ color: 'rgba(255,255,255,0.32)', fontSize: 11, marginTop: 28 }}>Powered by Zuti</p>
       </div>
 
-      {/* Sticky bottom bar: price + jump-to-form CTA */}
-      <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, zIndex: 3, background: '#0d0d12', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
-        <div style={{ maxWidth: 560, margin: '0 auto', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+      {/* Mobile-only sticky bottom bar (desktop shows the register card instead) */}
+      <div className="lg:hidden fixed inset-x-0 bottom-0 z-40" style={{ background: '#0d0d12', borderTop: '1px solid rgba(255,255,255,0.08)' }}>
+        <div className="mx-auto max-w-5xl flex items-center justify-between gap-4" style={{ padding: '14px 20px' }}>
           <div>
             {!allFree && <p style={{ fontSize: 11, color: '#8b8b94', margin: 0 }}>{multiPriced ? 'From' : 'Price'}</p>}
             <p style={{ fontSize: 18, fontWeight: 800, color: '#fff', margin: 0, lineHeight: 1.2 }}>
