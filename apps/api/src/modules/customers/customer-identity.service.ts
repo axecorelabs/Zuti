@@ -118,20 +118,31 @@ export class CustomerIdentityService {
     const c = await this.prisma.customer.findUnique({
       where: { id: customerId },
       select: {
-        displayName: true, primaryEmail: true, lifecycleStage: true, tags: true, notes: true,
-        firstSeenAt: true, _count: { select: { conversations: true } },
+        displayName: true, primaryEmail: true, lifecycleStage: true, tags: true, notes: true, firstSeenAt: true,
+        _count: { select: { conversations: true, salesOrders: true, commerceOrders: true, registrationEntries: true, bookings: true } },
       },
     });
     if (!c) return null;
 
     const priorConversations = Math.max(0, (c._count?.conversations ?? 1) - 1); // exclude the current thread
+    const orders = (c._count?.salesOrders ?? 0) + (c._count?.commerceOrders ?? 0);
+    const registrations = c._count?.registrationEntries ?? 0;
+    const bookings = c._count?.bookings ?? 0;
+    const hasActivity = orders > 0 || registrations > 0 || bookings > 0;
     const returning = priorConversations > 0;
     const hasCrm = (c.tags?.length ?? 0) > 0 || !!c.notes || c.lifecycleStage !== 'LEAD';
-    if (!returning && !hasCrm) return null; // nothing useful yet → no block
+    if (!returning && !hasCrm && !hasActivity) return null; // nothing useful yet → no block
 
     const lines = ['KNOWN CUSTOMER — internal profile to personalize your reply. Use it naturally; never read it out verbatim or claim to have looked them up.'];
     lines.push(`- Name: ${c.displayName ?? 'unknown'}${c.primaryEmail ? ` (${c.primaryEmail})` : ''}`);
     lines.push(`- Relationship: ${c.lifecycleStage.toLowerCase()}${returning ? ` · ${priorConversations} prior conversation${priorConversations === 1 ? '' : 's'}` : ''} · first seen ${c.firstSeenAt.toISOString().slice(0, 10)}`);
+    if (hasActivity) {
+      const parts: string[] = [];
+      if (orders) parts.push(`${orders} order${orders === 1 ? '' : 's'}`);
+      if (registrations) parts.push(`${registrations} event registration${registrations === 1 ? '' : 's'}`);
+      if (bookings) parts.push(`${bookings} booking${bookings === 1 ? '' : 's'}`);
+      lines.push(`- History: ${parts.join(', ')}`);
+    }
     if (c.tags?.length) lines.push(`- Tags: ${c.tags.join(', ')}`);
     if (c.notes) lines.push(`- Notes: ${c.notes.slice(0, 400)}`);
     return lines.join('\n');
@@ -223,6 +234,35 @@ export class CustomerIdentityService {
       },
       { timeout: 20000, maxWait: 10000 },
     );
+  }
+
+  /**
+   * Resolve the Customer for a transaction (order / booking / registration) so it shows on their
+   * profile. Prefers the originating conversation's already-resolved person (a real anchor); falls
+   * back to the buyer's own email as an anchor-by-necessity — but ONLY for single-buyer transactions
+   * (`allowEmailAnchor`), never for registration attendees (a typed attendee email isn't the buyer).
+   * A transaction is proof of a real relationship, so the customer is promoted to CUSTOMER.
+   */
+  async resolveForTransaction(orgId: string, opts: {
+    conversationId?: string | null; email?: string | null; name?: string | null; phone?: string | null;
+    seenAt?: Date; allowEmailAnchor?: boolean;
+  }): Promise<string | null> {
+    if (opts.conversationId) {
+      const conv = await this.prisma.conversation.findFirst({ where: { id: opts.conversationId, organizationId: orgId }, select: { customerId: true } });
+      if (conv?.customerId) {
+        await this.prisma.customer.update({
+          where: { id: conv.customerId },
+          data: { lifecycleStage: 'CUSTOMER', lastSeenAt: opts.seenAt ?? new Date() },
+        }).catch(() => null);
+        return conv.customerId;
+      }
+    }
+    if (opts.allowEmailAnchor && opts.email) {
+      const ids: IdentifierInput[] = [{ type: 'EMAIL', value: opts.email, isAnchor: true, source: 'transaction' }];
+      if (opts.phone) ids.push({ type: 'PHONE', value: opts.phone, isAnchor: false, source: 'transaction' });
+      return this.resolve(orgId, ids, { displayName: opts.name, email: opts.email, phone: opts.phone, minLifecycle: 'CUSTOMER', seenAt: opts.seenAt });
+    }
+    return null;
   }
 
   /** Merge `absorbedId` into `survivorId`: repoint everything, union attributes, delete the absorbed. */

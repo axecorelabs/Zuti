@@ -711,12 +711,15 @@ model Booking {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
+  customerId            String?
   organization          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   bot                   Bot          @relation(fields: [botId], references: [id], onDelete: Cascade)
   actionTask            ActionTask   @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
+  customer              Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([orgId, customerEmail])
+  @@index([customerId])
 }
 
 enum BookingStatus {
@@ -744,13 +747,16 @@ model SalesOrder {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 
+  customerId            String?
   organization          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
   bot                   Bot           @relation(fields: [botId], references: [id], onDelete: Cascade)
   actionTask            ActionTask    @relation(fields: [actionTaskId], references: [id], onDelete: Cascade)
   commerceOrder         CommerceOrder? @relation(fields: [commerceOrderId], references: [id], onDelete: SetNull)
+  customer              Customer?     @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status, createdAt(sort: Desc)])
   @@index([orgId, customerEmail])
+  @@index([customerId])
 }
 
 model TechnicalIssue {
@@ -935,14 +941,17 @@ model CommerceOrder {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  customerId      String?
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   store           CommerceStore @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  customer        Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items           CommerceOrderItem[]
   payments        CommercePayment[]
   salesOrder      SalesOrder?
 
   @@index([organizationId, status, createdAt(sort: Desc)])
   @@index([storeId, status, createdAt(sort: Desc)])
+  @@index([customerId])
 }
 
 model CommerceOrderItem {
@@ -1384,9 +1393,11 @@ model RegistrationEntry {
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
 
+  customerId          String?
   product             RegistrationProduct     @relation(fields: [productId], references: [id], onDelete: Cascade)
   ticketType          RegistrationTicketType? @relation(fields: [ticketTypeId], references: [id], onDelete: SetNull)
   organization        Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customer            Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
 
   @@index([productId, status])
   @@index([ticketTypeId, status])
@@ -1394,6 +1405,7 @@ model RegistrationEntry {
   @@index([paystackReference])
   @@index([productId, customerEmail, status])
   @@index([purchaseGroupId])
+  @@index([customerId])
 }
 
 enum RegistrationEntryStatus {
@@ -1429,6 +1441,10 @@ model Customer {
   organization       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   identifiers        CustomerIdentifier[]
   conversations      Conversation[]
+  salesOrders        SalesOrder[]
+  bookings           Booking[]
+  commerceOrders     CommerceOrder[]
+  registrationEntries RegistrationEntry[]
 
   @@index([orgId, lifecycleStage, lastSeenAt(sort: Desc)])
   @@index([orgId, primaryEmail])

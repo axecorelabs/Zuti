@@ -63,6 +63,10 @@ export class CustomersService {
           take: 50,
           select: { id: true, channel: true, status: true, lastMessageAt: true, createdAt: true, botId: true },
         },
+        salesOrders: { orderBy: { createdAt: 'desc' }, take: 25, select: { id: true, product: true, quantity: true, unitPriceMinor: true, status: true, createdAt: true } },
+        commerceOrders: { orderBy: { createdAt: 'desc' }, take: 25, select: { id: true, totalMinor: true, status: true, createdAt: true } },
+        registrationEntries: { orderBy: { createdAt: 'desc' }, take: 25, select: { id: true, status: true, amountMinor: true, createdAt: true, product: { select: { name: true, currency: true } }, ticketType: { select: { name: true } } } },
+        bookings: { orderBy: { createdAt: 'desc' }, take: 25, select: { id: true, status: true, createdAt: true } },
       },
     });
     if (!customer) throw new NotFoundException('Customer not found');

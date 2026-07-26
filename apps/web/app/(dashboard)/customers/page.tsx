@@ -20,9 +20,25 @@ interface CustomerRow {
   lifecycleStage: Lifecycle; tags: string[]; emailOptOut: boolean; firstSeenAt: string; lastSeenAt: string;
   identifiers: Identifier[]; _count?: { conversations: number };
 }
+interface SalesOrder { id: string; product: string | null; quantity: number | null; unitPriceMinor: number | null; status: string; createdAt: string }
+interface CommerceOrder { id: string; totalMinor: number; status: string; createdAt: string }
+interface RegistrationEntry { id: string; status: string; amountMinor: number | null; createdAt: string; product: { name: string; currency: string } | null; ticketType: { name: string } | null }
+interface Booking { id: string; status: string; createdAt: string }
 interface CustomerProfile extends CustomerRow {
   notes: string | null; marketingConsentAt: string | null;
   identifiers: Identifier[]; conversations: Conversation[];
+  salesOrders: SalesOrder[]; commerceOrders: CommerceOrder[]; registrationEntries: RegistrationEntry[]; bookings: Booking[];
+}
+
+type ActivityItem = { id: string; kind: string; label: string; sub: string; status: string; date: string };
+function buildActivity(p: CustomerProfile): ActivityItem[] {
+  const money = (minor: number | null | undefined, cur = 'NGN') => (minor && minor > 0 ? `${cur} ${(minor / 100).toLocaleString()}` : null);
+  const items: ActivityItem[] = [];
+  for (const o of p.salesOrders ?? []) items.push({ id: o.id, kind: 'Order', label: o.product ?? 'Order', sub: [o.quantity ? `×${o.quantity}` : null, money((o.unitPriceMinor ?? 0) * (o.quantity ?? 1))].filter(Boolean).join(' · '), status: o.status, date: o.createdAt });
+  for (const o of p.commerceOrders ?? []) items.push({ id: o.id, kind: 'Store order', label: money(o.totalMinor) ?? 'Order', sub: '', status: o.status, date: o.createdAt });
+  for (const r of p.registrationEntries ?? []) items.push({ id: r.id, kind: 'Event', label: r.product?.name ?? 'Registration', sub: [r.ticketType?.name, money(r.amountMinor, r.product?.currency)].filter(Boolean).join(' · '), status: r.status, date: r.createdAt });
+  for (const b of p.bookings ?? []) items.push({ id: b.id, kind: 'Booking', label: 'Meeting', sub: '', status: b.status, date: b.createdAt });
+  return items.sort((a, b) => +new Date(b.date) - +new Date(a.date));
 }
 
 const ID_META: Record<IdType, { label: string; icon: any }> = {
@@ -344,9 +360,33 @@ function CustomerProfilePanel({ orgId, customerId, onClose, onChanged, onDeleted
           </div>
         </section>
 
+        {/* Purchases & registrations */}
+        {(() => {
+          const activity = buildActivity(p);
+          if (activity.length === 0) return null;
+          return (
+            <section>
+              <h3 className="text-xs font-medium text-zinc-500 mb-2">Purchases &amp; registrations · {activity.length}</h3>
+              <div className="space-y-1.5">
+                {activity.slice(0, 30).map((a) => (
+                  <div key={a.id} className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2">
+                    <span className="text-[10px] font-medium text-zinc-500 w-20 shrink-0 uppercase tracking-wide">{a.kind}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm text-zinc-200 truncate">{a.label}</p>
+                      {a.sub && <p className="text-[11px] text-zinc-500 truncate">{a.sub}</p>}
+                    </div>
+                    <span className="text-[10px] text-zinc-500 shrink-0">{a.status}</span>
+                    <span className="text-[11px] text-zinc-600 shrink-0">{timeAgo(a.date)}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          );
+        })()}
+
         {/* Activity timeline */}
         <section>
-          <h3 className="text-xs font-medium text-zinc-500 mb-2">Activity · {p.conversations.length} conversation{p.conversations.length === 1 ? '' : 's'}</h3>
+          <h3 className="text-xs font-medium text-zinc-500 mb-2">Conversations · {p.conversations.length}</h3>
           {p.conversations.length === 0 ? (
             <p className="text-xs text-zinc-600">No conversations.</p>
           ) : (
