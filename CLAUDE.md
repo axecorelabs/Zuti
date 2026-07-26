@@ -7,6 +7,16 @@ The prod and dev databases are the **same shared Supabase instance**. VPS deploy
 `prisma generate` only — **not** `migrate deploy`; schema changes are applied to the shared DB
 manually (SQL saved under `packages/database/prisma/manual/`) before/alongside the schema change.
 
+## Product direction (keeps scope honest)
+
+Zuti is an **AI-native business-operations platform for SMBs, entered through customer service** —
+support is the front door; managing the *people a business serves* (a Customer/CRM hub) and their
+commerce/events is what makes it sticky. **Intelligence is emergent and contextual, not a separate
+BI/reporting product.** Surface insight *in context* (on the customer profile, in the inbox, on the
+event panel) and via the AI reading the data and telling the business things — **do not** build a
+dashboards/reports/chart-builder BI suite. Resist becoming mediocre-at-everything: the wedge is
+AI + people + commerce for SMBs, not feature-parity with CRM/BI/marketing incumbents.
+
 ## Compliance-by-default (read `COMPLIANCE.md`)
 
 We build **in line with data-protection law** — GDPR baseline, and by extension UK GDPR, NDPA
