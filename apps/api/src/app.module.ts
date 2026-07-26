@@ -24,6 +24,7 @@ import { ActionForwardingModule } from './modules/action-forwarding/action-forwa
 import { HealthModule } from './modules/health/health.module';
 import { CommerceModule } from './modules/commerce/commerce.module';
 import { RegistrationsModule } from './modules/registrations/registrations.module';
+import { CustomersModule } from './modules/customers/customers.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
@@ -59,6 +60,7 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     ActionForwardingModule,
     CommerceModule,
     RegistrationsModule,
+    CustomersModule,
     AdminModule,
     HealthModule,
   ],

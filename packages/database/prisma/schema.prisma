@@ -140,6 +140,7 @@ model Organization {
   commerceOrders CommerceOrder[]
   setupRequests WorkspaceSetupRequest[]
   commercePayments CommercePayment[]
+  customers Customer[]
 }
 
 model OrganizationMember {
@@ -406,10 +407,13 @@ model Conversation {
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
   lastMessageAt    DateTime?
+  // Customer hub: the unified person this conversation belongs to (resolved from channel anchors).
+  customerId       String?
 
   organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   bot              Bot          @relation(fields: [botId], references: [id])
   assignedAgent    User?        @relation("AssignedAgent", fields: [assignedAgentId], references: [id])
+  customer         Customer?    @relation(fields: [customerId], references: [id], onDelete: SetNull)
   messages         Message[]
   escalations      Escalation[]
   escalationThreads EscalationThread[]
@@ -426,6 +430,7 @@ model Conversation {
   @@index([organizationId, status, lastMessageAt(sort: Desc)])
   @@index([organizationId, assignedAgentId, lastMessageAt(sort: Desc)])
   @@index([organizationId, assignedAgentId, mode, status])
+  @@index([customerId])
 }
 
 enum ConversationChannel {
@@ -1396,4 +1401,70 @@ enum RegistrationEntryStatus {
   AWAITING_APPROVAL
   CONFIRMED
   CANCELLED
+}
+
+// ── Customer Hub ──────────────────────────────────────────────────────────────
+// Unified per-org record of a person the business has had a real, first-party interaction with.
+// "Customer" is a loose umbrella; lifecycleStage carries lead → engaged → customer. Identity is
+// resolved via CustomerIdentifier anchors (channels the person controls), never typed attributes.
+// See CUSTOMER_HUB_PLAN.md.
+model Customer {
+  id                 String   @id @default(cuid())
+  orgId              String
+  displayName        String?
+  primaryEmail       String?  // best-known contact email; NOT authoritative identity
+  primaryPhone       String?
+  lifecycleStage     CustomerLifecycle @default(LEAD)
+  // CRM layer (writeable by humans + AI-enrichment)
+  tags               String[] @default([])
+  notes              String?
+  // Consent / compliance (marketing sends MUST honor these)
+  emailOptOut        Boolean  @default(false)
+  marketingConsentAt DateTime? // opt-in timestamp; null = no marketing consent
+  firstSeenAt        DateTime @default(now())
+  lastSeenAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  organization       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  identifiers        CustomerIdentifier[]
+  conversations      Conversation[]
+
+  @@index([orgId, lifecycleStage, lastSeenAt(sort: Desc)])
+  @@index([orgId, primaryEmail])
+  @@index([orgId, lastSeenAt(sort: Desc)])
+}
+
+// An identifier the person is known by. isAnchor = a channel of contact they demonstrably control
+// (safe to auto-attach/auto-merge on); isAnchor=false = a typed attribute (contact data only, never
+// drives automatic merges). Unique per (org, type, value) so an identifier maps to exactly one person.
+model CustomerIdentifier {
+  id         String   @id @default(cuid())
+  customerId String
+  orgId      String
+  type       IdentifierType
+  value      String   // normalized (lowercased email, E.164 phone, raw chat/user id)
+  isAnchor   Boolean  @default(true)
+  verifiedAt DateTime?
+  source     String?  // where captured: bot id, order id, "web-purchase", etc.
+  createdAt  DateTime @default(now())
+
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, type, value])
+  @@index([customerId])
+}
+
+enum CustomerLifecycle {
+  LEAD
+  ENGAGED
+  CUSTOMER
+}
+
+enum IdentifierType {
+  TELEGRAM_CHAT
+  WHATSAPP_PHONE
+  EMAIL
+  PHONE
+  WIDGET_SESSION
 }
