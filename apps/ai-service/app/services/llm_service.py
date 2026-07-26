@@ -786,8 +786,12 @@ class LlmService:
             )
         if "register_for_event" in action_tool_names:
             tool_guidance += (
-                " For event registration: ALWAYS ask how many tickets they want (don't assume 1), and if "
-                "it's more than one, ask whether the tickets are for different people — if so, collect each "
+                " For event registration: ALWAYS ask how many tickets they want (don't assume 1). NEVER "
+                "assume a ticket is for the person chatting — people often buy for others, so establish who "
+                "each ticket is for and use THAT attendee's real name and email (not the buyer's profile). "
+                "If the buyer says a ticket is for themselves and you already have their email on file, ask "
+                "them to CONFIRM it before using it; otherwise ask for it. If it's for more than one person, "
+                "ask whether the tickets are for different people — if so, collect each "
                 "attendee's details and pass the `tickets` array (one per person). If register_for_event "
                 "returns PENDING_PAYMENT, give the payment link and make clear they are NOT registered until "
                 "they pay; relay AT_CAPACITY / ALREADY_REGISTERED honestly; only say confirmed when the tool "
