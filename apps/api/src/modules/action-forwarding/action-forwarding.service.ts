@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RegistrationsService } from '../registrations/registrations.service';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
   ActionClaimLevel,
@@ -492,6 +493,7 @@ export class ActionForwardingService {
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
     private readonly registrationsService: RegistrationsService,
+    private readonly customerIdentity: CustomerIdentityService,
     @InjectQueue(ACTION_FORWARDING_QUEUE) private readonly queue: Queue,
   ) {}
 
@@ -1939,7 +1941,7 @@ export class ActionForwardingService {
       const customFields = Object.fromEntries(
         Object.entries(collectedFields).filter(([key]) => customContract.fields.some((field) => normalizeFieldKey(field.key) === key)),
       );
-      await prismaAny.salesOrder.create({
+      const salesOrder = await prismaAny.salesOrder.create({
         data: {
           orgId: input.organizationId,
           botId: input.botId,
@@ -1960,6 +1962,17 @@ export class ActionForwardingService {
           },
         },
       });
+
+      // Customer hub: link the order to the buyer's Customer (conversation-anchored, else their email).
+      this.customerIdentity
+        .resolveForTransaction(input.organizationId, {
+          conversationId: input.conversationId,
+          email: collectedFields.customer_email ?? input.customerEmail ?? null,
+          name: collectedFields.customer_name ?? input.customerName ?? null,
+          allowEmailAnchor: true,
+        })
+        .then((cid) => cid && prismaAny.salesOrder.update({ where: { id: salesOrder.id }, data: { customerId: cid } }))
+        .catch(() => null);
 
       await prismaAny.actionTask.update({
         where: { id: task.id },
@@ -2075,6 +2088,17 @@ export class ActionForwardingService {
           },
         },
       });
+
+      // Customer hub: link the booking to the customer (conversation-anchored, else their email).
+      this.customerIdentity
+        .resolveForTransaction(input.organizationId, {
+          conversationId: input.conversationId,
+          email: collectedFields.customer_email ?? input.customerEmail ?? null,
+          name: collectedFields.customer_name ?? input.customerName ?? null,
+          allowEmailAnchor: true,
+        })
+        .then((cid) => cid && prismaAny.booking.update({ where: { id: booking.id }, data: { customerId: cid } }))
+        .catch(() => null);
 
       await prismaAny.actionTask.update({
         where: { id: task.id },

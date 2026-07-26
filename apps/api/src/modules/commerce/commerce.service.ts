@@ -15,6 +15,7 @@ import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import {
   CreateCommerceLocationDto,
   CreateCommerceOrderDraftDto,
@@ -82,6 +83,7 @@ export class CommerceService {
     private readonly configService: ConfigService,
     private readonly activity: ActivityService,
     private readonly notifications: NotificationsService,
+    private readonly customerIdentity: CustomerIdentityService,
     @InjectQueue(RECEIPTS_QUEUE) private readonly receiptsQueue: Queue,
   ) {}
 
@@ -1219,6 +1221,12 @@ export class CommerceService {
         items: true,
       },
     });
+
+    // Customer hub: link this store order to the buyer's Customer (their own email is an anchor).
+    this.customerIdentity
+      .resolveForTransaction(orgId, { conversationId: (dto as { conversationId?: string }).conversationId ?? null, email: order.customerEmail, name: order.customerName, phone: order.customerPhone, allowEmailAnchor: true, seenAt: order.createdAt })
+      .then((cid) => (cid ? this.prisma.commerceOrder.update({ where: { id: order.id }, data: { customerId: cid } }) : null))
+      .catch(() => null);
 
     return order;
   }
