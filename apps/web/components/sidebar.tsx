@@ -31,6 +31,7 @@ import {
   CalendarDays,
   ShoppingCart,
   Package,
+  Contact,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
 import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
@@ -75,6 +76,7 @@ export interface AppNotification {
 const orgNavItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard, agentVisible: true },
   { label: 'Inbox', href: '/inbox', icon: MessageSquare, agentVisible: true },
+  { label: 'Customers', href: '/customers', icon: Contact, agentVisible: true },
   { label: 'AI Agents', href: '/bots', icon: Bot, agentVisible: false },
   { label: 'Knowledge', href: '/knowledge', icon: BookOpen, agentVisible: false },
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },

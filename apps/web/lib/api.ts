@@ -672,6 +672,22 @@ export const registrationsApi = {
     api.post(`/organizations/${orgId}/registrations/entries/${entryId}/checkin`, { admit }),
 };
 
+// ── Customers (Customer hub) ────────────────────────────────────────────────
+export const customersApi = {
+  list: (orgId: string, params?: { search?: string; stage?: string; includeLeads?: boolean; limit?: number; offset?: number }) =>
+    api.get(`/organizations/${orgId}/customers`, { params }),
+  get: (orgId: string, customerId: string) =>
+    api.get(`/organizations/${orgId}/customers/${customerId}`),
+  update: (orgId: string, customerId: string, data: Record<string, unknown>) =>
+    api.patch(`/organizations/${orgId}/customers/${customerId}`, data),
+  merge: (orgId: string, survivorId: string, absorbedId: string) =>
+    api.post(`/organizations/${orgId}/customers/${survivorId}/merge`, { absorbedId }),
+  export: (orgId: string, customerId: string) =>
+    api.get(`/organizations/${orgId}/customers/${customerId}/export`),
+  remove: (orgId: string, customerId: string) =>
+    api.delete(`/organizations/${orgId}/customers/${customerId}`),
+};
+
 // ── Activity ──────────────────────────────────────────────────────────────────
 export const activityApi = {
   list: (orgId: string, params?: { page?: number; limit?: number }) =>
