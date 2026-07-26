@@ -667,6 +667,9 @@ export const registrationsApi = {
   // Pass productId to lock the scanner to one event (tickets for others are rejected).
   checkIn: (orgId: string, code: string, productId?: string) =>
     api.post(`/organizations/${orgId}/registrations/checkin`, { code, productId }),
+  // Manual admit / undo a specific entry from the Check-in list (QR fallback). admit=false undoes.
+  checkInEntry: (orgId: string, entryId: string, admit: boolean) =>
+    api.post(`/organizations/${orgId}/registrations/entries/${entryId}/checkin`, { admit }),
 };
 
 // ── Activity ──────────────────────────────────────────────────────────────────

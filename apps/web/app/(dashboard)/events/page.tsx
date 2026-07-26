@@ -6,6 +6,7 @@ import {
   Plus, Pencil, Trash2, Users, ChevronRight, Download,
   CalendarDays, DollarSign, Tag, CheckCircle, XCircle,
   Clock, RefreshCw, X, AlertCircle, Globe, ImagePlus, Ticket, Copy, ExternalLink, ScanLine,
+  Search, RotateCcw, Check,
 } from 'lucide-react';
 import TicketScanner from './ticket-scanner';
 import {
@@ -275,6 +276,142 @@ function EventStats({ product, entries }: { product: RegistrationProduct; entrie
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── Live check-in (door) view — scan-first, real-time, search-to-admit ──────────
+
+function CheckInView({ entries, onScan, onToggle, updatingId }: {
+  entries: RegistrationEntry[];
+  onScan: () => void;
+  onToggle: (entryId: string, admit: boolean) => void;
+  updatingId: string | null;
+}) {
+  const [query, setQuery] = useState('');
+  const qty = (e: RegistrationEntry) => e.quantity ?? 1;
+
+  // Only confirmed tickets are admissible (free events confirm on registration too).
+  const admissible = entries.filter((e) => e.status === 'CONFIRMED');
+  const admittedCount = admissible.filter((e) => e.checkedInAt).reduce((s, e) => s + qty(e), 0);
+  const totalCount = admissible.reduce((s, e) => s + qty(e), 0);
+  const pct = totalCount > 0 ? Math.round((admittedCount / totalCount) * 100) : 0;
+
+  // Per-tier admitted counts.
+  const tierMap = new Map<string, { name: string; admitted: number; total: number }>();
+  for (const e of admissible) {
+    const key = e.ticketType?.id ?? '__none__';
+    const cur = tierMap.get(key) ?? { name: e.ticketType?.name ?? 'General', admitted: 0, total: 0 };
+    cur.total += qty(e);
+    if (e.checkedInAt) cur.admitted += qty(e);
+    tierMap.set(key, cur);
+  }
+  const tiers = Array.from(tierMap.values()).sort((a, b) => b.total - a.total);
+
+  const q = query.trim().toLowerCase();
+  const matches = admissible.filter((e) =>
+    !q || (e.customerName ?? '').toLowerCase().includes(q) || (e.customerEmail ?? '').toLowerCase().includes(q),
+  );
+  // Not-yet-arrived first (the queue you're working), then most-recently admitted on top.
+  const sorted = [...matches].sort((a, b) => {
+    const aIn = a.checkedInAt ? 1 : 0, bIn = b.checkedInAt ? 1 : 0;
+    if (aIn !== bIn) return aIn - bIn;
+    if (aIn === 1) return +new Date(b.checkedInAt!) - +new Date(a.checkedInAt!);
+    return (a.customerName ?? '').localeCompare(b.customerName ?? '');
+  });
+
+  return (
+    <div className="space-y-5">
+      {/* Live progress + scan */}
+      <div className="rounded-2xl border border-zinc-800 bg-gradient-to-b from-zinc-900/70 to-zinc-900/30 p-5">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-xs text-zinc-500 flex items-center gap-1.5">
+              <span className="relative flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60" /><span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" /></span>
+              Live check-in
+            </p>
+            <p className="text-3xl font-bold text-white mt-1.5 tabular-nums">
+              {admittedCount}<span className="text-zinc-600 text-2xl"> / {totalCount}</span>
+            </p>
+            <p className="text-xs text-zinc-500 mt-0.5">{pct}% admitted{totalCount > admittedCount ? ` · ${totalCount - admittedCount} to arrive` : ' · everyone’s in 🎉'}</p>
+          </div>
+          <button
+            onClick={onScan}
+            className="flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold transition-colors shadow-lg shadow-emerald-950/40"
+          >
+            <ScanLine className="w-4 h-4" /> Scan tickets
+          </button>
+        </div>
+        <div className="h-2 rounded-full bg-zinc-800 overflow-hidden mt-4">
+          <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${pct}%` }} />
+        </div>
+        {tiers.length > 1 && (
+          <div className="flex flex-wrap gap-x-5 gap-y-1.5 mt-3">
+            {tiers.map((t) => (
+              <span key={t.name} className="text-xs text-zinc-500">{t.name} <span className="text-zinc-300 font-medium tabular-nums">{t.admitted}/{t.total}</span></span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Search-to-admit */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search a name or email to admit manually…"
+          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-9 pr-3 py-2.5 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600"
+        />
+      </div>
+
+      {/* Attendee list — big tap targets */}
+      {sorted.length === 0 ? (
+        <div className="text-center py-14 text-zinc-600 text-sm">
+          {admissible.length === 0 ? 'No confirmed tickets to check in yet.' : 'No matches.'}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {sorted.map((e) => {
+            const inHere = Boolean(e.checkedInAt);
+            const busy = updatingId === e.id;
+            return (
+              <div key={e.id} className={`flex items-center gap-3 rounded-xl border px-3.5 py-3 transition-colors ${inHere ? 'border-emerald-800/50 bg-emerald-950/20' : 'border-zinc-800 bg-zinc-900/40'}`}>
+                <div className={`w-9 h-9 rounded-full shrink-0 flex items-center justify-center text-sm font-semibold ${inHere ? 'bg-emerald-500/20 text-emerald-300' : 'bg-zinc-800 text-zinc-400'}`}>
+                  {inHere ? <Check className="w-4 h-4" /> : (e.customerName ?? '?').charAt(0).toUpperCase()}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm text-zinc-100 truncate font-medium">{e.customerName ?? 'Unnamed'}</p>
+                  <p className="text-xs text-zinc-500 truncate">
+                    {e.ticketType?.name ? <span className="text-zinc-400">{e.ticketType.name}</span> : null}
+                    {e.ticketType?.name && e.customerEmail ? ' · ' : ''}
+                    {e.customerEmail ?? ''}
+                    {inHere ? <span className="text-emerald-500"> · in at {new Date(e.checkedInAt!).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span> : ''}
+                  </p>
+                </div>
+                {inHere ? (
+                  <button
+                    onClick={() => onToggle(e.id, false)}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-white hover:bg-zinc-800 disabled:opacity-40 transition-colors shrink-0"
+                    title="Undo check-in"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" /> Undo
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onToggle(e.id, true)}
+                    disabled={busy}
+                    className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold disabled:opacity-40 transition-colors shrink-0"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Check in
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1095,7 +1232,7 @@ export default function EventsPage() {
   const [bots, setBots] = useState<BotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<RegistrationProduct | null>(null);
-  const [detailTab, setDetailTab] = useState<'registrants' | 'settings'>('registrants');
+  const [detailTab, setDetailTab] = useState<'registrants' | 'checkin' | 'settings'>('registrants');
   const [entries, setEntries] = useState<RegistrationEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -1150,8 +1287,9 @@ export default function EventsPage() {
 
     const socket = io(socketUrl, { path: '/ws', transports: ['websocket'], auth: { token } });
     socket.on('connect', () => socket.emit('join', orgId));
-    socket.on('registration:checkin', (p: { productId: string; entryId: string; checkedInAt: string }) => {
-      // Only entries for the event currently loaded will match; others are a no-op.
+    socket.on('registration:checkin', (p: { productId: string; entryId: string; checkedInAt: string | null }) => {
+      // Only entries for the event currently loaded will match; others are a no-op. checkedInAt is
+      // null on an undo (a manual admission reversed), so the row flips back to not-arrived live.
       setEntries((prev) => prev.map((e) => (e.id === p.entryId ? { ...e, checkedInAt: p.checkedInAt } : e)));
     });
     return () => { socket.disconnect(); };
@@ -1192,6 +1330,29 @@ export default function EventsPage() {
       loadEntries(selectedProduct);
     } catch {
       toast.error('Failed to update status');
+    } finally {
+      setUpdatingEntry(null);
+    }
+  };
+
+  // Manual door admit / undo from the Check-in list. Optimistically flips the row; the websocket
+  // event confirms it (and updates any other open door device).
+  const handleManualCheckIn = async (entryId: string, admit: boolean) => {
+    if (!orgId) return;
+    setUpdatingEntry(entryId);
+    const prev = entries;
+    setEntries((es) => es.map((e) => (e.id === entryId ? { ...e, checkedInAt: admit ? new Date().toISOString() : null } : e)));
+    try {
+      const res = await registrationsApi.checkInEntry(orgId, entryId, admit);
+      const outcome = res.data?.outcome;
+      if (outcome === 'ADMITTED') toast.success('Checked in');
+      else if (outcome === 'UNDONE') toast.success('Check-in undone');
+      else if (outcome === 'ALREADY_CHECKED_IN') toast('Already checked in');
+      else if (outcome === 'NOT_CONFIRMED') { toast.error('Not a confirmed ticket'); setEntries(prev); }
+      else { toast.error('Could not update check-in'); setEntries(prev); }
+    } catch {
+      toast.error('Could not update check-in');
+      setEntries(prev);
     } finally {
       setUpdatingEntry(null);
     }
@@ -1333,13 +1494,6 @@ export default function EventsPage() {
               </div>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
-              <button
-                onClick={() => setShowScanner(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-700 text-zinc-300 hover:text-white hover:border-zinc-600 text-xs font-medium transition-colors mr-1"
-                title={`Scan tickets for ${selectedProduct.name}`}
-              >
-                <ScanLine className="w-3.5 h-3.5" /> Scan
-              </button>
               <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800 mr-1">
                 <button
                   onClick={() => setDetailTab('registrants')}
@@ -1348,6 +1502,14 @@ export default function EventsPage() {
                   }`}
                 >
                   Registrants
+                </button>
+                <button
+                  onClick={() => setDetailTab('checkin')}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md transition-colors ${
+                    detailTab === 'checkin' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  <ScanLine className="w-3.5 h-3.5" /> Check-in
                 </button>
                 <button
                   onClick={() => setDetailTab('settings')}
@@ -1395,6 +1557,13 @@ export default function EventsPage() {
                 product={selectedProduct}
                 onSaved={handleSettingsSaved}
                 onDeleted={handleSettingsDeleted}
+              />
+            ) : detailTab === 'checkin' ? (
+              <CheckInView
+                entries={entries}
+                onScan={() => setShowScanner(true)}
+                onToggle={handleManualCheckIn}
+                updatingId={updatingEntry}
               />
             ) : entriesLoading ? (
               <div className="overflow-x-auto">

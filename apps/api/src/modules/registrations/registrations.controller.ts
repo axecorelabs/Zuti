@@ -3,7 +3,7 @@ import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 import { RegistrationsService } from './registrations.service';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto, ManualCheckInDto } from './dto/registrations.dto';
 
 @UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
 @Controller('organizations/:id/registrations')
@@ -87,6 +87,14 @@ export class RegistrationsController {
   @RequireRole('OWNER', 'ADMIN', 'AGENT')
   checkIn(@Param('id') orgId: string, @Body() dto: CheckInDto) {
     return this.svc.checkInByCode(orgId, dto.code, dto.productId);
+  }
+
+  // Manual admit / undo a specific entry from the Check-in list (fallback when a QR won't scan).
+  @Post('entries/:entryId/checkin')
+  @HttpCode(HttpStatus.OK)
+  @RequireRole('OWNER', 'ADMIN', 'AGENT')
+  manualCheckIn(@Param('id') orgId: string, @Param('entryId') entryId: string, @Body() dto: ManualCheckInDto) {
+    return this.svc.setEntryCheckIn(orgId, entryId, dto.admit !== false);
   }
 
   // ── Ticket tiers ────────────────────────────────────────────────────────────

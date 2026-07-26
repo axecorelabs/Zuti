@@ -129,7 +129,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
    */
   emitRegistrationCheckIn(
     organizationId: string,
-    payload: { productId: string; entryId: string; checkedInAt: Date; customerName?: string | null },
+    payload: { productId: string; entryId: string; checkedInAt: Date | null; customerName?: string | null },
   ) {
     this.server.to(`org:${organizationId}`).emit('registration:checkin', payload);
   }

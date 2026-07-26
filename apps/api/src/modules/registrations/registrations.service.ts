@@ -1292,6 +1292,42 @@ export class RegistrationsService {
     return { outcome: 'ADMITTED', entry: { ...info, checkedInAt: now } };
   }
 
+  /**
+   * Manual door check-in from the dashboard's list (the fallback when a QR won't scan): admit — or
+   * un-admit (undo) — a specific entry by id. Same single-use atomic claim as the QR path, and emits
+   * the same live event so every open Check-in view updates instantly.
+   */
+  async setEntryCheckIn(orgId: string, entryId: string, admit: boolean): Promise<{
+    outcome: 'ADMITTED' | 'UNDONE' | 'ALREADY_CHECKED_IN' | 'NOT_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND';
+    entry?: { id: string; customerName: string | null; ticketType: string | null; checkedInAt: Date | null };
+  }> {
+    const entry = await this.prisma.registrationEntry.findFirst({
+      where: { id: entryId, orgId },
+      include: { ticketType: { select: { name: true } } },
+    });
+    if (!entry) return { outcome: 'NOT_FOUND' };
+    const base = { id: entry.id, customerName: entry.customerName, ticketType: entry.ticketType?.name ?? null };
+
+    if (admit) {
+      if (entry.status !== 'CONFIRMED') return { outcome: 'NOT_CONFIRMED', entry: { ...base, checkedInAt: entry.checkedInAt } };
+      if (entry.checkedInAt) return { outcome: 'ALREADY_CHECKED_IN', entry: { ...base, checkedInAt: entry.checkedInAt } };
+      const now = new Date();
+      const claimed = await this.prisma.registrationEntry.updateMany({ where: { id: entry.id, checkedInAt: null }, data: { checkedInAt: now } });
+      if (claimed.count === 0) {
+        const fresh = await this.prisma.registrationEntry.findUnique({ where: { id: entry.id }, select: { checkedInAt: true } });
+        return { outcome: 'ALREADY_CHECKED_IN', entry: { ...base, checkedInAt: fresh?.checkedInAt ?? entry.checkedInAt } };
+      }
+      try { this.events.emitRegistrationCheckIn(orgId, { productId: entry.productId, entryId: entry.id, checkedInAt: now, customerName: entry.customerName }); } catch { /* non-fatal */ }
+      return { outcome: 'ADMITTED', entry: { ...base, checkedInAt: now } };
+    }
+
+    // Undo an admission (e.g. wrong person tapped in).
+    if (!entry.checkedInAt) return { outcome: 'NOT_CHECKED_IN', entry: { ...base, checkedInAt: null } };
+    await this.prisma.registrationEntry.update({ where: { id: entry.id }, data: { checkedInAt: null } });
+    try { this.events.emitRegistrationCheckIn(orgId, { productId: entry.productId, entryId: entry.id, checkedInAt: null, customerName: entry.customerName }); } catch { /* non-fatal */ }
+    return { outcome: 'UNDONE', entry: { ...base, checkedInAt: null } };
+  }
+
   // ── Dead letter queue (failed receipt jobs) ──────────────────────────────
   // Scoped per-org: job payloads always carry orgId, so we filter to the caller's org.
 

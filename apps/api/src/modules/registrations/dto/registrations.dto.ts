@@ -65,6 +65,11 @@ export class CheckInDto {
   @IsOptional() @IsString() productId?: string;
 }
 
+// Manual door check-in from the dashboard list (QR fallback). admit=false undoes an admission.
+export class ManualCheckInDto {
+  @IsOptional() @IsBoolean() admit?: boolean;
+}
+
 // ── Cart checkout: multiple tickets (tiers/attendees) in one purchase ────────
 export class CartAttendeeDto {
   @IsOptional() @IsString() @MaxLength(120) name?: string;
