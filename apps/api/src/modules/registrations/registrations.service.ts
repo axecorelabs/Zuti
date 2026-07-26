@@ -1342,6 +1342,90 @@ export class RegistrationsService {
     return { outcome: 'UNDONE', entry: { ...base, checkedInAt: null } };
   }
 
+  // ── Scan sessions (temporary public, event-scoped check-in links) ─────────────
+  // A shareable URL that lets door/volunteer staff scan or type ticket codes to admit attendees for
+  // ONE event, with no account. The token is a bearer credential, so the surface is deliberately
+  // narrow: single event, expiring, revocable, admit-only, minimal PII, no browsable roster.
+
+  private scanSessionStatus(s: { expiresAt: Date; revokedAt: Date | null }): 'active' | 'expired' | 'revoked' {
+    if (s.revokedAt) return 'revoked';
+    if (s.expiresAt.getTime() <= Date.now()) return 'expired';
+    return 'active';
+  }
+
+  /** OWNER/ADMIN: mint a scan-session link for an event. Default expiry = event end + 6h (or +24h if
+   * the event has no date); an explicit expiresAt overrides. */
+  async createScanSession(orgId: string, productId: string, createdBy: string | null, input: { label?: string; expiresAt?: string }) {
+    const prismaAny = this.prisma as any;
+    const product = await prismaAny.registrationProduct.findFirst({ where: { id: productId, orgId }, select: { id: true, name: true, eventDate: true } });
+    if (!product) throw new NotFoundException('Event not found');
+
+    let expiresAt: Date;
+    if (input.expiresAt) {
+      expiresAt = new Date(input.expiresAt);
+      if (isNaN(expiresAt.getTime()) || expiresAt.getTime() <= Date.now()) throw new BadRequestException('Expiry must be a valid future date/time.');
+    } else {
+      expiresAt = product.eventDate ? new Date(new Date(product.eventDate).getTime() + 6 * 3600_000) : new Date(Date.now() + 24 * 3600_000);
+      if (expiresAt.getTime() <= Date.now()) expiresAt = new Date(Date.now() + 6 * 3600_000); // past-dated event → short window from now
+    }
+
+    const token = randomBytes(24).toString('hex');
+    const session = await prismaAny.eventScanSession.create({
+      data: { orgId, productId, token, label: input.label?.trim() || null, expiresAt, createdBy: createdBy ?? null },
+    });
+    return { id: session.id, token, label: session.label, expiresAt: session.expiresAt, url: `${this.getPublicAppUrl()}/scan/${token}`, status: 'active' as const };
+  }
+
+  /** OWNER/ADMIN: list an event's sessions (newest first) with status + shareable URL. */
+  async listScanSessions(orgId: string, productId: string) {
+    const prismaAny = this.prisma as any;
+    const sessions = await prismaAny.eventScanSession.findMany({ where: { orgId, productId }, orderBy: { createdAt: 'desc' } });
+    const appUrl = this.getPublicAppUrl();
+    return sessions.map((s: any) => ({
+      id: s.id, label: s.label, expiresAt: s.expiresAt, revokedAt: s.revokedAt, createdAt: s.createdAt,
+      status: this.scanSessionStatus(s), url: `${appUrl}/scan/${s.token}`,
+    }));
+  }
+
+  /** OWNER/ADMIN: kill a session immediately (leak response). Idempotent. */
+  async revokeScanSession(orgId: string, sessionId: string) {
+    const prismaAny = this.prisma as any;
+    const session = await prismaAny.eventScanSession.findFirst({ where: { id: sessionId, orgId }, select: { id: true, revokedAt: true } });
+    if (!session) throw new NotFoundException('Scan session not found');
+    if (!session.revokedAt) await prismaAny.eventScanSession.update({ where: { id: sessionId }, data: { revokedAt: new Date() } });
+    return { revoked: true };
+  }
+
+  /** Public: validate a token and return the minimal event context the scan page needs. */
+  async resolveScanSession(token: string): Promise<
+    | { valid: false; reason: 'NOT_FOUND' | 'REVOKED' | 'EXPIRED' }
+    | { valid: true; productId: string; orgId: string; eventName: string; venue: string | null; eventDate: Date | null; label: string | null; expiresAt: Date }
+  > {
+    const prismaAny = this.prisma as any;
+    const s = await prismaAny.eventScanSession.findUnique({ where: { token: (token ?? '').trim() }, include: { product: { select: { id: true, name: true, venue: true, eventDate: true } } } });
+    if (!s || !s.product) return { valid: false, reason: 'NOT_FOUND' };
+    if (s.revokedAt) return { valid: false, reason: 'REVOKED' };
+    if (s.expiresAt.getTime() <= Date.now()) return { valid: false, reason: 'EXPIRED' };
+    return { valid: true, productId: s.productId, orgId: s.orgId, eventName: s.product.name, venue: s.product.venue, eventDate: s.product.eventDate, label: s.label, expiresAt: s.expiresAt };
+  }
+
+  /** Public: admit a ticket through a scan session. Reuses the event-locked check-in, then strips
+   * email so the anonymous page only ever sees name + tier + status — never the full contact/PII. */
+  async scanSessionCheckIn(token: string, code: string): Promise<{
+    outcome: 'ADMITTED' | 'ALREADY_CHECKED_IN' | 'NOT_CONFIRMED' | 'NOT_FOUND' | 'WRONG_EVENT' | 'SESSION_INVALID';
+    reason?: string;
+    entry?: { customerName: string | null; ticketType: string | null; checkedInAt: Date | null };
+  }> {
+    const resolved = await this.resolveScanSession(token);
+    if (!resolved.valid) return { outcome: 'SESSION_INVALID', reason: resolved.reason };
+    const res = await this.checkInByCode(resolved.orgId, code, resolved.productId);
+    // Only surface attendee details for tickets that belong to THIS event; a WRONG_EVENT/NOT_FOUND
+    // ticket gets no name (minimal PII — the session has no business revealing another event's people).
+    const showEntry = res.outcome === 'ADMITTED' || res.outcome === 'ALREADY_CHECKED_IN' || res.outcome === 'NOT_CONFIRMED';
+    const entry = showEntry && res.entry ? { customerName: res.entry.customerName, ticketType: res.entry.ticketType, checkedInAt: res.entry.checkedInAt } : undefined;
+    return { outcome: res.outcome, entry };
+  }
+
   // ── Dead letter queue (failed receipt jobs) ──────────────────────────────
   // Scoped per-org: job payloads always carry orgId, so we filter to the caller's org.
 

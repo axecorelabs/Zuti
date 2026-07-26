@@ -9,6 +9,7 @@ import {
   Search, RotateCcw, Check,
 } from 'lucide-react';
 import TicketScanner from './ticket-scanner';
+import ScanSessionsPanel from './scan-sessions-panel';
 import {
   AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -1574,12 +1575,15 @@ export default function EventsPage() {
                 onDeleted={handleSettingsDeleted}
               />
             ) : detailTab === 'checkin' ? (
-              <CheckInView
-                entries={entries}
-                onScan={() => setShowScanner(true)}
-                onToggle={handleManualCheckIn}
-                updatingId={updatingEntry}
-              />
+              <>
+                <CheckInView
+                  entries={entries}
+                  onScan={() => setShowScanner(true)}
+                  onToggle={handleManualCheckIn}
+                  updatingId={updatingEntry}
+                />
+                {canManage && <ScanSessionsPanel orgId={orgId} productId={selectedProduct.id} />}
+              </>
             ) : entriesLoading ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

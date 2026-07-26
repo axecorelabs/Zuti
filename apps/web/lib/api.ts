@@ -670,6 +670,13 @@ export const registrationsApi = {
   // Manual admit / undo a specific entry from the Check-in list (QR fallback). admit=false undoes.
   checkInEntry: (orgId: string, entryId: string, admit: boolean) =>
     api.post(`/organizations/${orgId}/registrations/entries/${entryId}/checkin`, { admit }),
+  // Scan sessions (temporary public check-in links) — OWNER/ADMIN.
+  listScanSessions: (orgId: string, productId: string) =>
+    api.get(`/organizations/${orgId}/registrations/${productId}/scan-sessions`),
+  createScanSession: (orgId: string, productId: string, data: { label?: string; expiresAt?: string }) =>
+    api.post(`/organizations/${orgId}/registrations/${productId}/scan-sessions`, data),
+  revokeScanSession: (orgId: string, sessionId: string) =>
+    api.delete(`/organizations/${orgId}/registrations/scan-sessions/${sessionId}`),
 };
 
 // ── Customers (Customer hub) ────────────────────────────────────────────────

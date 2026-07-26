@@ -10,6 +10,7 @@ import { RegistrationsService } from './registrations.service';
 import { RegistrationsController } from './registrations.controller';
 import { TicketController } from './ticket.controller';
 import { EventPublicController } from './event-public.controller';
+import { ScanSessionPublicController } from './scan-session-public.controller';
 import { InternalRegistrationController } from './internal-registration.controller';
 import { RegistrationsScheduler } from './registrations.scheduler';
 import { ReceiptsProcessor } from '../queue/receipts.processor';
@@ -23,7 +24,7 @@ import { ReceiptsProcessor } from '../queue/receipts.processor';
     CustomersModule,
     BullModule.registerQueue({ name: RECEIPTS_QUEUE }),
   ],
-  controllers: [RegistrationsController, TicketController, EventPublicController, InternalRegistrationController],
+  controllers: [RegistrationsController, TicketController, EventPublicController, ScanSessionPublicController, InternalRegistrationController],
   providers: [RegistrationsService, ReceiptsProcessor, RegistrationsScheduler],
   exports: [RegistrationsService],
 })

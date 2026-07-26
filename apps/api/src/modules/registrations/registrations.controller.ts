@@ -2,8 +2,9 @@ import { Controller, Get, Post, Patch, Delete, Param, Body, Query, UseGuards, Ht
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RegistrationsService } from './registrations.service';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto, ManualCheckInDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto, ManualCheckInDto, CreateScanSessionDto } from './dto/registrations.dto';
 
 @UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
 @Controller('organizations/:id/registrations')
@@ -87,6 +88,26 @@ export class RegistrationsController {
   @RequireRole('OWNER', 'ADMIN', 'AGENT')
   checkIn(@Param('id') orgId: string, @Body() dto: CheckInDto) {
     return this.svc.checkInByCode(orgId, dto.code, dto.productId);
+  }
+
+  // ── Scan sessions (temporary public check-in links) — OWNER/ADMIN only ────────
+
+  @Get(':productId/scan-sessions')
+  @RequireRole('OWNER', 'ADMIN')
+  listScanSessions(@Param('id') orgId: string, @Param('productId') productId: string) {
+    return this.svc.listScanSessions(orgId, productId);
+  }
+
+  @Post(':productId/scan-sessions')
+  @RequireRole('OWNER', 'ADMIN')
+  createScanSession(@Param('id') orgId: string, @Param('productId') productId: string, @Body() dto: CreateScanSessionDto, @CurrentUser() user: { id: string }) {
+    return this.svc.createScanSession(orgId, productId, user?.id ?? null, dto);
+  }
+
+  @Delete('scan-sessions/:sessionId')
+  @RequireRole('OWNER', 'ADMIN')
+  revokeScanSession(@Param('id') orgId: string, @Param('sessionId') sessionId: string) {
+    return this.svc.revokeScanSession(orgId, sessionId);
   }
 
   // Manual admit / undo a specific entry from the Check-in list (fallback when a QR won't scan).

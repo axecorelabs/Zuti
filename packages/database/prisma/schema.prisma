@@ -1335,9 +1335,31 @@ model RegistrationProduct {
   organization        Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
   entries             RegistrationEntry[]
   ticketTypes         RegistrationTicketType[]
+  scanSessions        EventScanSession[]
 
   @@index([orgId, isActive])
   @@index([botId, isActive])
+}
+
+// A temporary, public, event-scoped check-in link. Door/volunteer staff open the URL and scan or
+// type ticket codes to admit attendees — no account. The token is a bearer credential, so it's
+// deliberately narrow: one event, expiring, revocable, admit-only, no browsable roster. Cascade-
+// deleted with its event (and thus its org).
+model EventScanSession {
+  id          String    @id @default(cuid())
+  orgId       String
+  productId   String
+  token       String    @unique
+  label       String?
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+
+  product     RegistrationProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([orgId])
 }
 
 /// A ticket tier for an event (e.g. Regular, VIP). Price lives HERE and is authoritative — never

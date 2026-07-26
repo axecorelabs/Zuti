@@ -70,6 +70,17 @@ export class ManualCheckInDto {
   @IsOptional() @IsBoolean() admit?: boolean;
 }
 
+// Mint a temporary public scan-session link for an event (OWNER/ADMIN).
+export class CreateScanSessionDto {
+  @IsOptional() @IsString() @MaxLength(60) label?: string;
+  @IsOptional() @IsDateString() expiresAt?: string;
+}
+
+// Admit a ticket through a public scan session (token in the URL).
+export class ScanCheckInDto {
+  @IsString() @MaxLength(200) code: string;
+}
+
 // ── Cart checkout: multiple tickets (tiers/attendees) in one purchase ────────
 export class CartAttendeeDto {
   @IsOptional() @IsString() @MaxLength(120) name?: string;
