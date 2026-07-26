@@ -15,22 +15,8 @@ const prisma = new PrismaClient();
 const svc = new CustomerIdentityService(prisma);
 const PAGE = 500;
 
-function identifiersFor(c) {
-  const ids = [];
-  if (c.channel === 'TELEGRAM' && c.telegramChatId) ids.push({ type: 'TELEGRAM_CHAT', value: c.telegramChatId, isAnchor: true, source: 'conversation' });
-  if (c.channel === 'WHATSAPP') {
-    const wa = c.whatsappPhoneNumber || c.whatsappUserId;
-    if (wa) ids.push({ type: 'WHATSAPP_PHONE', value: wa, isAnchor: true, source: 'conversation' });
-  }
-  if (c.channel === 'EMAIL' && c.customerEmail) ids.push({ type: 'EMAIL', value: c.customerEmail, isAnchor: true, source: 'conversation' });
-  if (c.channel === 'WIDGET') {
-    if (c.widgetVisitorId) ids.push({ type: 'WIDGET_SESSION', value: c.widgetVisitorId, isAnchor: true, source: 'conversation' });
-    if (c.widgetVisitorEmail) ids.push({ type: 'EMAIL', value: c.widgetVisitorEmail, isAnchor: false, source: 'widget-typed' }); // typed → attribute
-  }
-  // Any channel: a sender email we haven't already added, as an anchor (they emailed from it).
-  if (c.customerEmail && !ids.some((i) => i.type === 'EMAIL')) ids.push({ type: 'EMAIL', value: c.customerEmail, isAnchor: c.channel === 'EMAIL', source: 'conversation' });
-  return ids;
-}
+// Anchor extraction + resolve + link all live in CustomerIdentityService (identifiersForConversation /
+// linkConversation) so this backfill and the live ingest wiring never drift apart.
 
 (async () => {
   const args = process.argv.slice(2);
@@ -55,19 +41,13 @@ function identifiersFor(c) {
 
     for (const c of batch) {
       processed++;
-      const ids = identifiersFor(c);
-      if (ids.length === 0) { skippedNoAnchor++; continue; }
-      if (dryRun) { linked++; continue; }
+      if (dryRun) {
+        if (svc.identifiersForConversation(c).length > 0) linked++; else skippedNoAnchor++;
+        continue;
+      }
       try {
-        const customerId = await svc.resolve(c.organizationId, ids, {
-          displayName: c.customerName || c.whatsappProfileName || null,
-          email: c.customerEmail || c.widgetVisitorEmail || null,
-          phone: c.whatsappPhoneNumber || null,
-          minLifecycle: 'LEAD',
-          seenAt: c.lastMessageAt || c.createdAt,
-        });
-        await prisma.conversation.update({ where: { id: c.id }, data: { customerId } });
-        linked++;
+        const customerId = await svc.linkConversation(c); // resolves + sets conversation.customerId
+        if (customerId) linked++; else skippedNoAnchor++;
       } catch (e) {
         console.error(`  ! conversation ${c.id}: ${e.message}`);
       }

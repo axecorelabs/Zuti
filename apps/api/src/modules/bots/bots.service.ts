@@ -31,6 +31,7 @@ import {
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import { extractWhatsAppConfig, prepareWhatsAppConfigForStorage } from '../../common/utils/whatsapp';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
@@ -508,6 +509,7 @@ export class BotsService {
     private readonly activity: ActivityService,
     private readonly orgs: OrganizationsService,
     private readonly actionForwarding: ActionForwardingService,
+    private readonly customerIdentity: CustomerIdentityService,
   ) {}
 
   private async hasForwardingRouteConfiguration(organizationId: string, botId?: string): Promise<boolean> {
@@ -1667,6 +1669,13 @@ export class BotsService {
         where: { id: existing.id },
         data: { lastMessageAt: new Date() },
       });
+    }
+
+    // Customer hub: link this conversation to its unified person (fire-and-forget, off the reply path).
+    if (!conversation.customerId) {
+      this.customerIdentity
+        .linkConversation(conversation)
+        .catch((e) => this.logger.warn(`Customer link failed for conversation ${conversation.id}: ${e?.message ?? e}`));
     }
 
     // Store user message

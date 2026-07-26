@@ -27,6 +27,7 @@ import {
 } from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
@@ -192,6 +193,7 @@ export class TelegramProcessor {
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
     private readonly actionForwarding: ActionForwardingService,
+    private readonly customerIdentity: CustomerIdentityService,
   ) {}
 
   private get fileScanUrl(): string {
@@ -367,6 +369,15 @@ export class TelegramProcessor {
           customerUsername: message.from.username,
         },
       });
+    }
+
+    // Customer hub: link this conversation to its unified person. Fire-and-forget — off the reply
+    // path, and only when not already linked (existing threads keep their customerId, so this is a
+    // near-zero check on follow-up messages).
+    if (!conversation.customerId) {
+      this.customerIdentity
+        .linkConversation(conversation)
+        .catch((e) => this.logger.warn(`Customer link failed for conversation ${conversation.id}: ${e?.message ?? e}`));
     }
 
     const mediaKind = message.media?.kind;
