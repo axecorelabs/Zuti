@@ -88,7 +88,7 @@ export default function CustomersPage() {
       });
       setRows(res.data.items ?? []);
       setTotal(res.data.total ?? 0);
-    } catch { toast.error('Failed to load customers'); } finally { setLoading(false); }
+    } catch { toast.error('Failed to load clients'); } finally { setLoading(false); }
   }, [orgId, search, stage]);
 
   useEffect(() => { const t = setTimeout(load, search ? 250 : 0); return () => clearTimeout(t); }, [load, search]);
@@ -99,7 +99,7 @@ export default function CustomersPage() {
       <div className={`flex flex-col border-r border-zinc-800/60 w-full md:w-[380px] md:shrink-0 ${selectedId ? 'hidden md:flex' : 'flex'}`}>
         <div className="p-5 border-b border-zinc-800/60">
           <div className="flex items-center justify-between mb-3">
-            <h1 className="text-base font-semibold text-white">Customers</h1>
+            <h1 className="text-base font-semibold text-white">Clients</h1>
             <span className="text-xs text-zinc-500">{total} {total === 1 ? 'person' : 'people'}</span>
           </div>
           <div className="relative">
@@ -132,7 +132,7 @@ export default function CustomersPage() {
           ) : rows.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-20 text-center px-6">
               <Users className="w-9 h-9 text-zinc-700 mb-3" />
-              <p className="text-sm font-medium text-zinc-400">No customers{search ? ' match' : ' yet'}</p>
+              <p className="text-sm font-medium text-zinc-400">No clients{search ? ' match' : ' yet'}</p>
               <p className="text-xs text-zinc-600 mt-1">People who message or buy appear here automatically.</p>
             </div>
           ) : (
@@ -181,7 +181,7 @@ export default function CustomersPage() {
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center">
             <Users className="w-10 h-10 text-zinc-700 mb-3" />
-            <p className="text-sm text-zinc-500">Select a customer to view their profile</p>
+            <p className="text-sm text-zinc-500">Select a client to view their profile</p>
           </div>
         )}
       </div>
@@ -245,7 +245,7 @@ function CustomerProfilePanel({ orgId, customerId, onClose, onChanged, onDeleted
   };
 
   const remove = async () => {
-    if (!confirm('Delete this customer and all their identity data? Their conversations are kept but unlinked. This cannot be undone.')) return;
+    if (!confirm('Delete this client and all their identity data? Their conversations are kept but unlinked. This cannot be undone.')) return;
     try { await customersApi.remove(orgId, customerId); toast.success('Customer deleted'); onDeleted(); }
     catch { toast.error('Delete failed'); }
   };
@@ -284,7 +284,7 @@ function CustomerProfilePanel({ orgId, customerId, onClose, onChanged, onDeleted
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <button onClick={exportData} title="Export data (compliance)" className="p-2 rounded-lg text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800"><Download className="w-4 h-4" /></button>
-          <button onClick={remove} title="Delete customer" className="p-2 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-zinc-800"><Trash2 className="w-4 h-4" /></button>
+          <button onClick={remove} title="Delete client" className="p-2 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-zinc-800"><Trash2 className="w-4 h-4" /></button>
           <button onClick={onClose} className="hidden md:block p-2 rounded-lg text-zinc-500 hover:text-white hover:bg-zinc-800"><X className="w-4 h-4" /></button>
         </div>
       </div>
@@ -341,7 +341,7 @@ function CustomerProfilePanel({ orgId, customerId, onClose, onChanged, onDeleted
           </div>
           <div>
             <label className="block text-[11px] text-zinc-500 mb-1">Notes</label>
-            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 resize-y" placeholder="Internal notes about this customer…" />
+            <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 resize-y" placeholder="Internal notes about this client…" />
           </div>
         </section>
 
@@ -405,7 +405,7 @@ function CustomerProfilePanel({ orgId, customerId, onClose, onChanged, onDeleted
 
         {/* Merge */}
         <section>
-          <button onClick={() => setMerging(true)} className="flex items-center gap-2 text-xs text-zinc-500 hover:text-zinc-300"><GitMerge className="w-3.5 h-3.5" /> Merge a duplicate into this customer</button>
+          <button onClick={() => setMerging(true)} className="flex items-center gap-2 text-xs text-zinc-500 hover:text-zinc-300"><GitMerge className="w-3.5 h-3.5" /> Merge a duplicate into this client</button>
         </section>
       </div>
 
@@ -438,7 +438,7 @@ function MergeDialog({ orgId, survivor, onClose, onMerged }: { orgId: string; su
   }, [q, orgId, survivor.id]);
 
   const doMerge = async (absorbed: CustomerRow) => {
-    if (!confirm(`Merge "${absorbed.displayName ?? absorbed.primaryEmail ?? 'this customer'}" INTO "${survivor.displayName ?? 'this customer'}"? The duplicate is deleted and its identifiers/history move here. This cannot be undone.`)) return;
+    if (!confirm(`Merge "${absorbed.displayName ?? absorbed.primaryEmail ?? 'this client'}" INTO "${survivor.displayName ?? 'this client'}"? The duplicate is deleted and its identifiers/history move here. This cannot be undone.`)) return;
     setBusy(true);
     try { await customersApi.merge(orgId, survivor.id, absorbed.id); toast.success('Merged'); onMerged(); }
     catch { toast.error('Merge failed'); setBusy(false); }
@@ -451,7 +451,7 @@ function MergeDialog({ orgId, survivor, onClose, onMerged }: { orgId: string; su
           <h3 className="text-sm font-semibold text-white">Merge a duplicate</h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-white"><X className="w-4 h-4" /></button>
         </div>
-        <p className="text-xs text-zinc-500 mb-3">Find the duplicate person to fold into <span className="text-zinc-300">{survivor.displayName ?? 'this customer'}</span>.</p>
+        <p className="text-xs text-zinc-500 mb-3">Find the duplicate person to fold into <span className="text-zinc-300">{survivor.displayName ?? 'this client'}</span>.</p>
         <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, email, phone…" className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 mb-3" />
         <div className="space-y-1.5 max-h-64 overflow-auto">
           {results.map((c) => (
