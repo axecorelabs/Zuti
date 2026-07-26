@@ -118,4 +118,45 @@ export class CustomersService {
     const c = await this.prisma.customer.findFirst({ where: { id: customerId, orgId }, select: { id: true } });
     if (!c) throw new NotFoundException('Customer not found');
   }
+
+  /**
+   * AI write loop (Stage 2B). The agent calls this to enrich the CURRENT conversation's customer with
+   * durable facts it learned. This is the **server-side gate**: only ENRICHMENT fields exist here —
+   * note (append), tags (union), name (fill-if-empty). Protected fields (contact details, consent,
+   * identity anchors, merge) are structurally absent, so a hallucinating or prompt-injected model
+   * cannot touch them, and it can never overwrite a known name or set an anchor. Scoped to the
+   * conversation's own customer, so it can't write to anyone else.
+   */
+  async enrichFromAgent(orgId: string, conversationId: string, input: { note?: string; tags?: string[]; name?: string }): Promise<{ ok: boolean; reason?: string }> {
+    if (!conversationId) return { ok: false, reason: 'no_conversation' };
+    const conv = await this.prisma.conversation.findFirst({ where: { id: conversationId, organizationId: orgId }, select: { customerId: true } });
+    if (!conv?.customerId) return { ok: false, reason: 'no_customer' };
+    const c = await this.prisma.customer.findUnique({
+      where: { id: conv.customerId },
+      select: { displayName: true, tags: true, notes: true, lifecycleStage: true },
+    });
+    if (!c) return { ok: false, reason: 'not_found' };
+
+    const data: Prisma.CustomerUpdateInput = {};
+    // Name: fill only when unknown — never overwrite (identity is not the AI's to rewrite).
+    if (input.name?.trim() && !c.displayName) data.displayName = input.name.trim().slice(0, 120);
+    // Tags: union, normalized + capped. Additive only (AI can't remove tags a human set).
+    if (Array.isArray(input.tags) && input.tags.length) {
+      const add = input.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean).slice(0, 10);
+      const merged = [...new Set([...c.tags, ...add])].slice(0, 30);
+      if (merged.length !== c.tags.length) data.tags = merged;
+    }
+    // Note: append (dated), never overwrite; keep the record bounded.
+    if (input.note?.trim()) {
+      const line = `[${new Date().toISOString().slice(0, 10)}] ${input.note.trim().slice(0, 500)}`;
+      data.notes = [c.notes, line].filter(Boolean).join('\n').slice(-4000);
+    }
+    // Actively conversing + learning is an engagement signal: bump LEAD→ENGAGED only. Never CUSTOMER
+    // (that must come from a real transaction), never a downgrade.
+    if (c.lifecycleStage === 'LEAD') data.lifecycleStage = 'ENGAGED';
+
+    if (Object.keys(data).length === 0) return { ok: true };
+    await this.prisma.customer.update({ where: { id: conv.customerId }, data });
+    return { ok: true };
+  }
 }

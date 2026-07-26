@@ -270,6 +270,29 @@ ESCALATE_TO_HUMAN_TOOL = {
 }
 
 # Registry of every tool the agent can be granted, keyed by the tool name the model calls.
+REMEMBER_ABOUT_CUSTOMER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "remember_about_customer",
+        "description": (
+            "Silently save a DURABLE fact about THIS customer to their profile so future conversations "
+            "(on any channel) are personalized — e.g. a stated preference, their name, their role or "
+            "company, or an important context detail. Call it when you learn something worth remembering "
+            "long-term. Do NOT use it for one-off requests, greetings, or transient chatter, and do NOT "
+            "tell the customer you saved anything — it runs silently; just continue your reply. You "
+            "cannot change their contact details or consent through this tool."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "note": {"type": "string", "description": "A concise durable fact to remember (e.g. 'Prefers email over calls', 'Runs a bakery in Lagos')."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Short labels categorizing the customer (e.g. 'vip', 'wholesale', 'returning')."},
+                "name": {"type": "string", "description": "The customer's name — ONLY if you just learned it and don't already have it."},
+            },
+        },
+    },
+}
+
 ACTION_TOOL_REGISTRY = {
     "search_knowledge": SEARCH_KNOWLEDGE_TOOL,
     "report_knowledge_gap": REPORT_KNOWLEDGE_GAP_TOOL,
@@ -280,6 +303,7 @@ ACTION_TOOL_REGISTRY = {
     "create_sales_order": CREATE_SALES_ORDER_TOOL,
     "log_technical_issue": LOG_TECHNICAL_ISSUE_TOOL,
     "escalate_to_human": ESCALATE_TO_HUMAN_TOOL,
+    "remember_about_customer": REMEMBER_ABOUT_CUSTOMER_TOOL,
 }
 
 # Similarity score at/above which a retrieved passage counts as strong grounding (matches the
@@ -697,9 +721,11 @@ class LlmService:
         LOOKUP_TOOLS = {"search_knowledge", "report_knowledge_gap", "search_products"}
         enabled = [t for t in (enabled_tools or []) if t in ACTION_TOOL_REGISTRY]
         tool_names = list(dict.fromkeys(
-            (["search_knowledge", "report_knowledge_gap"] if knowledge_search is not None else []) + enabled
+            (["search_knowledge", "report_knowledge_gap"] if knowledge_search is not None else [])
+            + ["remember_about_customer"]  # Customer hub write loop — always available, silent enrichment
+            + enabled
         ))
-        action_tool_names = [t for t in tool_names if t not in LOOKUP_TOOLS]
+        action_tool_names = [t for t in tool_names if t not in LOOKUP_TOOLS and t != "remember_about_customer"]
         tools_param = [ACTION_TOOL_REGISTRY[t] for t in tool_names]
 
         base_prompt = _build_system_prompt(bot_name, org_name, system_prompt_override)
@@ -740,6 +766,15 @@ class LlmService:
                 "NOT need to look up or verify those details in the knowledge base first — the team "
                 "validates them. Do not refuse or stall an action just because its details aren't in the "
                 "knowledge base."
+            )
+        if "remember_about_customer" in tool_names:
+            tool_guidance += (
+                "\n\nCUSTOMER MEMORY: when you learn a DURABLE fact about the customer — their name, a "
+                "preference, their role or company, or useful lasting context — call remember_about_customer "
+                "to save it to their profile for next time. It runs SILENTLY: never announce that you saved "
+                "anything, and never use it for one-off requests or small talk. If a 'KNOWN CUSTOMER' profile "
+                "was provided in your context, use it to personalize naturally — do not recite it or claim you "
+                "looked them up."
             )
         if "register_for_event" in action_tool_names:
             tool_guidance += (
@@ -852,6 +887,10 @@ class LlmService:
                     # Meta tool: log the gap via the backend, but it's not a customer-facing action.
                     result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
                     gap_logged = True
+                elif name == "remember_about_customer" and name in tool_names:
+                    # Silent profile enrichment (Customer hub write loop) — a side effect, not a
+                    # customer-facing action, so it doesn't set action_handled / action_type.
+                    result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
                 elif name == "search_products" and name in tool_names:
                     # Catalog lookup via the backend — informational, not a customer-facing action.
                     result = await self._execute_tool(name, args, org_id, bot_id, conversation_id, channel)
