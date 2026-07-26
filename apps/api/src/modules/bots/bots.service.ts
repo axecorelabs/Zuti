@@ -1948,14 +1948,18 @@ export class BotsService {
       };
     }
 
-    const commerceGrounding = await buildCommerceGroundingContextBlock({
-      prisma: this.prisma,
-      organizationId: bot.organizationId,
-      aiConfig: bot.aiConfig as Record<string, unknown>,
-      userText: userText.trim(),
-    });
+    const [commerceGrounding, customerProfileBlock] = await Promise.all([
+      buildCommerceGroundingContextBlock({
+        prisma: this.prisma,
+        organizationId: bot.organizationId,
+        aiConfig: bot.aiConfig as Record<string, unknown>,
+        userText: userText.trim(),
+      }),
+      this.customerIdentity.getAgentContextBlock(conversation).catch(() => null), // Customer hub read loop
+    ]);
     const effectiveCustomerContext = [
       customerContext,
+      customerProfileBlock,
       commerceGrounding,
       await this.cannedResponses.buildPromptBlock(bot.organizationId),
     ].filter(Boolean).join('\n\n') || null;

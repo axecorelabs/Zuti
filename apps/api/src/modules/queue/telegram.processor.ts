@@ -1003,12 +1003,14 @@ export class TelegramProcessor {
       ),
     ].filter(Boolean).join('\n\n');
 
-    const [commerceGrounding, registrationContext] = await Promise.all([
+    const [commerceGrounding, registrationContext, customerProfileBlock] = await Promise.all([
       buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId, aiConfig, userText }),
       buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId }),
+      this.customerIdentity.getAgentContextBlock(latestConversation).catch(() => null), // Customer hub read loop
     ]);
     const effectiveCustomerContext = [
       customerContext,
+      customerProfileBlock,
       commerceGrounding,
       registrationContext,
       await this.cannedResponses.buildPromptBlock(organizationId),

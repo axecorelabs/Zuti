@@ -822,12 +822,14 @@ export class WhatsAppProcessor {
       data: { metadata: mergedMetadataPatch as Prisma.InputJsonValue },
     }).catch(() => null);
 
-    const [commerceGrounding, registrationContext] = await Promise.all([
+    const [commerceGrounding, registrationContext, customerProfileBlock] = await Promise.all([
       buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId: bot.id, aiConfig, userText }),
       buildRegistrationContextBlock({ prisma: this.prisma, botId: bot.id, orgId: organizationId }),
+      this.customerIdentity.getAgentContextBlock({ id: conversationId, organizationId, channel: 'WHATSAPP' }).catch(() => null), // Customer hub read loop
     ]);
     const effectiveCustomerContext = [
       aiContext.customerContext,
+      customerProfileBlock,
       commerceGrounding,
       registrationContext,
       await this.cannedResponses.buildPromptBlock(organizationId),
