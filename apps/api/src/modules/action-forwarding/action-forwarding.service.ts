@@ -10,6 +10,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RegistrationsService } from '../registrations/registrations.service';
 import { CustomerIdentityService } from '../customers/customer-identity.service';
+import { OrganizationsService } from '../organizations/organizations.service';
+import { TeamChatService } from '../team-chat/team-chat.service';
+import { EventsGateway } from '../events/events.gateway';
 import { ACTION_FORWARDING_QUEUE } from '../queue/queue.module';
 import {
   ActionClaimLevel,
@@ -494,8 +497,72 @@ export class ActionForwardingService {
     private readonly notifications: NotificationsService,
     private readonly registrationsService: RegistrationsService,
     private readonly customerIdentity: CustomerIdentityService,
+    private readonly orgs: OrganizationsService,
+    private readonly teamChat: TeamChatService,
+    private readonly events: EventsGateway,
     @InjectQueue(ACTION_FORWARDING_QUEUE) private readonly queue: Queue,
   ) {}
+
+  /**
+   * Explicit "get me a human" handoff (the escalate_to_human tool). Unlike the other action tools
+   * (which capture a task and notify contacts), this hands the LIVE conversation to an available
+   * in-system agent — mirroring the automatic should_escalate analysis so both routes end up in the
+   * same place: an agent's inbox. Idempotent when already escalated. Falls back to the contact-notify
+   * action pipeline only when NO agent is available, so "I need a person" is never silently dropped.
+   */
+  async escalateToHumanFromAgent(params: {
+    orgId: string; conversationId: string; botId?: string; channel: string; args: Record<string, unknown>;
+  }): Promise<{ outcome: string; message: string }> {
+    const { orgId, conversationId, args } = params;
+    const conv = await this.prisma.conversation.findFirst({
+      where: { id: conversationId, organizationId: orgId },
+      include: { bot: { select: { routeToRoles: true } } },
+    });
+    if (!conv) return { outcome: 'ERROR', message: 'No conversation to escalate.' };
+
+    // Already with a human (analysis or a prior call beat us here) → no-op, just reassure.
+    if (conv.status === 'ESCALATED' || conv.mode === 'HUMAN') {
+      return { outcome: 'ESCALATED', message: 'This conversation is already with a human agent — reassure the customer that a team member will respond, and do not keep trying to resolve it yourself.' };
+    }
+
+    const reason = typeof args.reason === 'string' ? args.reason : undefined;
+    const summary = typeof args.summary === 'string' ? args.summary : undefined;
+    const topic = summary || reason || undefined;
+    const routeToRoles = Array.isArray((conv.bot as any)?.routeToRoles) && (conv.bot as any).routeToRoles.length
+      ? (conv.bot as any).routeToRoles as string[]
+      : ['AGENT'];
+
+    const bestAgent = await this.orgs.findBestAgent(orgId, topic, routeToRoles);
+
+    // No agent available/online → fall back to notifying the team's escalation contacts.
+    if (!bestAgent) {
+      await this.executeActionTool({ toolName: 'escalate_to_human', orgId, botId: params.botId ?? '', conversationId, channel: params.channel as any, args }).catch(() => null);
+      return { outcome: 'ESCALATED', message: 'No agent is available right now, so the team has been notified to follow up. Tell the customer a team member will get back to them — do not promise an immediate human reply.' };
+    }
+
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { status: 'ESCALATED', mode: 'HUMAN', assignedAgentId: bestAgent.userId },
+    });
+    this.events.emitConversationUpdate(orgId, { conversationId, status: 'ESCALATED', mode: 'HUMAN', assignedAgentId: bestAgent.userId });
+
+    const lastUser = await this.prisma.message.findFirst({
+      where: { conversationId, role: 'USER' }, orderBy: { createdAt: 'desc' }, select: { content: true },
+    });
+    await this.teamChat.ensureKnowledgeGapThread(orgId, {
+      conversationId,
+      question: topic || lastUser?.content || 'A customer asked to speak with a human.',
+      topic,
+      assignedUserId: bestAgent.userId,
+      senderId: bestAgent.userId, // system/AI-triggered handoff — no human sender, attribute to the assignee
+    }).catch(() => null);
+    await this.notifications.createUserNotification(
+      orgId, bestAgent.userId, 'conversation_assigned', 'New conversation assigned to you',
+      `A${topic ? ` ${topic}` : ''} support conversation has been routed to you.`, { conversationId, topic },
+    ).catch(() => null);
+
+    return { outcome: 'ESCALATED', message: `Handed off to a human agent — tell the customer a team member (${bestAgent.name}) will take over shortly, and stop trying to resolve it yourself.` };
+  }
 
   resolveRoute(input: ResolveRouteInput): ResolveRouteResult {
     const activeEndpoints = new Map<string, ContactEndpointConfig>();

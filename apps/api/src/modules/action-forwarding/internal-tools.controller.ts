@@ -161,6 +161,19 @@ export class InternalToolsController {
       return { outcome: 'ERROR', message: 'Missing conversation id.' };
     }
 
+    // Escalation is a LIVE handoff, not a task: route the explicit tool through the same agent-
+    // assignment path as the automatic should_escalate analysis (with a contact-notify fallback when
+    // no agent is available) — instead of the action-forwarding task pipeline the other tools use.
+    if (toolName === 'escalate_to_human') {
+      return this.actionForwarding.escalateToHumanFromAgent({
+        orgId: body.orgId,
+        conversationId: body.conversationId,
+        botId: body.botId,
+        channel,
+        args,
+      });
+    }
+
     return this.actionForwarding.executeActionTool({
       toolName,
       orgId: body.orgId,
