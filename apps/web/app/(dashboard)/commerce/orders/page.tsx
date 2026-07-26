@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from 'react';
 import { commerceApi, orgApi, resolveOrgId } from '@/lib/api';
+import { useCanManage } from '@/lib/use-role';
 import CustomSelect from '@/components/custom-select';
 import {
   Ban,
@@ -64,6 +65,7 @@ const defaultPaymentState = (): PaymentState => ({
 });
 
 export default function OrdersPage() {
+  const canManage = useCanManage(); // AGENTs can take/view orders; fulfillment is OWNER/ADMIN
   const [orgId, setOrgId] = useState<string | null>(null);
   const [stores, setStores] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -447,6 +449,9 @@ export default function OrdersPage() {
                       {isPaid && !isCancelled && (
                         <div className="border-t border-zinc-800 pt-3">
                           <p className="text-[11px] uppercase tracking-wide text-zinc-600 mb-2">Fulfillment</p>
+                          {!canManage ? (
+                            <p className="text-xs text-zinc-400">{fulfillment === 'UNFULFILLED' ? 'Not yet fulfilled' : FULFILLMENT_LABEL[fulfillment]}</p>
+                          ) : (
                           <div className="flex flex-wrap gap-2">
                             {FULFILLMENT_STAGES.map((stage) => {
                               const active = fulfillment === stage;
@@ -469,6 +474,7 @@ export default function OrdersPage() {
                               );
                             })}
                           </div>
+                          )}
                           {fulfillment === 'DELIVERED' && (
                             <p className="mt-2 text-xs text-emerald-400 flex items-center gap-1.5">
                               <CheckCircle2 className="w-3.5 h-3.5" /> Order fulfilled.

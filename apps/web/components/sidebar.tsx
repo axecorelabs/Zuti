@@ -82,9 +82,11 @@ const orgNavItems = [
   { label: 'Team', href: '/team', icon: Users, agentVisible: true },
   { label: 'Analytics', href: '/analytics', icon: BarChart2, agentVisible: false },
   {
+    // Visible to AGENTs too: they get the operational view (check-in, take/look-up orders, browse
+    // catalog & attendees). Management controls inside each page are role-gated (OWNER/ADMIN).
     label: 'Add-ons',
     icon: Package,
-    agentVisible: false,
+    agentVisible: true,
     children: [
       { label: 'Events', href: '/events', icon: CalendarDays },
       { label: 'Commerce', href: '/commerce', icon: ShoppingCart },

@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { commerceApi, orgApi, resolveOrgId } from '@/lib/api';
+import { useCanManage } from '@/lib/use-role';
 import CustomSelect from '@/components/custom-select';
 import SearchableSelect from '@/components/searchable-select';
 import {
@@ -24,6 +25,7 @@ function toLocationCode(name: string): string {
 }
 
 export default function StoresPage() {
+  const canManage = useCanManage(); // AGENTs view stores/locations/payout status; managing is OWNER/ADMIN
   const [orgId, setOrgId] = useState<string | null>(null);
   const [stores, setStores] = useState<any[]>([]);
   const [loadingStores, setLoadingStores] = useState(true);
@@ -445,10 +447,12 @@ export default function StoresPage() {
           <h1 className="font-brand font-semibold text-2xl tracking-tight text-white">Stores</h1>
           <p className="mt-1 text-sm text-zinc-500 font-light">Manage stores, locations, and payment routing.</p>
         </div>
+        {canManage && (
         <button type="button" className="btn-primary flex items-center gap-2" onClick={openCreateModal}>
           <Plus className="w-4 h-4" />
           New store
         </button>
+        )}
       </div>
 
       <section className="card p-5">
@@ -521,7 +525,7 @@ export default function StoresPage() {
                         </div>
                       )}
 
-                      {addLocStoreId === store.id ? (
+                      {canManage && (addLocStoreId === store.id ? (
                         <form onSubmit={(e) => addLocation(e, store.id)} className="space-y-2">
                           <p className="text-xs text-zinc-400">New location</p>
                           <input className="input-base" placeholder="Location name (e.g. Abuja Hub)" value={addLocName} onChange={(e) => setAddLocName(e.target.value)} required />
@@ -538,7 +542,7 @@ export default function StoresPage() {
                         <button type="button" className="btn-ghost text-xs flex items-center gap-1.5 px-2 py-1" onClick={() => setAddLocStoreId(store.id)}>
                           <Plus className="w-3 h-3" /> Add location
                         </button>
-                      )}
+                      ))}
 
                       <div className="rounded-xl border border-zinc-800 p-3 space-y-1.5">
                         <div className="flex items-center gap-2">
@@ -556,6 +560,7 @@ export default function StoresPage() {
                         )}
                       </div>
 
+                      {canManage && (
                       <div className="border-t border-zinc-800 pt-3">
                         {isDeleteConfirm ? (
                           <div className="flex items-center justify-between">
@@ -578,6 +583,7 @@ export default function StoresPage() {
                           </button>
                         )}
                       </div>
+                      )}
                     </div>
                   )}
                 </div>

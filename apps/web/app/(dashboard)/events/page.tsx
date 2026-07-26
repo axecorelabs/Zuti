@@ -15,6 +15,7 @@ import {
 import toast from 'react-hot-toast';
 import { registrationsApi, botsApi, commerceApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
+import { useCanManage } from '@/lib/use-role';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1228,6 +1229,7 @@ function EventSettingsTab({ orgId, bots, product, onSaved, onDeleted }: EventSet
 
 export default function EventsPage() {
   const { activeOrgId } = useAuthStore();
+  const canManage = useCanManage(); // OWNER/ADMIN manage; AGENTs get view + check-in only
   const [products, setProducts] = useState<RegistrationProduct[]>([]);
   const [bots, setBots] = useState<BotOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1381,15 +1383,17 @@ export default function EventsPage() {
               <button onClick={loadProducts} className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors">
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
-              <button
-                onClick={() => setShowModal(true)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" /> New event
-              </button>
+              {canManage && (
+                <button
+                  onClick={() => setShowModal(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" /> New event
+                </button>
+              )}
             </div>
           </div>
-          <p className="text-xs text-zinc-500">Manage registration events and view sign-ups</p>
+          <p className="text-xs text-zinc-500">{canManage ? 'Manage registration events and view sign-ups' : 'View events, attendees and run check-in'}</p>
         </div>
 
         {/* List */}
@@ -1417,13 +1421,15 @@ export default function EventsPage() {
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <CalendarDays className="w-10 h-10 text-zinc-700 mb-3" />
               <p className="text-sm font-medium text-zinc-400">No events yet</p>
-              <p className="text-xs text-zinc-600 mt-1">Create your first event to start taking registrations</p>
-              <button
-                onClick={() => setShowModal(true)}
-                className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" /> Create event
-              </button>
+              <p className="text-xs text-zinc-600 mt-1">{canManage ? 'Create your first event to start taking registrations' : 'No events have been set up yet'}</p>
+              {canManage && (
+                <button
+                  onClick={() => setShowModal(true)}
+                  className="mt-4 flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Create event
+                </button>
+              )}
             </div>
           ) : (
             products.map((p) => (
@@ -1511,14 +1517,16 @@ export default function EventsPage() {
                 >
                   <ScanLine className="w-3.5 h-3.5" /> Check-in
                 </button>
-                <button
-                  onClick={() => setDetailTab('settings')}
-                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                    detailTab === 'settings' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-                >
-                  Settings
-                </button>
+                {canManage && (
+                  <button
+                    onClick={() => setDetailTab('settings')}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                      detailTab === 'settings' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                  >
+                    Settings
+                  </button>
+                )}
               </div>
               {detailTab === 'registrants' && (
                 <>
@@ -1550,7 +1558,7 @@ export default function EventsPage() {
 
           {/* Panel body */}
           <div className="flex-1 overflow-auto p-5">
-            {detailTab === 'settings' ? (
+            {detailTab === 'settings' && canManage ? (
               <EventSettingsTab
                 orgId={orgId}
                 bots={bots}

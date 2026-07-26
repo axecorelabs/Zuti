@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { commerceApi, orgApi, resolveOrgId } from '@/lib/api';
+import { useCanManage } from '@/lib/use-role';
 import CustomSelect from '@/components/custom-select';
 import SearchableSelect from '@/components/searchable-select';
 import {
@@ -99,6 +100,7 @@ function formatTags(tags: string[]) {
 }
 
 export default function CatalogPage() {
+  const canManage = useCanManage(); // AGENTs browse the catalog; create/edit is OWNER/ADMIN
   const [orgId, setOrgId] = useState<string | null>(null);
   const [stores, setStores] = useState<any[]>([]);
   const [products, setProducts] = useState<any[]>([]);
@@ -1004,7 +1006,7 @@ export default function CatalogPage() {
             <input className="input-base !py-2" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search title, SKU, category" />
             <button className="btn-secondary" type="submit">Search</button>
           </form>
-          {stores.length > 0 && (
+          {stores.length > 0 && canManage && (
             <button type="button" className="btn-primary flex items-center gap-2 shrink-0" onClick={openCreate}>
               <Plus className="w-4 h-4" /> New product
             </button>
@@ -1071,6 +1073,7 @@ export default function CatalogPage() {
                       )}
                     </div>
                   </div>
+                  {canManage && (
                   <button
                     type="button"
                     className="btn-ghost text-xs flex items-center gap-1.5 px-3 py-2 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
@@ -1078,6 +1081,7 @@ export default function CatalogPage() {
                   >
                     <Pencil className="w-3.5 h-3.5" /> Edit
                   </button>
+                  )}
                 </div>
               ))}
             </div>
