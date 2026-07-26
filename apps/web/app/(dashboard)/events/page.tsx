@@ -1240,8 +1240,15 @@ export default function EventsPage() {
   const [showModal, setShowModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [updatingEntry, setUpdatingEntry] = useState<string | null>(null);
+  const [attendeeSearch, setAttendeeSearch] = useState('');
 
   const orgId = activeOrgId ?? '';
+
+  // Attendee search (registrants tab) — filter by name, email, or ticket type.
+  const attendeeQuery = attendeeSearch.trim().toLowerCase();
+  const filteredEntries = attendeeQuery
+    ? entries.filter((e) => [e.customerName, e.customerEmail, e.ticketType?.name].some((v) => (v ?? '').toLowerCase().includes(attendeeQuery)))
+    : entries;
 
   const loadProducts = useCallback(async () => {
     if (!orgId) return;
@@ -1608,7 +1615,18 @@ export default function EventsPage() {
               <div className="space-y-6">
                 <EventStats product={selectedProduct} entries={entries} />
                 <div>
-                  <p className="text-xs font-medium text-zinc-500 mb-2">Attendees</p>
+                  <div className="flex items-center justify-between gap-3 mb-2">
+                    <p className="text-xs font-medium text-zinc-500">Attendees{attendeeQuery ? ` · ${filteredEntries.length} of ${entries.length}` : ''}</p>
+                    <div className="relative w-56 max-w-[50%]">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+                      <input
+                        value={attendeeSearch}
+                        onChange={(e) => setAttendeeSearch(e.target.value)}
+                        placeholder="Search name, email, tier…"
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-lg pl-8 pr-2 py-1.5 text-xs text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600"
+                      />
+                    </div>
+                  </div>
                   <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -1627,7 +1645,10 @@ export default function EventsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/50">
-                    {entries.map((entry) => (
+                    {filteredEntries.length === 0 && (
+                      <tr><td colSpan={99} className="py-8 text-center text-xs text-zinc-600">No attendees match “{attendeeSearch}”.</td></tr>
+                    )}
+                    {filteredEntries.map((entry) => (
                       <tr key={entry.id} className="hover:bg-zinc-900/40 transition-colors">
                         <td className="py-3 px-3 text-zinc-300 font-medium">{entry.customerName ?? '—'}</td>
                         <td className="py-3 px-3 text-zinc-400">{entry.customerEmail ?? '—'}</td>
