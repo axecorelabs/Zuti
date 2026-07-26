@@ -765,7 +765,15 @@ class LlmService:
                 "the details THEY give you (product name, date, quantity, etc.) and call the tool. You do "
                 "NOT need to look up or verify those details in the knowledge base first — the team "
                 "validates them. Do not refuse or stall an action just because its details aren't in the "
-                "knowledge base."
+                "knowledge base.\n"
+                "CRITICAL — CONTACT DETAILS: a customer's email, phone, and name for an action must come "
+                "from what THEY explicitly tell you in this conversation. NEVER invent, guess, or "
+                "construct them — do not turn a name like 'Dotun Olaiya' into 'dotun.olaiya@example.com', "
+                "and do not reuse a name/email from their profile or context as if they gave it. If you "
+                "already have a value on file, ASK them to confirm it before using it; otherwise ASK for "
+                "it. If you don't have a real email the customer gave you, you do NOT have enough to "
+                "register/order — ask for it first. A fabricated email sends their ticket or receipt "
+                "into the void."
             )
         if "remember_about_customer" in tool_names:
             tool_guidance += (

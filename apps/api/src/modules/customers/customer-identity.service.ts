@@ -133,7 +133,7 @@ export class CustomerIdentityService {
     const hasCrm = (c.tags?.length ?? 0) > 0 || !!c.notes || c.lifecycleStage !== 'LEAD';
     if (!returning && !hasCrm && !hasActivity) return null; // nothing useful yet → no block
 
-    const lines = ['KNOWN CUSTOMER — internal profile to personalize your reply. Use it naturally; never read it out verbatim or claim to have looked them up.'];
+    const lines = ['KNOWN CUSTOMER — background context to personalize your tone (you may greet them by name). It is NOT a source of action details: for any registration, order, or booking you MUST still get the customer to provide or confirm their name, email, and required fields IN THIS conversation. Never assume, infer, construct, invent, or reuse a profile value they did not give you here. Do not read this profile out verbatim or claim you looked them up.'];
     lines.push(`- Name: ${c.displayName ?? 'unknown'}${c.primaryEmail ? ` (${c.primaryEmail})` : ''}`);
     lines.push(`- Relationship: ${c.lifecycleStage.toLowerCase()}${returning ? ` · ${priorConversations} prior conversation${priorConversations === 1 ? '' : 's'}` : ''} · first seen ${c.firstSeenAt.toISOString().slice(0, 10)}`);
     if (hasActivity) {
