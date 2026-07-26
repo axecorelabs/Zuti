@@ -392,7 +392,7 @@ function CustomerProfilePanel({ orgId, customerId, onClose, onChanged, onDeleted
           ) : (
             <div className="space-y-1.5">
               {p.conversations.map((c) => { const M = ID_META[(c.channel + '_CHAT') as IdType] ?? ID_META.EMAIL; return (
-                <Link key={c.id} href={`/inbox?conversation=${c.id}`} className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 hover:bg-zinc-900 transition-colors">
+                <Link key={c.id} href={`/inbox?org=${orgId}&conversationId=${c.id}`} className="flex items-center gap-3 rounded-lg border border-zinc-800 bg-zinc-900/40 px-3 py-2 hover:bg-zinc-900 transition-colors">
                   <MessageSquare className="w-3.5 h-3.5 text-zinc-500 shrink-0" />
                   <span className="text-xs text-zinc-400 w-20 shrink-0 capitalize">{c.channel.toLowerCase()}</span>
                   <span className="text-xs text-zinc-500 flex-1">{c.status}</span>
