@@ -7,6 +7,7 @@ import { ActionForwardingService } from './action-forwarding.service';
 import { RegistrationsService } from '../registrations/registrations.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { CommerceService } from '../commerce/commerce.service';
+import { CustomersService } from '../customers/customers.service';
 import type { RuntimeChannel } from './action-forwarding.types';
 
 interface ExecuteToolBody {
@@ -36,6 +37,7 @@ export class InternalToolsController {
     private readonly registrations: RegistrationsService,
     private readonly teamChat: TeamChatService,
     private readonly commerce: CommerceService,
+    private readonly customers: CustomersService,
     private readonly config: ConfigService,
   ) {}
 
@@ -105,6 +107,25 @@ export class InternalToolsController {
         customerEmail: typeof args.customer_email === 'string' ? args.customer_email : undefined,
         fields: args.fields && typeof args.fields === 'object' ? (args.fields as Record<string, string>) : undefined,
       });
+    }
+
+    // Customer hub write loop: the agent records durable facts about THIS conversation's customer.
+    // Server-gated to enrichment fields only (note/tags/name-if-empty); contact details, consent,
+    // identity anchors, and merge are structurally unreachable from here.
+    if (toolName === 'remember_about_customer') {
+      if (!body.conversationId) return { outcome: 'ERROR', message: 'No conversation context.' };
+      try {
+        const res = await this.customers.enrichFromAgent(body.orgId, body.conversationId, {
+          note: typeof args.note === 'string' ? args.note : undefined,
+          tags: Array.isArray(args.tags) ? (args.tags as unknown[]).filter((t): t is string => typeof t === 'string') : undefined,
+          name: typeof args.name === 'string' ? args.name : undefined,
+        });
+        return res.ok
+          ? { outcome: 'SAVED', message: "Noted on the customer's profile." }
+          : { outcome: 'SKIPPED', message: 'Nothing was saved (no customer resolved for this conversation).' };
+      } catch {
+        return { outcome: 'ERROR', message: 'Could not update the customer profile.' };
+      }
     }
 
     // Product search: return the bot's store catalog (products, variant_ids, prices, stock) for the

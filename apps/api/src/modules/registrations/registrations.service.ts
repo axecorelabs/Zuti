@@ -8,6 +8,7 @@ import { randomBytes } from 'crypto';
 import * as QRCode from 'qrcode';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto, PublicCartDto } from './dto/registrations.dto';
@@ -35,8 +36,19 @@ export class RegistrationsService {
     private readonly config: ConfigService,
     private readonly http: HttpService,
     private readonly events: EventsGateway,
+    private readonly customerIdentity: CustomerIdentityService,
     @InjectQueue(RECEIPTS_QUEUE) private readonly receiptsQueue: Queue,
   ) {}
+
+  /** Fire-and-forget: link created registration entries to the buyer's Customer (conversation-anchored;
+   *  attendee-safe — never resolves a customer from an attendee's typed email). */
+  private linkEntriesToCustomer(orgId: string, entryIds: string[], conversationId?: string | null) {
+    if (!conversationId || entryIds.length === 0) return;
+    this.customerIdentity
+      .resolveForTransaction(orgId, { conversationId, allowEmailAnchor: false, seenAt: new Date() })
+      .then((cid) => (cid ? this.prisma.registrationEntry.updateMany({ where: { id: { in: entryIds } }, data: { customerId: cid } }) : null))
+      .catch(() => null);
+  }
 
   // ── Products ──────────────────────────────────────────────────────────────
 
@@ -415,6 +427,7 @@ export class RegistrationsService {
       await this.enqueueRegistrationReceipt(result.entry.id, data.orgId);
     }
 
+    if (result.outcome === 'CREATED') this.linkEntriesToCustomer(data.orgId, [result.entry.id], data.conversationId);
     return result;
   }
 
@@ -701,6 +714,7 @@ export class RegistrationsService {
     if (!reserve.ok) {
       return { outcome: 'AT_CAPACITY', spotsLeft: reserve.spotsLeft, message: reserve.spotsLeft > 0 ? `Only ${reserve.spotsLeft} spot(s) left — fewer than requested.` : `${product.name} is fully booked.` };
     }
+    this.linkEntriesToCustomer(params.orgId, reserve.ids, params.conversationId); // buyer's conversation → Customer
 
     const appUrl = this.getPublicAppUrl();
     const ticketsOut = reserve.ids.map((id, i) => ({ entryId: id, ticketUrl: `${appUrl}/ticket/${id}`, attendeeName: tickets[i].name, ticketType: tickets[i].tierName }));

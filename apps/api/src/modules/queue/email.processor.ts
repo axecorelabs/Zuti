@@ -31,6 +31,7 @@ import {
 } from '../../common/utils/operational-integrity';
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
 import { buildRegistrationContextBlock } from '../../common/utils/registration-grounding';
@@ -164,6 +165,7 @@ export class EmailProcessor {
     private readonly billing: BillingService,
     private readonly activity: ActivityService,
     private readonly actionForwarding: ActionForwardingService,
+    private readonly customerIdentity: CustomerIdentityService,
   ) {}
 
   @Process()
@@ -245,6 +247,13 @@ export class EmailProcessor {
         where: { id: existing.id },
         data: { lastMessageAt: new Date(), customerName: fromName || existing.customerName },
       });
+    }
+
+    // Customer hub: link this conversation to its unified person (fire-and-forget, off the reply path).
+    if (!conversation.customerId) {
+      this.customerIdentity
+        .linkConversation(conversation)
+        .catch((e) => this.logger.warn(`Customer link failed for conversation ${conversation.id}: ${e?.message ?? e}`));
     }
 
     // Store user message
@@ -741,12 +750,14 @@ export class EmailProcessor {
       },
     }).catch(() => null);
 
-    const [commerceGrounding, registrationContext] = await Promise.all([
+    const [commerceGrounding, registrationContext, customerProfileBlock] = await Promise.all([
       buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId, aiConfig, userText }),
       buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId }),
+      this.customerIdentity.getAgentContextBlock({ id: conversation.id, organizationId, channel: 'EMAIL' }).catch(() => null), // Customer hub read loop
     ]);
     const effectiveCustomerContext = [
       customerContext,
+      customerProfileBlock,
       commerceGrounding,
       registrationContext,
       await this.cannedResponses.buildPromptBlock(organizationId),

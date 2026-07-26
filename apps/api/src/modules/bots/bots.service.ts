@@ -31,6 +31,7 @@ import {
 import { ActivityAction, ActivityService } from '../activity/activity.service';
 import { OrganizationsService } from '../organizations/organizations.service';
 import { ActionForwardingService, ActionForwardingResult } from '../action-forwarding/action-forwarding.service';
+import { CustomerIdentityService } from '../customers/customer-identity.service';
 import { extractWhatsAppConfig, prepareWhatsAppConfigForStorage } from '../../common/utils/whatsapp';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
@@ -508,6 +509,7 @@ export class BotsService {
     private readonly activity: ActivityService,
     private readonly orgs: OrganizationsService,
     private readonly actionForwarding: ActionForwardingService,
+    private readonly customerIdentity: CustomerIdentityService,
   ) {}
 
   private async hasForwardingRouteConfiguration(organizationId: string, botId?: string): Promise<boolean> {
@@ -1669,6 +1671,13 @@ export class BotsService {
       });
     }
 
+    // Customer hub: link this conversation to its unified person (fire-and-forget, off the reply path).
+    if (!conversation.customerId) {
+      this.customerIdentity
+        .linkConversation(conversation)
+        .catch((e) => this.logger.warn(`Customer link failed for conversation ${conversation.id}: ${e?.message ?? e}`));
+    }
+
     // Store user message
     const userMessage = await this.prisma.message.create({
       data: {
@@ -1939,14 +1948,18 @@ export class BotsService {
       };
     }
 
-    const commerceGrounding = await buildCommerceGroundingContextBlock({
-      prisma: this.prisma,
-      organizationId: bot.organizationId,
-      aiConfig: bot.aiConfig as Record<string, unknown>,
-      userText: userText.trim(),
-    });
+    const [commerceGrounding, customerProfileBlock] = await Promise.all([
+      buildCommerceGroundingContextBlock({
+        prisma: this.prisma,
+        organizationId: bot.organizationId,
+        aiConfig: bot.aiConfig as Record<string, unknown>,
+        userText: userText.trim(),
+      }),
+      this.customerIdentity.getAgentContextBlock(conversation).catch(() => null), // Customer hub read loop
+    ]);
     const effectiveCustomerContext = [
       customerContext,
+      customerProfileBlock,
       commerceGrounding,
       await this.cannedResponses.buildPromptBlock(bot.organizationId),
     ].filter(Boolean).join('\n\n') || null;
