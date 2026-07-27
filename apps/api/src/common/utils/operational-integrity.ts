@@ -148,6 +148,12 @@ function describeForwardingReason(reason: ForwardingTruthReason): string {
   }
 }
 
+// Capability-block reasons come from the LEGACY keyword/AI classifier. In agentic mode capability is
+// expressed by which tools are enabled (a disabled action is simply not in the toolset), so this
+// verdict must NOT leak into the prompt — otherwise the model refuses a request an enabled tool can
+// actually handle (e.g. "buy a ticket" → routes to a disabled Sales workflow instead of registration).
+const CAPABILITY_BLOCK_REASONS = new Set(['SKILL_NOT_ENABLED', 'FORWARDING_DISABLED', 'CHANNEL_NOT_ALLOWED', 'EXECUTOR_DISABLED']);
+
 export function buildOperationalIntegrityPromptBlock(
   status: ForwardingTruthStatus = 'UNKNOWN',
   reason: ForwardingTruthReason = 'UNKNOWN',
@@ -156,18 +162,22 @@ export function buildOperationalIntegrityPromptBlock(
   actionTaskId?: string,
   claimLevel?: string,
   deliveryStatus?: string,
+  agentic = false,
 ): string {
+  // In agentic mode, neutralize the legacy classifier's capability-block verdict (see above).
+  const effectiveReason = agentic && CAPABILITY_BLOCK_REASONS.has(reason as string) ? ('UNKNOWN' as ForwardingTruthReason) : reason;
+  const effectiveBlocked = agentic ? undefined : blockedCapability;
   const missingFieldText = missingFields.length > 0
     ? `- Missing data for forwarding: ${missingFields.join(', ')}.`
     : null;
   return [
     'Operational integrity rules:',
     `- Forwarding truth for this turn: ${describeForwardingStatus(status)}`,
-    `- Forwarding reason for this turn: ${describeForwardingReason(reason)}`,
+    `- Forwarding reason for this turn: ${describeForwardingReason(effectiveReason)}`,
     claimLevel ? `- Claim level for this turn: ${claimLevel}.` : null,
     deliveryStatus ? `- Delivery status for this turn: ${deliveryStatus}.` : null,
     actionTaskId ? `- Verified action task id for this turn: ${actionTaskId}.` : '- Verified action task id for this turn: none.',
-    blockedCapability ? `- Blocked capability for this turn: ${blockedCapability}.` : null,
+    effectiveBlocked ? `- Blocked capability for this turn: ${effectiveBlocked}.` : null,
     missingFieldText,
     '- Never claim a booking, escalation, forwarding, or owner/team notification is completed unless the system confirms completion.',
     '- You may only state that a follow-up request was logged when forwarding truth for this turn is queued or duplicate.',

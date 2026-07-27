@@ -28,6 +28,9 @@ REGISTER_FOR_EVENT_TOOL = {
         "name": "register_for_event",
         "description": (
             "Register the customer for one of the events in the available registrations context. "
+            "A ticket, pass, or spot for an event listed there is ALWAYS handled by this tool — use it "
+            "whenever the customer wants one, no matter the verb (register, sign up, buy, get, purchase, "
+            "order, reserve). A ticket is never a sales order. "
             "ALWAYS ask how many tickets they want before registering — do not assume 1. "
             "Call this ONLY once you have the customer's full name, email, and every required field "
             "for the chosen event. It performs the real registration (capacity, dedup, payment) and "
@@ -139,11 +142,15 @@ CREATE_SALES_ORDER_TOOL = {
     "function": {
         "name": "create_sales_order",
         "description": (
-            "Submit a sales order / purchase request. Call this when the customer clearly intends to buy "
-            "AND you have their name, email, and which product. Always pass `product` (the product name). "
-            "For a store item the price is taken from the catalog automatically — do NOT type it; include "
-            "`variant_id` too if you have one from search_products. If the item isn't found, the tool will "
-            "tell you to search_products. Do not claim an order is placed unless it returns SUBMITTED."
+            "Submit a sales order / purchase request for a STORE / CATALOG product (physical or digital "
+            "goods). Call this when the customer clearly intends to buy such a product AND you have their "
+            "name, email, and which product. Always pass `product` (the product name). For a store item "
+            "the price is taken from the catalog automatically — do NOT type it; include `variant_id` too "
+            "if you have one from search_products. If the item isn't found, the tool will tell you to "
+            "search_products. Do not claim an order is placed unless it returns SUBMITTED. "
+            "IMPORTANT: this is NOT for event tickets, passes, or spots — a ticket for an event listed in "
+            "your registration context is a REGISTRATION; use register_for_event for it, even if the "
+            "customer says 'buy' or 'order'. Route by WHAT they want, not the verb they use."
         ),
         "parameters": {
             "type": "object",
@@ -776,7 +783,13 @@ class LlmService:
                 "already have a value on file, ASK them to confirm it before using it; otherwise ASK for "
                 "it. If you don't have a real email the customer gave you, you do NOT have enough to "
                 "register/order — ask for it first. A fabricated email sends their ticket or receipt "
-                "into the void."
+                "into the void.\n"
+                "ROUTE BY WHAT THEY WANT, NOT THE VERB: pick the tool from the OBJECT of the request, not "
+                "the word the customer used. A ticket/pass/spot for an event → register_for_event; a "
+                "store/catalog product → create_sales_order; a meeting → book_meeting. 'Buy a ticket', "
+                "'get a ticket', 'register for the event' are the SAME request → register_for_event. Only "
+                "decline a request as unavailable when NO tool you have can do it — never because of the "
+                "verb alone."
             )
         if "remember_about_customer" in tool_names:
             tool_guidance += (

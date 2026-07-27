@@ -800,6 +800,7 @@ export class WhatsAppProcessor {
         forwardingResult.actionTaskId,
         forwardingResult.claimLevel,
         forwardingResult.deliveryStatus,
+        isAgenticEnabled(this.config), // agentic: don't leak the legacy capability-block verdict
       ),
     ].filter(Boolean).join('\n\n');
 
