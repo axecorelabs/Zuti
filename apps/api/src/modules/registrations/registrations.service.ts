@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, InternalServerErrorException } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { ConfigService } from '@nestjs/config';
@@ -56,6 +56,11 @@ export class RegistrationsService {
     if (dto.botId) {
       const bot = await this.prisma.bot.findFirst({ where: { id: dto.botId, organizationId: orgId }, select: { id: true } });
       if (!bot) throw new NotFoundException('Bot not found');
+    }
+    // Gate: a paid event can't go public until the org can actually receive the money.
+    const createPaid = (!dto.isFree && (dto.priceMinor ?? 0) > 0) || (dto.ticketTypes?.some((t) => (t.priceMinor ?? 0) > 0) ?? false);
+    if (dto.isPublic && createPaid && !(await this.orgHasPayout(orgId))) {
+      throw new ForbiddenException(this.PAYOUT_GATE_MSG);
     }
     // A public event needs a shareable slug; generate one from the name if none was supplied.
     const slug = dto.slug?.trim()
@@ -147,6 +152,14 @@ export class RegistrationsService {
   async updateProduct(orgId: string, productId: string, dto: UpdateRegistrationProductDto) {
     const existing = await this.prisma.registrationProduct.findFirst({ where: { id: productId, orgId } });
     if (!existing) throw new NotFoundException('Registration product not found');
+    // Gate: publishing a PAID event (single price or any paid tier) requires a connected payout account.
+    if (dto.isPublic === true && !existing.isPublic) {
+      const willBeFree = dto.isFree ?? existing.isFree;
+      const price = dto.priceMinor ?? existing.priceMinor;
+      const paidTiers = await this.prisma.registrationTicketType.count({ where: { productId, isActive: true, priceMinor: { gt: 0 } } });
+      const isPaid = (!willBeFree && (price ?? 0) > 0) || paidTiers > 0;
+      if (isPaid && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
+    }
     if (dto.botId !== undefined && dto.botId) {
       const bot = await this.prisma.bot.findFirst({ where: { id: dto.botId, organizationId: orgId }, select: { id: true } });
       if (!bot) throw new NotFoundException('Bot not found');
@@ -739,11 +752,26 @@ export class RegistrationsService {
   }
 
   /** Initialize ONE Paystack payment covering a whole cart (group of ticket entries). */
+  /** The org's Paystack subaccount, so ticket money settles to the ORG (split), not Zuti's account.
+   * Null when the org hasn't connected a payout account — the charge then falls back to the platform
+   * (legacy behavior; publishing a paid event is gated on having one, so this is an edge case). */
+  private async getOrgSubaccount(orgId: string): Promise<string | null> {
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { paystackSubaccountCode: true } });
+    return org?.paystackSubaccountCode ?? null;
+  }
+
+  private async orgHasPayout(orgId: string): Promise<boolean> {
+    return !!(await this.getOrgSubaccount(orgId));
+  }
+
+  private readonly PAYOUT_GATE_MSG = 'Connect a payout account (Billing → Payouts) before publishing a paid event, so ticket money reaches your bank.';
+
   private async initializeGroupPayment(groupId: string, email: string, totalMinor: number, currency: string, orgId: string): Promise<{ paymentUrl: string; reference: string; accessCode: string }> {
     const paystackSecret = this.config.get<string>('PAYSTACK_SECRET_KEY');
     if (!paystackSecret) throw new InternalServerErrorException('PAYSTACK_SECRET_KEY is not configured');
     const reference = `zuti_reg_${randomBytes(16).toString('hex')}`;
     const apiBase = (this.config.get<string>('API_URL') ?? 'http://localhost:3001').replace(/\/$/, '');
+    const subaccount = await this.getOrgSubaccount(orgId);
     const response = await firstValueFrom(
       this.http.post<PaystackInitResponse>('https://api.paystack.co/transaction/initialize', {
         amount: totalMinor,
@@ -752,6 +780,7 @@ export class RegistrationsService {
         reference,
         callback_url: `${apiBase}/api/public/tickets/payment/callback`,
         metadata: { organizationId: orgId, registrationGroupId: groupId, source: 'zuti-registration-cart' },
+        ...(subaccount ? { subaccount } : {}), // split to the org's bank
       }, { headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' } }),
     );
     if (!response.data?.status || !response.data.data?.authorization_url) {
@@ -1034,6 +1063,7 @@ export class RegistrationsService {
       ? entry.amountMinor
       : (entry.product.priceMinor ?? 0) * (entry.quantity ?? 1);
 
+    const subaccount = await this.getOrgSubaccount(orgId);
     const response = await firstValueFrom(
       this.http.post<PaystackInitResponse>('https://api.paystack.co/transaction/initialize', {
         amount: chargeAmount,
@@ -1047,6 +1077,7 @@ export class RegistrationsService {
           registrationProductId: entry.productId,
           source: 'zuti-registration',
         },
+        ...(subaccount ? { subaccount } : {}), // split to the org's bank
       }, {
         headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' },
       }),
