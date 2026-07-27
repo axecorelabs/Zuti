@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { io } from 'socket.io-client';
+import { useSocketEvent } from '@/lib/socket';
 import {
   Plus, Pencil, Trash2, Users, ChevronRight, Download,
   CalendarDays, DollarSign, Tag, CheckCircle, XCircle,
@@ -1337,25 +1337,13 @@ export default function EventsPage() {
     }
   }, [orgId]);
 
-  // Live check-in: subscribe to the org's websocket and patch an entry's checkedInAt the moment a
-  // ticket is scanned, so the check-in view and column update instantly (no polling).
-  useEffect(() => {
-    if (!orgId) return;
-    const rawUrl = process.env.NEXT_PUBLIC_API_URL || '';
-    const apiUrl = /^https?:\/\/.+/.test(rawUrl) ? rawUrl : 'http://localhost:3001';
-    const socketUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
-    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-    if (!token) return;
-
-    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'], auth: { token } });
-    socket.on('connect', () => socket.emit('join', orgId));
-    socket.on('registration:checkin', (p: { productId: string; entryId: string; checkedInAt: string | null }) => {
-      // Only entries for the event currently loaded will match; others are a no-op. checkedInAt is
-      // null on an undo (a manual admission reversed), so the row flips back to not-arrived live.
-      setEntries((prev) => prev.map((e) => (e.id === p.entryId ? { ...e, checkedInAt: p.checkedInAt } : e)));
-    });
-    return () => { socket.disconnect(); };
-  }, [orgId]);
+  // Live check-in: patch an entry's checkedInAt the moment a ticket is scanned, so the check-in view
+  // and column update instantly (shared socket — no polling, no per-feature connection). Only entries
+  // for the loaded event match; checkedInAt is null on an undo, flipping the row back to not-arrived.
+  useSocketEvent<{ productId: string; entryId: string; checkedInAt: string | null }>(
+    'registration:checkin',
+    (p) => setEntries((prev) => prev.map((e) => (e.id === p.entryId ? { ...e, checkedInAt: p.checkedInAt } : e))),
+  );
 
   useEffect(() => {
     loadProducts();

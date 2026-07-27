@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download, ChevronsLeft, ChevronsRight } from 'lucide-react';
-import { io, Socket } from 'socket.io-client';
+import { useSocketEvent } from '@/lib/socket';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
@@ -305,7 +305,6 @@ function InboxPageContent() {
   const handoffSummaryRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const socketRef = useRef<Socket | null>(null);
   const filterRef = useRef({ statusFilter, botFilter, agentFilter });
   const selectedIdRef = useRef<string | null>(null);
   const escalatedSeenRef = useRef<Record<string, string>>({});
@@ -605,95 +604,75 @@ function InboxPageContent() {
     return () => observer.disconnect();
   }, [selected?.id, selected?.mode, handoffSummaryText]);
 
-  useEffect(() => {
-    if (!orgId) return;
-    const rawUrl = process.env.NEXT_PUBLIC_API_URL || '';
-    // Guard: must be a full URL with hostname, otherwise fall back to localhost
-    const apiUrl = /^https?:\/\/.+/.test(rawUrl) ? rawUrl : 'http://localhost:3001';
-    // Ensure socket.io uses wss:// on HTTPS pages (mixed content would block ws://)
-    const socketUrl = apiUrl.replace(/^http:\/\//, 'ws://').replace(/^https:\/\//, 'wss://');
-    const token = localStorage.getItem('accessToken');
-    if (!token) return;
+  // Live inbox updates via the shared per-tab socket (the provider owns connect/auth/join).
+  const matchesActiveFilters = (conv: Conversation) => {
+    const current = filterRef.current;
+    if (current.statusFilter !== 'ALL' && conv.status !== current.statusFilter) return false;
+    if (current.botFilter !== 'ALL' && conv.bot?.id !== current.botFilter) return false;
+    if (current.agentFilter !== 'ALL') {
+      if (current.agentFilter === 'UNASSIGNED') {
+        if (conv.assignedAgentId) return false;
+      } else if (conv.assignedAgentId !== current.agentFilter) {
+        return false;
+      }
+    }
+    return true;
+  };
 
-    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'], auth: { token } });
-    socketRef.current = socket;
+  useSocketEvent<{ conversationId: string; message: { id: string; role: string; content: string; createdAt: string } }>('message:new', (payload) => {
+    setSelected((prev) => {
+      if (!prev || prev.id !== payload.conversationId) return prev;
+      if (prev.messages?.some((m) => m.id === payload.message.id)) return prev;
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+      return { ...prev, messages: [...(prev.messages ?? []), payload.message] };
+    });
+    setConversations((prev) => {
+      const target = prev.find((c) => c.id === payload.conversationId);
+      const isEscalated = target?.status === 'ESCALATED';
+      const isSelected = selectedIdRef.current === payload.conversationId;
 
-    socket.on('connect', () => socket.emit('join', orgId));
-
-    const matchesActiveFilters = (conv: Conversation) => {
-      const current = filterRef.current;
-      if (current.statusFilter !== 'ALL' && conv.status !== current.statusFilter) return false;
-      if (current.botFilter !== 'ALL' && conv.bot?.id !== current.botFilter) return false;
-      if (current.agentFilter !== 'ALL') {
-        if (current.agentFilter === 'UNASSIGNED') {
-          if (conv.assignedAgentId) return false;
-        } else if (conv.assignedAgentId !== current.agentFilter) {
-          return false;
+      if (payload.message.role === 'USER' && isEscalated) {
+        if (isSelected) {
+          setEscalatedSeenAt(payload.conversationId, payload.message.createdAt);
+          setEscalatedUnreadMap((curr) => ({ ...curr, [payload.conversationId]: false }));
+        } else {
+          setEscalatedUnreadMap((curr) => ({ ...curr, [payload.conversationId]: true }));
         }
       }
-      return true;
-    };
 
-    socket.on('message:new', (payload: {
-      conversationId: string;
-      message: { id: string; role: string; content: string; createdAt: string };
-    }) => {
-      setSelected((prev) => {
-        if (!prev || prev.id !== payload.conversationId) return prev;
-        if (prev.messages?.some((m) => m.id === payload.message.id)) return prev;
-        setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
-        return { ...prev, messages: [...(prev.messages ?? []), payload.message] };
-      });
-      setConversations((prev) => {
-        const target = prev.find((c) => c.id === payload.conversationId);
-        const isEscalated = target?.status === 'ESCALATED';
-        const isSelected = selectedIdRef.current === payload.conversationId;
-
-        if (payload.message.role === 'USER' && isEscalated) {
-          if (isSelected) {
-            setEscalatedSeenAt(payload.conversationId, payload.message.createdAt);
-            setEscalatedUnreadMap((curr) => ({ ...curr, [payload.conversationId]: false }));
-          } else {
-            setEscalatedUnreadMap((curr) => ({ ...curr, [payload.conversationId]: true }));
-          }
-        }
-
-        return [...prev.map((c) => c.id === payload.conversationId
-          ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }
-          : c,
-        )].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      });
-    });
-
-    socket.on('conversation:new', (conv: Conversation) => {
-      if (!matchesActiveFilters(conv)) return;
-      setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
-    });
-
-    socket.on('conversation:update', (payload: { conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null; metadata?: Record<string, unknown> }) => {
-      setConversations((prev) => prev.map((c) => c.id === payload.conversationId
-        ? {
-          ...c,
-          ...(payload.status && { status: payload.status as Conversation['status'] }),
-          ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
-          ...(payload.assignedAgentId !== undefined && { assignedAgentId: payload.assignedAgentId }),
-        }
+      return [...prev.map((c) => c.id === payload.conversationId
+        ? { ...c, updatedAt: payload.message.createdAt, messages: [payload.message] }
         : c,
-      ));
-      setSelected((prev) => prev && prev.id === payload.conversationId
-        ? {
-          ...prev,
-          ...(payload.status && { status: payload.status as Conversation['status'] }),
-          ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
-          ...(payload.assignedAgentId !== undefined && { assignedAgentId: payload.assignedAgentId }),
-          ...(payload.metadata && { metadata: { ...(prev.metadata ?? {}), ...payload.metadata } }),
-        }
-        : prev,
-      );
+      )].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
     });
+  });
 
-    return () => { socket.disconnect(); socketRef.current = null; };
-  }, [orgId]);
+  useSocketEvent<Conversation>('conversation:new', (conv) => {
+    if (!matchesActiveFilters(conv)) return;
+    setConversations((prev) => prev.some((c) => c.id === conv.id) ? prev : [conv, ...prev]);
+  });
+
+  useSocketEvent<{ conversationId: string; status?: string; mode?: string; assignedAgentId?: string | null; metadata?: Record<string, unknown> }>('conversation:update', (payload) => {
+    setConversations((prev) => prev.map((c) => c.id === payload.conversationId
+      ? {
+        ...c,
+        ...(payload.status && { status: payload.status as Conversation['status'] }),
+        ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
+        ...(payload.assignedAgentId !== undefined && { assignedAgentId: payload.assignedAgentId }),
+      }
+      : c,
+    ));
+    setSelected((prev) => prev && prev.id === payload.conversationId
+      ? {
+        ...prev,
+        ...(payload.status && { status: payload.status as Conversation['status'] }),
+        ...(payload.mode && { mode: payload.mode as Conversation['mode'] }),
+        ...(payload.assignedAgentId !== undefined && { assignedAgentId: payload.assignedAgentId }),
+        ...(payload.metadata && { metadata: { ...(prev.metadata ?? {}), ...payload.metadata } }),
+      }
+      : prev,
+    );
+  });
 
   const handleLoadMoreConversations = async () => {
     if (!orgId || !conversationCursor || loadingMoreConversations) return;

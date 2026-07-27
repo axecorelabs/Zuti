@@ -6,6 +6,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/sidebar';
 import { orgsApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
+import { SocketProvider } from '@/lib/socket';
 
 const THEME_STORAGE_KEY = 'zuti-dashboard-theme';
 
@@ -205,7 +206,7 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
               You are currently setting up this organization for {setupBanner.count} requester{setupBanner.count === 1 ? '' : 's'}.
             </div>
           ) : null}
-          {children}
+          <SocketProvider>{children}</SocketProvider>
         </main>
       </div>
     </div>

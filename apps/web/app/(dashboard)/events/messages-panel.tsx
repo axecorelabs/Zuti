@@ -1,10 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { io } from 'socket.io-client';
 import { Mail, Plus, Send, X, Users, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { registrationsApi } from '@/lib/api';
+import { useSocketEvent } from '@/lib/socket';
 
 interface Announcement {
   id: string; subject: string; segment: string; tierId: string | null;
@@ -32,20 +32,14 @@ export default function MessagesPanel({ orgId, productId }: { orgId: string; pro
   useEffect(() => { void load(); }, [load]);
 
   // Live: the worker pushes one update when a send finalizes, so the row snaps to SENT/PARTIAL
-  // without polling. Patches the matching announcement in place.
-  useEffect(() => {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-    const socketUrl = apiUrl.replace(/^http/, 'ws');
-    const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
-    if (!token || !orgId) return;
-    const socket = io(socketUrl, { path: '/ws', transports: ['websocket'], auth: { token } });
-    socket.on('connect', () => socket.emit('join', orgId));
-    socket.on('announcement:update', (p: { id: string; productId: string; status: string; sentCount: number; failedCount: number; totalRecipients: number }) => {
+  // without polling. Patches the matching announcement in place (shared socket).
+  useSocketEvent<{ id: string; productId: string; status: string; sentCount: number; failedCount: number; totalRecipients: number }>(
+    'announcement:update',
+    (p) => {
       if (p.productId !== productId) return;
       setHistory((prev) => prev.map((a) => (a.id === p.id ? { ...a, status: p.status, sentCount: p.sentCount, failedCount: p.failedCount, totalRecipients: p.totalRecipients } : a)));
-    });
-    return () => { socket.disconnect(); };
-  }, [orgId, productId]);
+    },
+  );
 
   return (
     <div>
