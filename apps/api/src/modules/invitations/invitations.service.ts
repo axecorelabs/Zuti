@@ -13,6 +13,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import { CreateInvitationDto, CreateJoinCodeDto, RedeemJoinCodeDto } from './dto/invitation.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
+import { OrganizationsService } from '../organizations/organizations.service';
 
 @Injectable()
 export class InvitationsService {
@@ -24,6 +25,7 @@ export class InvitationsService {
     private readonly config: ConfigService,
     private readonly notifications: NotificationsService,
     private readonly activity: ActivityService,
+    private readonly organizations: OrganizationsService,
   ) {}
 
   async create(requestingUserId: string, dto: CreateInvitationDto) {
@@ -284,6 +286,7 @@ export class InvitationsService {
         role: invite.role,
       },
     });
+    this.organizations.invalidateOverview(userId); // joined a new org → refresh their overview now
 
     await this.prisma.workspaceJoinCode.update({
       where: { id: invite.id },
@@ -388,6 +391,7 @@ export class InvitationsService {
       create: { organizationId: invite.organizationId, userId, role: invite.role },
       update: {},
     });
+    this.organizations.invalidateOverview(userId); // accepted invite → refresh their overview now
 
     await this.prisma.invitation.update({ where: { token }, data: { status: 'ACCEPTED' } });
 

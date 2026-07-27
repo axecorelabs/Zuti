@@ -4,9 +4,10 @@ import { InvitationsController } from './invitations.controller';
 import { MailModule } from '../mail/mail.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ActivityModule } from '../activity/activity.module';
+import { OrganizationsModule } from '../organizations/organizations.module';
 
 @Module({
-  imports: [MailModule, NotificationsModule, ActivityModule],
+  imports: [MailModule, NotificationsModule, ActivityModule, OrganizationsModule],
   controllers: [InvitationsController],
   providers: [InvitationsService],
 })

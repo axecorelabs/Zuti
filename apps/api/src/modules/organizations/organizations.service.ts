@@ -24,11 +24,22 @@ export class OrganizationsService {
   private readonly logger = new Logger(OrganizationsService.name);
   private static readonly setupWorkspaceNamePrefix = 'Workspace name:';
 
+  // Short-lived per-user cache for the cross-workspace overview. It's latency-bound (many DB round
+  // trips), changes rarely, and is read on every global-overview visit — so a brief cache absorbs
+  // repeat loads. Busted explicitly when a user's org list changes (see invalidateOverview).
+  private readonly overviewCache = new Map<string, { data: unknown; expires: number }>();
+  private static readonly OVERVIEW_TTL_MS = 15_000;
+
   constructor(
     private prisma: PrismaService,
     private activity: ActivityService,
     private mail: MailService,
   ) {}
+
+  /** Drop a user's cached overview so their next visit reflects an org-list change immediately. */
+  invalidateOverview(userId: string) {
+    this.overviewCache.delete(userId);
+  }
 
   private parseWorkspaceNameFromNote(note: string | null | undefined) {
     if (!note) return null;
@@ -176,6 +187,7 @@ export class OrganizationsService {
       return createdOrg;
     });
 
+    this.invalidateOverview(userId); // new org → the creator's overview changed
     return org;
   }
 
@@ -1170,106 +1182,55 @@ export class OrganizationsService {
   }
 
   async findOverviewForUser(userId: string) {
-    const memberships = await this.prisma.organizationMember.findMany({
-      where: { userId },
-      select: {
-        role: true,
-        organization: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
-            _count: {
-              select: {
-                members: true,
-                bots: true,
-              },
-            },
-          },
-        },
-      },
-      orderBy: { createdAt: 'asc' },
-    });
+    const cached = this.overviewCache.get(userId);
+    if (cached && cached.expires > Date.now()) return cached.data;
 
-    const privilegedOrgIds = memberships
-      .filter((membership) => membership.role !== 'AGENT')
-      .map((membership) => membership.organization.id);
-    const agentOrgIds = memberships
-      .filter((membership) => membership.role === 'AGENT')
-      .map((membership) => membership.organization.id);
-
-    const [privilegedGrouped, agentGrouped] = await Promise.all([
-      privilegedOrgIds.length > 0
-        ? this.prisma.conversation.groupBy({
-            by: ['organizationId', 'status'],
-            where: {
-              organizationId: { in: privilegedOrgIds },
-            },
-            _count: { status: true },
-          })
-        : Promise.resolve([]),
-      agentOrgIds.length > 0
-        ? this.prisma.conversation.groupBy({
-            by: ['organizationId', 'status'],
-            where: {
-              organizationId: { in: agentOrgIds },
-              OR: [
-                { assignedAgentId: userId },
-                { assignedAgentId: null },
-              ],
-            },
-            _count: { status: true },
-          })
-        : Promise.resolve([]),
+    // ONE round-trip for the whole org list: memberships + per-org member/bot counts + per-org
+    // conversation status counts (agent visibility applied in the JOIN), fetched in parallel with the
+    // user's role. Replaces the old memberships → 2× groupBy → user-role chain (was ~4 sequential DB
+    // waves; this is 1). The overview is latency-bound, so cutting round-trips is the real win.
+    type OverviewRow = {
+      role: string; id: string; name: string; slug: string;
+      member_count: number; bot_count: number;
+      conv_total: number; conv_open: number; conv_resolved: number; conv_escalated: number; conv_pending: number;
+    };
+    const [rows, user] = await Promise.all([
+      this.prisma.$queryRawUnsafe<OverviewRow[]>(
+        `SELECT om.role::text AS role, o.id, o.name, o.slug,
+           (SELECT COUNT(*)::int FROM "OrganizationMember" m WHERE m."organizationId" = o.id) AS member_count,
+           (SELECT COUNT(*)::int FROM "Bot" b WHERE b."organizationId" = o.id) AS bot_count,
+           COUNT(c.id)::int AS conv_total,
+           (COUNT(c.id) FILTER (WHERE c.status = 'OPEN'))::int AS conv_open,
+           (COUNT(c.id) FILTER (WHERE c.status = 'RESOLVED'))::int AS conv_resolved,
+           (COUNT(c.id) FILTER (WHERE c.status = 'ESCALATED'))::int AS conv_escalated,
+           (COUNT(c.id) FILTER (WHERE c.status = 'PENDING'))::int AS conv_pending
+         FROM "OrganizationMember" om
+         JOIN "Organization" o ON o.id = om."organizationId"
+         LEFT JOIN "Conversation" c ON c."organizationId" = o.id
+           AND (om.role <> 'AGENT' OR c."assignedAgentId" = $1 OR c."assignedAgentId" IS NULL)
+         WHERE om."userId" = $1
+         GROUP BY om.role, o.id, o.name, o.slug, om."createdAt"
+         ORDER BY om."createdAt" ASC`,
+        userId,
+      ),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { role: true } }),
     ]);
 
-    const countByOrg = new Map<string, {
-      total: number;
-      open: number;
-      resolved: number;
-      escalated: number;
-      pending: number;
-    }>();
-
-    const registerStatusCount = (orgId: string, status: string, count: number) => {
-      const current = countByOrg.get(orgId) ?? {
-        total: 0,
-        open: 0,
-        resolved: 0,
-        escalated: 0,
-        pending: 0,
-      };
-      current.total += count;
-      if (status === 'OPEN') current.open += count;
-      if (status === 'RESOLVED') current.resolved += count;
-      if (status === 'ESCALATED') current.escalated += count;
-      if (status === 'PENDING') current.pending += count;
-      countByOrg.set(orgId, current);
-    };
-
-    for (const row of [...privilegedGrouped, ...agentGrouped]) {
-      registerStatusCount(row.organizationId, row.status, row._count.status);
-    }
-
-    const organizations = memberships.map((membership) => {
-      const conversationTotals = countByOrg.get(membership.organization.id) ?? {
-        total: 0,
-        open: 0,
-        resolved: 0,
-        escalated: 0,
-        pending: 0,
-      };
-
-      return {
-        id: membership.organization.id,
-        name: membership.organization.name,
-        slug: membership.organization.slug,
-        role: membership.role,
-        memberCount: membership.role === 'AGENT' ? null : membership.organization._count.members,
-        botCount: membership.role === 'AGENT' ? null : membership.organization._count.bots,
-        conversationTotals,
-      };
-    });
+    const organizations = rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      slug: r.slug,
+      role: r.role,
+      memberCount: r.role === 'AGENT' ? null : Number(r.member_count),
+      botCount: r.role === 'AGENT' ? null : Number(r.bot_count),
+      conversationTotals: {
+        total: Number(r.conv_total),
+        open: Number(r.conv_open),
+        resolved: Number(r.conv_resolved),
+        escalated: Number(r.conv_escalated),
+        pending: Number(r.conv_pending),
+      },
+    }));
 
     const totals = organizations.reduce((acc, org) => {
       acc.organizationCount += 1;
@@ -1294,10 +1255,7 @@ export class OrganizationsService {
       },
     });
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { role: true },
-    });
+    // `user` (role) was already fetched in parallel with the org query above.
 
     let setupRequests: {
       totals: {
@@ -1384,12 +1342,14 @@ export class OrganizationsService {
       };
     }
 
-    return {
+    const result = {
       totals,
       organizations,
       setupRequests,
       generatedAt: new Date().toISOString(),
     };
+    this.overviewCache.set(userId, { data: result, expires: Date.now() + OrganizationsService.OVERVIEW_TTL_MS });
+    return result;
   }
 
   async findOne(slug: string, userId: string) {
@@ -1433,6 +1393,7 @@ export class OrganizationsService {
     await this.prisma.organizationMember.delete({
       where: { organizationId_userId: { organizationId: orgId, userId: targetUserId } },
     });
+    this.invalidateOverview(targetUserId); // removed member: their overview lost this org
 
     await this.activity.log(
       orgId,
