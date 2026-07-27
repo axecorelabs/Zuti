@@ -17,6 +17,14 @@ class TransferOwnershipDto {
   declare targetUserId: string;
 }
 
+class SetupPayoutAccountDto {
+  @IsString() @MinLength(2) @MaxLength(120) declare businessName: string;
+  @IsString() @IsNotEmpty() declare settlementBank: string; // Paystack bank code
+  @IsOptional() @IsString() @MaxLength(120) declare bankName?: string; // display only
+  @IsString() @MinLength(10) @MaxLength(20) declare accountNumber: string;
+  @IsOptional() @IsString() declare primaryContactEmail?: string;
+}
+
 class UpdateAgentProfileDto {
   @IsOptional()
   @IsArray()
@@ -514,5 +522,30 @@ export class OrganizationsController {
     @Query() query: ListOperationalRecordsQueryDto,
   ) {
     return this.organizationsService.listTechnicalIssues(orgId, user.id, query);
+  }
+
+  // ── Payout account (org-level Paystack subaccount) ──────────────────────────
+  @Get('payout/banks')
+  @ApiOperation({ summary: 'List NGN banks for payout-account setup' })
+  listPayoutBanks() {
+    return this.organizationsService.listPayoutBanks();
+  }
+
+  @Get('payout/resolve')
+  @ApiOperation({ summary: 'Resolve a bank account number to its account name' })
+  resolvePayoutAccount(@Query('accountNumber') accountNumber: string, @Query('bankCode') bankCode: string) {
+    return this.organizationsService.resolvePayoutAccount(accountNumber, bankCode);
+  }
+
+  @Get(':id/payout')
+  @ApiOperation({ summary: "Get the org's payout account status" })
+  getPayoutStatus(@Param('id') orgId: string, @CurrentUser() user: { id: string }) {
+    return this.organizationsService.getPayoutStatus(orgId, user.id);
+  }
+
+  @Post(':id/payout')
+  @ApiOperation({ summary: "Connect/replace the org's payout account (OWNER only)" })
+  setupPayoutAccount(@Param('id') orgId: string, @CurrentUser() user: { id: string }, @Body() dto: SetupPayoutAccountDto) {
+    return this.organizationsService.setupPayoutAccount(orgId, user.id, dto);
   }
 }

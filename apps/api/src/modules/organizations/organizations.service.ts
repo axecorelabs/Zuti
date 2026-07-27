@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   UnauthorizedException,
   BadRequestException,
+  InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { createHash } from 'crypto';
@@ -13,6 +14,9 @@ import {
   Prisma,
   WorkspaceSetupRequestStatus,
 } from '@prisma/client';
+import { HttpService } from '@nestjs/axios';
+import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrganizationDto } from './dto/organization.dto';
 import { ActivityService, ActivityAction } from '../activity/activity.service';
@@ -34,11 +38,116 @@ export class OrganizationsService {
     private prisma: PrismaService,
     private activity: ActivityService,
     private mail: MailService,
+    private readonly http: HttpService,
+    private readonly config: ConfigService,
   ) {}
 
   /** Drop a user's cached overview so their next visit reflects an org-list change immediately. */
   invalidateOverview(userId: string) {
     this.overviewCache.delete(userId);
+  }
+
+  // ── Payout account (org-level Paystack subaccount) ────────────────────────────
+  // Where the org's ticket & product sales settle. Set up once per org; events and commerce route
+  // their split here, so Zuti never takes custody of the org's money. Connecting is OWNER-only.
+
+  private async assertOrgRole(orgId: string, userId: string, roles: Array<'OWNER' | 'ADMIN' | 'AGENT'>) {
+    const member = await this.prisma.organizationMember.findUnique({
+      where: { organizationId_userId: { organizationId: orgId, userId } },
+      select: { role: true },
+    });
+    if (!member) throw new ForbiddenException('You are not a member of this organization');
+    if (!roles.includes(member.role as 'OWNER' | 'ADMIN' | 'AGENT')) {
+      throw new ForbiddenException('You do not have permission to do this');
+    }
+  }
+
+  /** Paystack NGN banks for the payout-account setup dropdown. */
+  async listPayoutBanks() {
+    const secret = this.config.get<string>('PAYSTACK_SECRET_KEY');
+    if (!secret) throw new InternalServerErrorException('PAYSTACK_SECRET_KEY is not configured');
+    const res = await firstValueFrom(
+      this.http.get<{ status: boolean; data: Array<{ name: string; code: string; active: boolean }> }>(
+        'https://api.paystack.co/bank',
+        { params: { currency: 'NGN', use_cursor: false, perPage: 100 }, headers: { Authorization: `Bearer ${secret}` } },
+      ),
+    );
+    return (res.data?.data ?? []).filter((b) => b.active).map((b) => ({ name: b.name, code: b.code }));
+  }
+
+  /** Resolve an account number → account name (for confirm-before-connect). */
+  async resolvePayoutAccount(accountNumber: string, bankCode: string) {
+    const secret = this.config.get<string>('PAYSTACK_SECRET_KEY');
+    if (!secret) throw new InternalServerErrorException('PAYSTACK_SECRET_KEY is not configured');
+    type ResolveResponse = { status: boolean; message: string; data?: { account_name: string } };
+    const res = await firstValueFrom(
+      this.http.get<ResolveResponse>('https://api.paystack.co/bank/resolve', {
+        params: { account_number: accountNumber, bank_code: bankCode },
+        headers: { Authorization: `Bearer ${secret}` },
+      }),
+    );
+    if (!res.data?.status || !res.data?.data?.account_name) {
+      throw new BadRequestException(res.data?.message ?? 'Could not resolve account');
+    }
+    return { accountName: res.data.data.account_name };
+  }
+
+  /** The org's current payout status (read-only for any member; used by the UI + sell-gate). */
+  async getPayoutStatus(orgId: string, userId: string) {
+    await this.assertOrgRole(orgId, userId, ['OWNER', 'ADMIN', 'AGENT']);
+    const org = await this.prisma.organization.findUnique({
+      where: { id: orgId },
+      select: { paystackSubaccountCode: true, payoutBusinessName: true, payoutBankName: true, payoutAccountLast4: true, payoutAccountName: true },
+    });
+    if (!org) throw new NotFoundException('Organization not found');
+    return {
+      connected: !!org.paystackSubaccountCode,
+      businessName: org.payoutBusinessName,
+      bankName: org.payoutBankName,
+      accountLast4: org.payoutAccountLast4,
+      accountName: org.payoutAccountName,
+      platformFeePercent: 5,
+    };
+  }
+
+  /** OWNER-only: create/replace the org's Paystack subaccount and store it. Sales settle here after. */
+  async setupPayoutAccount(orgId: string, userId: string, dto: { businessName: string; settlementBank: string; bankName?: string; accountNumber: string; primaryContactEmail?: string }) {
+    await this.assertOrgRole(orgId, userId, ['OWNER']);
+    const secret = this.config.get<string>('PAYSTACK_SECRET_KEY');
+    if (!secret) throw new InternalServerErrorException('PAYSTACK_SECRET_KEY is not configured');
+
+    // Confirm the account resolves to a real name before creating the subaccount.
+    const { accountName } = await this.resolvePayoutAccount(dto.accountNumber, dto.settlementBank);
+
+    type SubaccountResponse = { status: boolean; message: string; data?: { subaccount_code: string } };
+    const response = await firstValueFrom(
+      this.http.post<SubaccountResponse>(
+        'https://api.paystack.co/subaccount',
+        {
+          business_name: dto.businessName,
+          settlement_bank: dto.settlementBank,
+          account_number: dto.accountNumber,
+          percentage_charge: 95, // merchant receives 95%; Zuti platform fee 5% — same split as commerce
+          ...(dto.primaryContactEmail ? { primary_contact_email: dto.primaryContactEmail } : {}),
+        },
+        { headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' } },
+      ),
+    );
+    if (!response.data?.status || !response.data?.data?.subaccount_code) {
+      throw new BadRequestException(`Paystack subaccount creation failed: ${response.data?.message ?? 'Unknown error'}`);
+    }
+
+    await this.prisma.organization.update({
+      where: { id: orgId },
+      data: {
+        paystackSubaccountCode: response.data.data.subaccount_code,
+        payoutBusinessName: dto.businessName,
+        payoutBankName: dto.bankName ?? null,
+        payoutAccountLast4: dto.accountNumber.slice(-4),
+        payoutAccountName: accountName,
+      },
+    });
+    return this.getPayoutStatus(orgId, userId);
   }
 
   private parseWorkspaceNameFromNote(note: string | null | undefined) {

@@ -105,6 +105,14 @@ model Organization {
   name        String
   slug        String   @unique
   logoUrl     String?
+  // Payout account (Paystack subaccount) — where the org's ticket & product sales settle. Set up
+  // once per org; both events and commerce route their split to this. Money never rests in Zuti's
+  // account. The display fields are just for showing the connected account in the UI.
+  paystackSubaccountCode String?
+  payoutBusinessName     String?
+  payoutBankName         String?
+  payoutAccountLast4     String?
+  payoutAccountName      String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
