@@ -824,7 +824,7 @@ export class WhatsAppProcessor {
 
     const [commerceGrounding, registrationContext, customerProfileBlock] = await Promise.all([
       buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId: bot.id, aiConfig, userText }),
-      buildRegistrationContextBlock({ prisma: this.prisma, botId: bot.id, orgId: organizationId }),
+      buildRegistrationContextBlock({ prisma: this.prisma, botId: bot.id, orgId: organizationId, registerViaTool: isAgenticEnabled(this.config) }),
       this.customerIdentity.getAgentContextBlock({ id: conversationId, organizationId, channel: 'WHATSAPP' }).catch(() => null), // Customer hub read loop
     ]);
     const effectiveCustomerContext = [

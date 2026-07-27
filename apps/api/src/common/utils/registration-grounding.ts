@@ -6,6 +6,11 @@ export async function buildRegistrationContextBlock(params: {
   prisma: PrismaService;
   botId: string;
   orgId: string;
+  // When the bot is agentic, registration happens ONLY via the register_for_event tool. The old
+  // structured flow (action_type=REGISTRATION_REQUEST + collected_fields, "system auto-sends the
+  // link") is gated off in that mode — so we must NOT feed the model its instructions, or it collects
+  // the fields, assumes the system will send the link, and closes without ever calling the tool.
+  registerViaTool: boolean;
 }): Promise<string | null> {
   const products = await params.prisma.registrationProduct.findMany({
     // botId is null for events created with "— Any bot —" — an exact-equality filter would
@@ -56,24 +61,44 @@ export async function buildRegistrationContextBlock(params: {
     lines.push(parts.join(' | '));
   }
 
-  lines.push(
-    'When a customer wants to register: identify the matching product, set action_type to REGISTRATION_REQUEST and registration_product_id to that product\'s ID, and gather the required fields conversationally. On every registration turn, put everything gathered so far into collected_fields using each field\'s exact key shown above (e.g. customer_name, customer_email). Ask only for the fields still missing.',
-  );
-  lines.push(
-    'Once all required fields are present, completion depends on the product price:',
-  );
-  lines.push(
-    '- FREE product: the registration is finalized automatically — you may confirm the customer is registered and ask if they need anything else.',
-  );
-  lines.push(
-    '- PAID product: DO NOT say the customer is registered, confirmed, or complete, and DO NOT ask "is there anything else" — payment is still required. Instead say you have all their details and a secure payment link will follow (or has just been sent) which they must complete to finalize the registration. The system sends the payment link automatically; you only need to set the fields.',
-  );
-  lines.push(
-    'Ticket quantity: if the customer wants more than one ticket/spot (e.g. "3 tickets", "me and 2 friends"), set collected_fields.quantity to that number (default 1). For paid products the total charged is the price × quantity, and each ticket consumes one capacity spot.',
-  );
-  lines.push(
-    'The system enforces capacity and prevents duplicate registrations, and will append an authoritative notice if the event is full or the customer is already registered — so do not fabricate confirmations; state what you have collected and let the system finalize.',
-  );
+  if (params.registerViaTool) {
+    // Tool flow: registration happens ONLY by calling register_for_event, and the link it returns is
+    // the model's to deliver. Crucially, there is NO automatic send — collecting fields is not the end.
+    lines.push(
+      'To register a customer you MUST call the register_for_event tool — that is the ONLY thing that creates the registration and its payment link. Identify the matching event (use its ID above), collect the required fields (name, email, and any listed) conversationally, and once the customer is ready, CALL register_for_event in that same turn.',
+    );
+    lines.push(
+      'There is NO automatic registration and NO automatic payment link: nothing happens until you call the tool. Never say a link "will be sent", "has been sent", or that the system will handle it — that is not true. The tool returns the result and YOU deliver it in the chat.',
+    );
+    lines.push(
+      '- PAID event: the tool returns PENDING_PAYMENT with a payment link — give that link in the chat and make clear they are NOT registered until they pay.',
+    );
+    lines.push(
+      '- FREE event: the tool returns CONFIRMED — only then may you confirm and ask if they need anything else.',
+    );
+    lines.push(
+      'Do NOT treat collecting the fields as completion, and do NOT end, sign off, or resolve the conversation, until you have called register_for_event and delivered its payment link (paid) or confirmation (free). If the event has multiple ticket tiers, the tool returns NEEDS_TICKET_TYPE — ask which tier, then call it again with the chosen tier.',
+    );
+  } else {
+    // Legacy structured-output flow (non-agentic bots): the backend finalizes from action_type +
+    // collected_fields, and sends the payment link automatically.
+    lines.push(
+      'When a customer wants to register: identify the matching product, set action_type to REGISTRATION_REQUEST and registration_product_id to that product\'s ID, and gather the required fields conversationally. On every registration turn, put everything gathered so far into collected_fields using each field\'s exact key shown above (e.g. customer_name, customer_email). Ask only for the fields still missing.',
+    );
+    lines.push('Once all required fields are present, completion depends on the product price:');
+    lines.push(
+      '- FREE product: the registration is finalized automatically — you may confirm the customer is registered and ask if they need anything else.',
+    );
+    lines.push(
+      '- PAID product: DO NOT say the customer is registered, confirmed, or complete, and DO NOT ask "is there anything else" — payment is still required. Instead say you have all their details and a secure payment link will follow (or has just been sent) which they must complete to finalize the registration. The system sends the payment link automatically; you only need to set the fields.',
+    );
+    lines.push(
+      'Ticket quantity: if the customer wants more than one ticket/spot (e.g. "3 tickets", "me and 2 friends"), set collected_fields.quantity to that number (default 1). For paid products the total charged is the price × quantity, and each ticket consumes one capacity spot.',
+    );
+    lines.push(
+      'The system enforces capacity and prevents duplicate registrations, and will append an authoritative notice if the event is full or the customer is already registered — so do not fabricate confirmations; state what you have collected and let the system finalize.',
+    );
+  }
 
   return lines.join('\n');
 }

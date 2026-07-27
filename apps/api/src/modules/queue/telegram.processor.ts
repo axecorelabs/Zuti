@@ -1005,7 +1005,7 @@ export class TelegramProcessor {
 
     const [commerceGrounding, registrationContext, customerProfileBlock] = await Promise.all([
       buildCommerceGroundingContextBlock({ prisma: this.prisma, organizationId, botId, aiConfig, userText }),
-      buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId }),
+      buildRegistrationContextBlock({ prisma: this.prisma, botId, orgId: organizationId, registerViaTool: isAgenticEnabled(this.config) }),
       this.customerIdentity.getAgentContextBlock(latestConversation).catch(() => null), // Customer hub read loop
     ]);
     const effectiveCustomerContext = [
