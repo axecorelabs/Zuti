@@ -677,6 +677,13 @@ export const registrationsApi = {
     api.post(`/organizations/${orgId}/registrations/${productId}/scan-sessions`, data),
   revokeScanSession: (orgId: string, sessionId: string) =>
     api.delete(`/organizations/${orgId}/registrations/scan-sessions/${sessionId}`),
+  // Attendee announcements (Messages) — OWNER/ADMIN.
+  announcementRecipients: (orgId: string, productId: string) =>
+    api.get(`/organizations/${orgId}/registrations/${productId}/announcements/recipients`),
+  listAnnouncements: (orgId: string, productId: string) =>
+    api.get(`/organizations/${orgId}/registrations/${productId}/announcements`),
+  createAnnouncement: (orgId: string, productId: string, data: { segment: string; tierId?: string; subject: string; body: string }) =>
+    api.post(`/organizations/${orgId}/registrations/${productId}/announcements`, data),
 };
 
 // ── Customers (Customer hub) ────────────────────────────────────────────────

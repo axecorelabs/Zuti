@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import TicketScanner from './ticket-scanner';
 import ScanSessionsPanel from './scan-sessions-panel';
+import MessagesPanel from './messages-panel';
 import {
   AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
 } from 'recharts';
@@ -1235,7 +1236,7 @@ export default function EventsPage() {
   const [bots, setBots] = useState<BotOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProduct, setSelectedProduct] = useState<RegistrationProduct | null>(null);
-  const [detailTab, setDetailTab] = useState<'registrants' | 'checkin' | 'settings'>('registrants');
+  const [detailTab, setDetailTab] = useState<'registrants' | 'checkin' | 'messages' | 'settings'>('registrants');
   const [entries, setEntries] = useState<RegistrationEntry[]>([]);
   const [entriesLoading, setEntriesLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -1527,6 +1528,16 @@ export default function EventsPage() {
                 </button>
                 {canManage && (
                   <button
+                    onClick={() => setDetailTab('messages')}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                      detailTab === 'messages' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                  >
+                    Messages
+                  </button>
+                )}
+                {canManage && (
+                  <button
                     onClick={() => setDetailTab('settings')}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
                       detailTab === 'settings' ? 'bg-zinc-800 text-white' : 'text-zinc-500 hover:text-zinc-300'
@@ -1584,6 +1595,8 @@ export default function EventsPage() {
                 />
                 {canManage && <ScanSessionsPanel orgId={orgId} productId={selectedProduct.id} />}
               </>
+            ) : detailTab === 'messages' && canManage ? (
+              <MessagesPanel orgId={orgId} productId={selectedProduct.id} />
             ) : entriesLoading ? (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">

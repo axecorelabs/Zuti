@@ -4,7 +4,7 @@ import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { RegistrationsService } from './registrations.service';
-import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto, ManualCheckInDto, CreateScanSessionDto } from './dto/registrations.dto';
+import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, CheckInDto, ManualCheckInDto, CreateScanSessionDto, CreateAnnouncementDto } from './dto/registrations.dto';
 
 @UseGuards(JwtAuthGuard, OrgMemberGuard, RolesGuard)
 @Controller('organizations/:id/registrations')
@@ -108,6 +108,27 @@ export class RegistrationsController {
   @RequireRole('OWNER', 'ADMIN')
   revokeScanSession(@Param('id') orgId: string, @Param('sessionId') sessionId: string) {
     return this.svc.revokeScanSession(orgId, sessionId);
+  }
+
+  // ── Attendee announcements (Messages) — OWNER/ADMIN only ──────────────────────
+
+  @Get(':productId/announcements/recipients')
+  @RequireRole('OWNER', 'ADMIN')
+  announcementRecipients(@Param('id') orgId: string, @Param('productId') productId: string) {
+    return this.svc.announcementRecipientCounts(orgId, productId);
+  }
+
+  @Get(':productId/announcements')
+  @RequireRole('OWNER', 'ADMIN')
+  listAnnouncements(@Param('id') orgId: string, @Param('productId') productId: string) {
+    return this.svc.listAnnouncements(orgId, productId);
+  }
+
+  @Post(':productId/announcements')
+  @HttpCode(HttpStatus.OK)
+  @RequireRole('OWNER', 'ADMIN')
+  createAnnouncement(@Param('id') orgId: string, @Param('productId') productId: string, @Body() dto: CreateAnnouncementDto, @CurrentUser() user: { id: string }) {
+    return this.svc.createAnnouncement(orgId, productId, user?.id ?? null, dto);
   }
 
   // Manual admit / undo a specific entry from the Check-in list (fallback when a QR won't scan).

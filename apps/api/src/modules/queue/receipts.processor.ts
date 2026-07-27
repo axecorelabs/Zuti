@@ -28,10 +28,21 @@ export interface EcommerceReceiptJobPayload {
   orgId: string;
 }
 
+export interface AnnouncementJobPayload {
+  announcementId: string;
+  orgId: string;
+  to: string;
+  subject: string;
+  body: string;
+  eventName: string;
+  orgName: string | null;
+}
+
 export const RECEIPT_JOB = {
   REGISTRATION: 'registration',
   CREDITS: 'credits',
   ECOMMERCE: 'ecommerce',
+  ANNOUNCEMENT: 'announcement',
 } as const;
 
 // Default job options used everywhere receipts are enqueued
@@ -155,6 +166,38 @@ export class ReceiptsProcessor {
     }
 
     this.logger.log(`Receipt job ${job.id}: ticket + receipt sent to ${entry.customerEmail}`);
+  }
+
+  // ── Event announcement — one job per recipient; tallies delivery on the record ─
+
+  @Process(RECEIPT_JOB.ANNOUNCEMENT)
+  async handleAnnouncement(job: Job<AnnouncementJobPayload>) {
+    const { announcementId, orgId, to, subject, body, eventName, orgName } = job.data;
+    const prismaAny = this.prisma as any;
+    try {
+      await this.mail.sendEventAnnouncement({ to, subject, body, eventName, orgName });
+      const updated = await prismaAny.eventAnnouncement.update({ where: { id: announcementId }, data: { sentCount: { increment: 1 } } });
+      await this.finalizeAnnouncement(prismaAny, updated);
+    } catch (err) {
+      // Only tally a failure on the FINAL attempt — otherwise a retry that later succeeds would be
+      // double-counted (both failed and sent). Non-final failures just rethrow to trigger the retry.
+      const isLastAttempt = job.attemptsMade >= ((job.opts.attempts ?? 1) - 1);
+      if (isLastAttempt) {
+        try {
+          const updated = await prismaAny.eventAnnouncement.update({ where: { id: announcementId }, data: { failedCount: { increment: 1 } } });
+          await this.finalizeAnnouncement(prismaAny, updated);
+        } catch { /* record may be gone */ }
+      }
+      this.logger.warn(`Announcement job ${job.id}: send to ${to} failed (attempt ${job.attemptsMade + 1}): ${String(err)}`);
+      throw err;
+    }
+  }
+
+  /** Flip status to SENT/PARTIAL once every recipient job has reported (sent + failed === total). */
+  private async finalizeAnnouncement(prismaAny: any, a: { id: string; totalRecipients: number; sentCount: number; failedCount: number; status: string }) {
+    if (a.status !== 'SENDING') return;
+    if (a.sentCount + a.failedCount < a.totalRecipients) return;
+    await prismaAny.eventAnnouncement.update({ where: { id: a.id }, data: { status: a.failedCount > 0 ? 'PARTIAL' : 'SENT' } });
   }
 
   // ── Credits receipt — sent to the purchasing user on behalf of the company ─

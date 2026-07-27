@@ -1426,6 +1426,80 @@ export class RegistrationsService {
     return { outcome: res.outcome, entry };
   }
 
+  // ── Attendee announcements (transactional email to an event's registrants) ───
+
+  private announcementSegmentWhere(productId: string, segment: string, tierId?: string | null): Record<string, unknown> {
+    switch (segment) {
+      case 'CONFIRMED': return { productId, status: 'CONFIRMED' };
+      case 'PENDING': return { productId, status: 'PENDING_PAYMENT' };
+      case 'CHECKED_IN': return { productId, status: 'CONFIRMED', checkedInAt: { not: null } };
+      case 'TIER': return { productId, status: { not: 'CANCELLED' }, ...(tierId ? { ticketTypeId: tierId } : {}) };
+      case 'ALL':
+      default: return { productId, status: { not: 'CANCELLED' } };
+    }
+  }
+
+  /** Distinct-email recipient counts per audience, for the compose UI's live count. */
+  async announcementRecipientCounts(orgId: string, productId: string) {
+    const prismaAny = this.prisma as any;
+    const product = await prismaAny.registrationProduct.findFirst({ where: { id: productId, orgId }, select: { id: true } });
+    if (!product) throw new NotFoundException('Event not found');
+    const rows = await prismaAny.registrationEntry.findMany({
+      where: { productId, status: { not: 'CANCELLED' } },
+      select: { customerEmail: true, status: true, checkedInAt: true, ticketTypeId: true },
+    });
+    const uniq = (arr: any[]) => new Set(arr.map((r) => (r.customerEmail ?? '').trim().toLowerCase()).filter(Boolean)).size;
+    const tiers = await prismaAny.registrationTicketType.findMany({ where: { productId, isActive: true }, select: { id: true, name: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
+    return {
+      all: uniq(rows),
+      confirmed: uniq(rows.filter((r: any) => r.status === 'CONFIRMED')),
+      pending: uniq(rows.filter((r: any) => r.status === 'PENDING_PAYMENT')),
+      checkedIn: uniq(rows.filter((r: any) => r.checkedInAt)),
+      tiers: tiers.map((t: any) => ({ id: t.id, name: t.name, count: uniq(rows.filter((r: any) => r.ticketTypeId === t.id)) })),
+    };
+  }
+
+  /** OWNER/ADMIN: send a transactional announcement to an audience of an event's attendees. Resolves
+   * + dedupes recipients by email, records it, and enqueues one worker job per recipient. */
+  async createAnnouncement(orgId: string, productId: string, sentBy: string | null, dto: { segment: string; tierId?: string; subject: string; body: string }): Promise<
+    { outcome: 'QUEUED'; id: string; totalRecipients: number } | { outcome: 'NO_RECIPIENTS'; message: string }
+  > {
+    const prismaAny = this.prisma as any;
+    const product = await prismaAny.registrationProduct.findFirst({ where: { id: productId, orgId }, select: { id: true, name: true, organization: { select: { name: true } } } });
+    if (!product) throw new NotFoundException('Event not found');
+
+    const entries = await prismaAny.registrationEntry.findMany({
+      where: this.announcementSegmentWhere(productId, dto.segment, dto.tierId),
+      select: { customerEmail: true, customerName: true },
+    });
+    // Dedupe by email — a buyer holding several tickets is one recipient.
+    const byEmail = new Map<string, string | null>();
+    for (const e of entries) {
+      const em = (e.customerEmail ?? '').trim().toLowerCase();
+      if (em && !byEmail.has(em)) byEmail.set(em, e.customerName ?? null);
+    }
+    if (byEmail.size === 0) return { outcome: 'NO_RECIPIENTS', message: 'No attendees match that audience.' };
+
+    const ann = await prismaAny.eventAnnouncement.create({
+      data: { orgId, productId, subject: dto.subject, body: dto.body, segment: dto.segment, tierId: dto.tierId ?? null, totalRecipients: byEmail.size, sentBy: sentBy ?? null },
+    });
+    const orgName = product.organization?.name ?? null;
+    for (const [email] of byEmail) {
+      await this.receiptsQueue.add(
+        RECEIPT_JOB.ANNOUNCEMENT,
+        { announcementId: ann.id, orgId, to: email, subject: dto.subject, body: dto.body, eventName: product.name, orgName },
+        RECEIPT_JOB_OPTIONS,
+      ).catch((err) => this.logger.error(`Failed to enqueue announcement job for ${email}: ${String(err)}`));
+    }
+    return { outcome: 'QUEUED', id: ann.id, totalRecipients: byEmail.size };
+  }
+
+  /** OWNER/ADMIN: the Messages history for an event (newest first). */
+  async listAnnouncements(orgId: string, productId: string) {
+    const prismaAny = this.prisma as any;
+    return prismaAny.eventAnnouncement.findMany({ where: { orgId, productId }, orderBy: { createdAt: 'desc' } });
+  }
+
   // ── Dead letter queue (failed receipt jobs) ──────────────────────────────
   // Scoped per-org: job payloads always carry orgId, so we filter to the caller's org.
 

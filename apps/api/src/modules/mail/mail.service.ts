@@ -615,4 +615,48 @@ export class MailService {
       throw err;
     }
   }
+
+  /**
+   * Transactional announcement from an organizer to an event's attendee (venue change, reminder,
+   * payment nudge). The body is the organizer's plain text — HTML-escaped and newline-preserved so it
+   * can never inject markup. Sent from the org's name over the platform address. Throws on failure so
+   * the worker retries / lands it in the DLQ.
+   */
+  async sendEventAnnouncement(opts: { to: string; subject: string; body: string; eventName: string; orgName?: string | null }) {
+    const apiKey = this.config.get<string>('ZEPTOMAIL_API_KEY');
+    const brand = this.getBrandConfig();
+    if (!apiKey) {
+      this.logger.warn(`[MailService] ZEPTOMAIL_API_KEY not set — skipping announcement to ${opts.to}`);
+      return;
+    }
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const bodyHtml = esc(opts.body).replace(/\r?\n/g, '<br>');
+    const sender = opts.orgName?.trim() || brand.appName;
+    const html =
+      `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#1a1a1a;">` +
+      `<p style="font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:#8a8a8a;margin:0 0 4px;">${esc(opts.eventName)}</p>` +
+      `<h1 style="font-size:18px;font-weight:700;margin:0 0 16px;color:#111;">${esc(opts.subject)}</h1>` +
+      `<div style="font-size:15px;line-height:1.6;color:#333;">${bodyHtml}</div>` +
+      `<hr style="border:none;border-top:1px solid #ececec;margin:24px 0 12px;" />` +
+      `<p style="font-size:12px;color:#9a9a9a;margin:0;">Sent by ${esc(sender)} about ${esc(opts.eventName)}. You're receiving this because you registered for this event.</p>` +
+      `<p style="font-size:11px;color:#c0c0c0;margin:6px 0 0;">${esc(brand.appFooter)}</p>` +
+      `</div>`;
+    try {
+      await firstValueFrom(
+        this.http.post('https://api.zeptomail.com/v1.1/email', {
+          from: { address: brand.fromAddress, name: sender },
+          to: [{ email_address: { address: opts.to } }],
+          subject: opts.subject,
+          htmlbody: html,
+        }, {
+          headers: { Authorization: `Zoho-enczapikey ${apiKey}`, 'Content-Type': 'application/json' },
+        }),
+      );
+      this.logger.log(`Announcement email sent to ${opts.to}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to send announcement email to ${opts.to}: ${msg}`, err instanceof Error ? err.stack : '');
+      throw err;
+    }
+  }
 }

@@ -1336,9 +1336,34 @@ model RegistrationProduct {
   entries             RegistrationEntry[]
   ticketTypes         RegistrationTicketType[]
   scanSessions        EventScanSession[]
+  announcements       EventAnnouncement[]
 
   @@index([orgId, isActive])
   @@index([botId, isActive])
+}
+
+// A transactional announcement sent to an event's attendees (venue change, reminder, payment nudge).
+// The actual sends run on the receipts worker; this row is the record + live delivery tally shown in
+// the Messages history. Segment picks the audience; counts are updated by the worker as it sends.
+model EventAnnouncement {
+  id              String   @id @default(cuid())
+  orgId           String
+  productId       String
+  subject         String
+  body            String
+  segment         String   // ALL | CONFIRMED | PENDING | CHECKED_IN | TIER
+  tierId          String?
+  totalRecipients Int      @default(0)
+  sentCount       Int      @default(0)
+  failedCount     Int      @default(0)
+  status          String   @default("SENDING") // SENDING | SENT | PARTIAL
+  sentBy          String?
+  createdAt       DateTime @default(now())
+
+  product         RegistrationProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([orgId])
 }
 
 // A temporary, public, event-scoped check-in link. Door/volunteer staff open the URL and scan or

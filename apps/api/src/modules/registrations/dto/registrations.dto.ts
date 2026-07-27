@@ -81,6 +81,14 @@ export class ScanCheckInDto {
   @IsString() @MaxLength(200) code: string;
 }
 
+// Send a transactional announcement to an event's attendees (OWNER/ADMIN).
+export class CreateAnnouncementDto {
+  @IsIn(['ALL', 'CONFIRMED', 'PENDING', 'CHECKED_IN', 'TIER']) segment: string;
+  @IsOptional() @IsString() tierId?: string;
+  @IsString() @MaxLength(160) subject: string;
+  @IsString() @MaxLength(5000) body: string;
+}
+
 // ── Cart checkout: multiple tickets (tiers/attendees) in one purchase ────────
 export class CartAttendeeDto {
   @IsOptional() @IsString() @MaxLength(120) name?: string;
