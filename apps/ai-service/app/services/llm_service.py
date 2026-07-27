@@ -443,7 +443,10 @@ RESOLUTION_TAG_INSTRUCTION = (
     "end your reply naturally by asking if they are satisfied or need anything else "
     "(e.g. \"Does that help?\" or \"Is there anything else I can help you with?\"), "
     "then append [RESOLVED] on its own line at the very end. "
-    "Only use [RESOLVED] when the issue is genuinely resolved — not speculatively."
+    "Only use [RESOLVED] when the issue is genuinely resolved — not speculatively. "
+    "NEVER append [RESOLVED] while a task is still in progress: if the customer is registering for an "
+    "event or placing an order and you have not yet delivered the payment link or a confirmed result, "
+    "the conversation is NOT resolved — you still owe them that next step, so keep going and do not tag it."
 )
 
 BASE_SYSTEM_PROMPT = """You are {bot_name}, a helpful customer service AI assistant for {org_name}.
@@ -795,7 +798,16 @@ class LlmService:
                 "attendee's details and pass the `tickets` array (one per person). If register_for_event "
                 "returns PENDING_PAYMENT, give the payment link and make clear they are NOT registered until "
                 "they pay; relay AT_CAPACITY / ALREADY_REGISTERED honestly; only say confirmed when the tool "
-                "says CONFIRMED."
+                "says CONFIRMED.\n"
+                "ACT, DON'T JUST CHAT: the moment the customer names a ticket tier (or, for a single-tier "
+                "event, has given name + email), that is your cue to CALL register_for_event in that SAME "
+                "turn — do not reply with a conversational or closing message instead. A common failure is "
+                "listing the tiers, the customer picks one, and you then say something like 'glad I could "
+                "help' and stop WITHOUT calling the tool or giving the payment link — never do this. A "
+                "registration is IN PROGRESS and NOT finished until you have actually delivered the payment "
+                "link (paid) or the tool returned CONFIRMED (free). Until then, do NOT end the conversation, "
+                "do NOT send a sign-off, and do NOT mark it resolved — you still owe them the link. If you're "
+                "missing only the quantity, ask for it (or proceed with 1) — do not abandon the purchase."
             )
         if "search_products" in tool_names:
             tool_guidance += (
