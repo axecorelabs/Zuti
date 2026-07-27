@@ -1025,15 +1025,16 @@ export class TelegramProcessor {
     // REGISTRATION_AGENTIC env var is a kill-switch). The model calls the matching tool
     // (book_meeting, create_sales_order, register_for_event, …) and composes its reply from the
     // real result, so the classic classify→re-queue→guardrail machinery is bypassed for this turn.
-    // Only tools the bot's capabilities actually allow are offered.
+    // Only tools the bot's capabilities actually allow are offered. getEnabledActionTools is the single
+    // authority: capability/skill tools require forwarding; context tools (register_for_event) don't.
     const forwardingEnabled = aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED';
-    const enabledTools: string[] = [];
-    if (forwardingEnabled) {
-      const botCaps = await this.prisma.bot.findUnique({ where: { id: botId }, select: { capabilities: true, commerceStoreId: true } });
-      const capabilities = (botCaps?.capabilities as Record<string, unknown> | null) ?? {};
-      enabledTools.push(...this.actionForwarding.getEnabledActionTools(capabilities, { hasCommerceStore: Boolean(botCaps?.commerceStoreId) }));
-    }
-    if (registrationContext) enabledTools.push('register_for_event');
+    const botCaps = await this.prisma.bot.findUnique({ where: { id: botId }, select: { capabilities: true, commerceStoreId: true } });
+    const capabilities = (botCaps?.capabilities as Record<string, unknown> | null) ?? {};
+    const enabledTools = this.actionForwarding.getEnabledActionTools(capabilities, {
+      forwardingEnabled,
+      hasCommerceStore: Boolean(botCaps?.commerceStoreId),
+      hasEvents: Boolean(registrationContext),
+    });
     const useTools = isAgenticEnabled(this.config); // knowledge grounding makes every bot agentic; enabled_tools may still be empty (search_knowledge is added AI-side)
 
     // Show a "typing…" indicator while the (multi-second) AI call runs so the wait feels responsive.

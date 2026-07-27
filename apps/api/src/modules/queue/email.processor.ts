@@ -789,13 +789,13 @@ export class EmailProcessor {
     // Only tools the bot's capabilities allow are offered; registration is added when the org has
     // registration products. When any tool is available the classic guardrail path is bypassed.
     const forwardingEnabled = aiConfig.actionForwardingEnabled === true || forwardingResult.status !== 'DISABLED';
-    const enabledTools: string[] = [];
-    if (forwardingEnabled) {
-      const botCaps = await this.prisma.bot.findUnique({ where: { id: botId }, select: { capabilities: true, commerceStoreId: true } });
-      const capabilities = (botCaps?.capabilities as Record<string, unknown> | null) ?? {};
-      enabledTools.push(...this.actionForwarding.getEnabledActionTools(capabilities, { hasCommerceStore: Boolean(botCaps?.commerceStoreId) }));
-    }
-    if (registrationContext) enabledTools.push('register_for_event');
+    const botCaps = await this.prisma.bot.findUnique({ where: { id: botId }, select: { capabilities: true, commerceStoreId: true } });
+    const capabilities = (botCaps?.capabilities as Record<string, unknown> | null) ?? {};
+    const enabledTools = this.actionForwarding.getEnabledActionTools(capabilities, {
+      forwardingEnabled,
+      hasCommerceStore: Boolean(botCaps?.commerceStoreId),
+      hasEvents: Boolean(registrationContext),
+    });
     const useTools = isAgenticEnabled(this.config); // knowledge grounding makes every bot agentic; enabled_tools may still be empty (search_knowledge is added AI-side)
 
     try {

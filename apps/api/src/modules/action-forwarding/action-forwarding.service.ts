@@ -2336,13 +2336,26 @@ export class ActionForwardingService {
    * the resulting sales-order task is bridged to a CommerceOrder + Paystack payment link
    * (bridgeToCommerceOrder), which is idempotent. Excluding it here disabled conversational ordering.
    */
-  getEnabledActionTools(capabilities: Record<string, unknown>, opts?: { hasCommerceStore?: boolean }): string[] {
+  /**
+   * Single authority for which tools a bot gets this turn. Two categories:
+   *  - Capability/skill action tools (sales order, meeting, escalate…) route to humans/systems, so
+   *    they require forwarding to be enabled AND the capability/skill.
+   *  - Context tools (register_for_event, search_products) are self-service — enabled purely by what
+   *    the bot HAS (events / a store), independent of forwarding. This is why "register" always works
+   *    while forwarding-gated actions can be off; making it explicit here removes the old asymmetry
+   *    where register_for_event was special-cased in each processor.
+   */
+  getEnabledActionTools(capabilities: Record<string, unknown>, opts?: { forwardingEnabled?: boolean; hasCommerceStore?: boolean; hasEvents?: boolean }): string[] {
     const tools: string[] = [];
-    for (const [toolName, actionType] of Object.entries(TOOL_TO_ACTION)) {
-      if (this.isActionEnabledByCapabilities(actionType, capabilities)) tools.push(toolName);
+    if (opts?.forwardingEnabled) {
+      for (const [toolName, actionType] of Object.entries(TOOL_TO_ACTION)) {
+        if (this.isActionEnabledByCapabilities(actionType, capabilities)) tools.push(toolName);
+      }
+      // Commerce-store bots get the catalog lookup tool; they order by variant_id (see executeActionTool).
+      if (opts?.hasCommerceStore) tools.push('search_products');
     }
-    // Commerce-store bots get the catalog lookup tool; they order by variant_id (see executeActionTool).
-    if (opts?.hasCommerceStore) tools.push('search_products');
+    // Context tool: self-service registration, enabled whenever the bot has events (forwarding-independent).
+    if (opts?.hasEvents && !tools.includes('register_for_event')) tools.push('register_for_event');
     return tools;
   }
 
