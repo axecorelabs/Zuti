@@ -193,11 +193,19 @@ export class ReceiptsProcessor {
     }
   }
 
-  /** Flip status to SENT/PARTIAL once every recipient job has reported (sent + failed === total). */
-  private async finalizeAnnouncement(prismaAny: any, a: { id: string; totalRecipients: number; sentCount: number; failedCount: number; status: string }) {
+  /** Flip status to SENT/PARTIAL once every recipient job has reported (sent + failed === total), and
+   * push ONE websocket update so the Messages history snaps to its final state without polling. The
+   * status flip is conditional (updateMany where status='SENDING') so among concurrent last-jobs
+   * exactly one wins and emits — no double-fire, one emit per send regardless of recipient count. */
+  private async finalizeAnnouncement(prismaAny: any, a: { id: string; orgId: string; productId: string; totalRecipients: number; sentCount: number; failedCount: number; status: string }) {
     if (a.status !== 'SENDING') return;
     if (a.sentCount + a.failedCount < a.totalRecipients) return;
-    await prismaAny.eventAnnouncement.update({ where: { id: a.id }, data: { status: a.failedCount > 0 ? 'PARTIAL' : 'SENT' } });
+    const finalStatus = a.failedCount > 0 ? 'PARTIAL' : 'SENT';
+    const res = await prismaAny.eventAnnouncement.updateMany({ where: { id: a.id, status: 'SENDING' }, data: { status: finalStatus } });
+    if (res.count === 0) return; // another concurrent job already finalized it
+    try {
+      this.events.emitAnnouncementUpdate(a.orgId, { id: a.id, productId: a.productId, status: finalStatus, sentCount: a.sentCount, failedCount: a.failedCount, totalRecipients: a.totalRecipients });
+    } catch { /* non-fatal */ }
   }
 
   // ── Credits receipt — sent to the purchasing user on behalf of the company ─

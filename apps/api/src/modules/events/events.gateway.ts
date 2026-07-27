@@ -134,6 +134,15 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.server.to(`org:${organizationId}`).emit('registration:checkin', payload);
   }
 
+  /** Announcement send finished — pushed once per send (on finalize) so the Messages history snaps to
+   *  its final state without polling. */
+  emitAnnouncementUpdate(
+    organizationId: string,
+    payload: { id: string; productId: string; status: string; sentCount: number; failedCount: number; totalRecipients: number },
+  ) {
+    this.server.to(`org:${organizationId}`).emit('announcement:update', payload);
+  }
+
   /**
    * Emit a conversation update (status/mode change) to the org room.
    */
