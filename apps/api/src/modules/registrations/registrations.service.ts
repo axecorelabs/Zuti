@@ -750,7 +750,7 @@ export class RegistrationsService {
       try {
         const pay = await this.initializeGroupPayment(groupId, payerEmail, totalMinor, product.currency, params.orgId);
         await this.prisma.registrationEntry.updateMany({ where: { purchaseGroupId: groupId }, data: { paystackReference: pay.reference, paystackAccessCode: pay.accessCode } });
-        return { outcome: 'PENDING_PAYMENT', paymentUrl: pay.paymentUrl, reference: pay.reference, groupId, amount: money(totalMinor), tickets: ticketsOut, message: `${tickets.length} ticket(s) held. Payment of ${money(totalMinor)} confirms all of them.` };
+        return { outcome: 'PENDING_PAYMENT', paymentUrl: pay.paymentUrl, reference: pay.reference, groupId, amount: money(pay.chargedAmount), tickets: ticketsOut, message: `${tickets.length} ticket(s) held. Payment of ${money(pay.chargedAmount)} confirms all of them.` };
       } catch (err) {
         this.logger.warn(`registerCart: payment init failed for group ${groupId}: ${String(err)}`);
         return { outcome: 'PENDING_PAYMENT', groupId, tickets: ticketsOut, message: 'Tickets held, but the payment link could not be generated right now. A teammate will follow up.' };
@@ -775,29 +775,65 @@ export class RegistrationsService {
     return !!(await this.getOrgSubaccount(orgId));
   }
 
+  /** Gross up a ticket-price total so the customer pays enough to cover both the Paystack
+   * processing fee and the platform fee, leaving the organiser's subaccount receiving exactly
+   * `ticketMinor`. Uses Paystack Nigeria standard fee: 1.5% of gross + ₦100 flat (> ₦2,500),
+   * capped at ₦2,000. `transactionCharge` is passed to Paystack as `transaction_charge`; with
+   * `bearer: 'account'`, Paystack deducts its actual fee from Zuti's cut — absorbing any
+   * rounding variance — while the subaccount always receives exactly `ticketMinor`. */
+  private computeRegistrationGross(ticketMinor: number): { gross: number; transactionCharge: number } {
+    if (ticketMinor <= 0) return { gross: 0, transactionCharge: 0 };
+    const PLATFORM_RATE    = 0.05;     // 5% of ticket price goes to Zuti's main account
+    const PS_RATE          = 0.015;    // Paystack 1.5% of gross charge
+    const PS_FLAT_KS       = 10_000;   // ₦100 in kobo (applied when gross > ₦2,500)
+    const PS_FLAT_THRESH   = 250_000;  // ₦2,500 in kobo
+    const PS_CAP           = 200_000;  // ₦2,000 cap in kobo
+
+    const platformFee = Math.ceil(ticketMinor * PLATFORM_RATE);
+    const base = ticketMinor + platformFee;
+
+    // Solve gross = base + paystackFee(gross) iteratively — converges in ≤ 3 steps.
+    let gross = base;
+    for (let i = 0; i < 3; i++) {
+      const flat = gross > PS_FLAT_THRESH ? PS_FLAT_KS : 0;
+      gross = base + Math.min(PS_CAP, Math.ceil(gross * PS_RATE) + flat);
+    }
+    const flat = gross > PS_FLAT_THRESH ? PS_FLAT_KS : 0;
+    const paystackFee = Math.min(PS_CAP, Math.ceil(gross * PS_RATE) + flat);
+    gross = base + paystackFee;
+    return { gross, transactionCharge: platformFee + paystackFee };
+  }
+
   private readonly PAYOUT_GATE_MSG = 'Connect a payout account (Billing → Payouts) before publishing a paid event, so ticket money reaches your bank.';
 
-  private async initializeGroupPayment(groupId: string, email: string, totalMinor: number, currency: string, orgId: string): Promise<{ paymentUrl: string; reference: string; accessCode: string }> {
+  private async initializeGroupPayment(groupId: string, email: string, totalMinor: number, currency: string, orgId: string): Promise<{ paymentUrl: string; reference: string; accessCode: string; chargedAmount: number }> {
     const paystackSecret = this.config.get<string>('PAYSTACK_SECRET_KEY');
     if (!paystackSecret) throw new InternalServerErrorException('PAYSTACK_SECRET_KEY is not configured');
     const reference = `zuti_reg_${randomBytes(16).toString('hex')}`;
     const apiBase = (this.config.get<string>('API_URL') ?? 'http://localhost:3001').replace(/\/$/, '');
     const subaccount = await this.getOrgSubaccount(orgId);
+    // When the org has a subaccount, gross up so fees don't cut into the organiser's settlement.
+    // The customer pays `chargedAmount`; the subaccount receives exactly `totalMinor`; Zuti's main
+    // account receives `transactionCharge` (platform fee + Paystack fee estimate). `bearer: account`
+    // means Paystack deducts its actual fee from Zuti's portion, absorbing any rounding variance.
+    const { gross: chargedAmount, transactionCharge } = subaccount
+      ? this.computeRegistrationGross(totalMinor)
+      : { gross: totalMinor, transactionCharge: 0 };
     const response = await firstValueFrom(
       this.http.post<PaystackInitResponse>('https://api.paystack.co/transaction/initialize', {
-        amount: totalMinor,
+        amount: chargedAmount,
         email,
         currency,
         reference,
         callback_url: `${apiBase}/api/public/tickets/payment/callback`,
         metadata: { organizationId: orgId, registrationGroupId: groupId, source: 'zuti-registration-cart' },
-        ...(subaccount ? { subaccount } : {}), // split to the org's bank
+        ...(subaccount ? { subaccount, bearer: 'account', transaction_charge: transactionCharge } : {}),
       }, { headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' } }),
     );
     if (!response.data?.status || !response.data.data?.authorization_url) {
       throw new BadRequestException(`Paystack initialization failed: ${response.data?.message ?? 'Unknown error'}`);
     }
-    return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference, accessCode: response.data.data.access_code };
+    return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference, accessCode: response.data.data.access_code, chargedAmount };
   }
 
   // ── Tool-use entrypoint ─────────────────────────────────────────────────────
@@ -928,8 +964,8 @@ export class RegistrationsService {
     const entry = result.entry;
     if (!resolvedIsFree && entry.customerEmail) {
       try {
-        const { paymentUrl } = await this.initializePayment(entry.id, params.orgId);
-        const total = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : resolvedUnit * quantity;
+        const { paymentUrl, chargedAmount } = await this.initializePayment(entry.id, params.orgId);
+        const total = chargedAmount > 0 ? chargedAmount : ((entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : resolvedUnit * quantity);
         return {
           outcome: 'PENDING_PAYMENT',
           payment_url: paymentUrl,
@@ -1033,7 +1069,7 @@ export class RegistrationsService {
 
   // ── Paystack ──────────────────────────────────────────────────────────────
 
-  async initializePayment(entryId: string, orgId: string): Promise<{ paymentUrl: string; reference: string }> {
+  async initializePayment(entryId: string, orgId: string): Promise<{ paymentUrl: string; reference: string; chargedAmount: number }> {
     const entry = await this.prisma.registrationEntry.findFirst({
       where: { id: entryId, orgId },
       include: { product: true },
@@ -1046,11 +1082,19 @@ export class RegistrationsService {
     if (!entry.customerEmail) throw new BadRequestException('Customer email is required for payment');
     if (entry.status !== 'PENDING_PAYMENT') throw new BadRequestException('Entry is not awaiting payment');
 
+    // Compute gross up-front (needed for both the idempotency path and the new-init path).
+    const subaccountEarly = await this.getOrgSubaccount(orgId);
+    const { gross: chargedAmount, transactionCharge } = subaccountEarly
+      ? this.computeRegistrationGross(chargeBasis)
+      : { gross: chargeBasis, transactionCharge: 0 };
+    const subaccount = subaccountEarly;
+
     // Idempotency: if already initialized, reconstruct the checkout URL from the stored access code
     if (entry.paystackReference && entry.paystackAccessCode) {
       return {
         paymentUrl: `https://checkout.paystack.com/${entry.paystackAccessCode}`,
         reference: entry.paystackReference,
+        chargedAmount,
       };
     }
 
@@ -1068,16 +1112,9 @@ export class RegistrationsService {
     const apiBase = (this.config.get<string>('API_URL') ?? 'http://localhost:3001').replace(/\/$/, '');
     const callbackUrl = `${apiBase}/api/public/tickets/payment/callback`;
 
-    // Charge the entry's total (unit price × quantity), captured at entry creation. Fall back
-    // to unit price × quantity if amountMinor was not stored (legacy entries).
-    const chargeAmount = (entry.amountMinor && entry.amountMinor > 0)
-      ? entry.amountMinor
-      : (entry.product.priceMinor ?? 0) * (entry.quantity ?? 1);
-
-    const subaccount = await this.getOrgSubaccount(orgId);
     const response = await firstValueFrom(
       this.http.post<PaystackInitResponse>('https://api.paystack.co/transaction/initialize', {
-        amount: chargeAmount,
+        amount: chargedAmount,
         email: entry.customerEmail,
         currency: entry.product.currency,
         reference,
@@ -1088,7 +1125,7 @@ export class RegistrationsService {
           registrationProductId: entry.productId,
           source: 'zuti-registration',
         },
-        ...(subaccount ? { subaccount } : {}), // split to the org's bank
+        ...(subaccount ? { subaccount, bearer: 'account', transaction_charge: transactionCharge } : {}),
       }, {
         headers: { Authorization: `Bearer ${paystackSecret}`, 'Content-Type': 'application/json' },
       }),
@@ -1106,7 +1143,7 @@ export class RegistrationsService {
       },
     });
 
-    return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference };
+    return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference, chargedAmount };
   }
 
   getPublicAppUrl(): string {
@@ -1213,7 +1250,13 @@ export class RegistrationsService {
       return null;
     }
     // Verify against the SUM charged across every ticket under this reference.
-    const expectedAmount = entries.reduce((sum, e) => sum + ((e.amountMinor && e.amountMinor > 0) ? e.amountMinor : (e.product.priceMinor ?? 0) * (e.quantity ?? 1)), 0);
+    // When the org has a subaccount, the payment was grossed up (fees added on top of ticket price)
+    // so the organiser's settlement is protected — recompute the gross for the comparison.
+    const totalTicketMinor = entries.reduce((sum, e) => sum + ((e.amountMinor && e.amountMinor > 0) ? e.amountMinor : (e.product.priceMinor ?? 0) * (e.quantity ?? 1)), 0);
+    const orgSubaccount = await this.getOrgSubaccount(entries[0].orgId);
+    const expectedAmount = orgSubaccount
+      ? this.computeRegistrationGross(totalTicketMinor).gross
+      : totalTicketMinor;
     if (verification.data.amount !== expectedAmount) {
       this.logger.warn(`Amount mismatch for ${paystackReference}: expected ${expectedAmount}, got ${verification.data.amount}`);
       return null;
