@@ -805,6 +805,8 @@ class LlmService:
                 " For event registration: ALWAYS ask how many tickets they want (don't assume 1). NEVER "
                 "assume a ticket is for the person chatting — people often buy for others, so establish who "
                 "each ticket is for and use THAT attendee's real name and email (not the buyer's profile). "
+                "Ask for the number of tickets before asking for email or creating a payment link; phrases "
+                "like 'a ticket' or 'another ticket' are interest, not permission to assume quantity 1. "
                 "If the buyer says a ticket is for themselves and you already have their email on file, ask "
                 "them to CONFIRM it before using it; otherwise ask for it. If it's for more than one person, "
                 "ask whether the tickets are for different people — if so, collect each "
@@ -820,7 +822,7 @@ class LlmService:
                 "registration is IN PROGRESS and NOT finished until you have actually delivered the payment "
                 "link (paid) or the tool returned CONFIRMED (free). Until then, do NOT end the conversation, "
                 "do NOT send a sign-off, and do NOT mark it resolved — you still owe them the link. If you're "
-                "missing only the quantity, ask for it (or proceed with 1) — do not abandon the purchase."
+                "missing only the quantity, ask for it — do not assume 1 and do not abandon the purchase."
             )
         if "search_products" in tool_names:
             tool_guidance += (

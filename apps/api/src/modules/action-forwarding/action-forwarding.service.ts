@@ -111,6 +111,7 @@ type ContractFieldKey =
   | 'booking_reason'
   | 'consultation_purpose'
   | 'product'
+  | 'quantity'
   | 'unit_price'
   | 'issue_summary';
 
@@ -222,7 +223,7 @@ const ACTION_CONTRACTS: Partial<Record<ActionType, ActionContractDefinition>> = 
     requiredFields: ACTION_CAPABILITY_REGISTRY.actions.TECHNICAL_ISSUE.requiredFields as ContractFieldKey[],
   },
   REGISTRATION_REQUEST: {
-    requiredFields: ['customer_name', 'customer_email'],
+    requiredFields: ['customer_name', 'customer_email', 'quantity'],
   },
 };
 
@@ -810,6 +811,12 @@ export class ActionForwardingService {
       const priceMatch = text.match(/(?:[₦$£€]|NGN|USD|GBP|EUR|naira)[\s]*([\d,]+(?:\.\d{1,2})?)|(?:^|\s)([\d,]+(?:\.\d{1,2})?)[\s]*(?:NGN|USD|naira|each|per item)|(?:costs?|priced?|worth|at|for)\s+(?:[₦$£€]|NGN|USD)?\s*([\d,]+(?:\.\d{1,2})?)/i);
       const rawPrice = priceMatch?.[1] ?? priceMatch?.[2] ?? priceMatch?.[3];
       if (rawPrice) extracted.unit_price = rawPrice.replace(/,/g, '');
+    }
+
+    if (actionType === 'REGISTRATION_REQUEST') {
+      const qtyMatch = text.match(/\b(?:want|need|buy|get|book|reserve|purchase|order|take)\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:tickets?|passes?|spots?|seats?)\b/i);
+      const qtyVal = qtyMatch?.[1] ?? qtyMatch?.[2];
+      if (qtyVal) extracted.quantity = qtyVal;
     }
 
     if (actionType === 'CONSULTATION_REQUEST') {

@@ -372,9 +372,11 @@ export class ReceiptsProcessor {
       : null;
     if (!bot) return;
 
+    const quantity = entry.quantity ?? 1;
+    const ticketLabel = quantity > 1 ? `${quantity} tickets` : 'ticket';
     const msg =
       `Your registration is confirmed! 🎉\n\n` +
-      `Your ticket and payment receipt have been sent to ${entry.customerEmail}.\n\n` +
+      `Your ${ticketLabel} and payment receipt have been sent to ${entry.customerEmail}.\n\n` +
       `Ref: ${reference.slice(-8).toUpperCase()}\n` +
       `View ticket: ${appUrl}/ticket/${entry.id}`;
 

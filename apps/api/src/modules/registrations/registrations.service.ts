@@ -388,7 +388,7 @@ export class RegistrationsService {
     allowDuplicateRegistrations?: boolean;
     ticketTypeId?: string | null;
     tierCapacity?: number | null;
-  }): Promise<{ outcome: 'CREATED' | 'ALREADY_REGISTERED' | 'PENDING_EXISTS' | 'AT_CAPACITY'; entry?: any; spotsLeft?: number }> {
+  }): Promise<{ outcome: 'CREATED' | 'ALREADY_REGISTERED' | 'PENDING_EXISTS' | 'AT_CAPACITY'; entry?: any; spotsLeft?: number; replacedPending?: boolean }> {
     const quantity = Math.max(1, Math.min(50, Math.floor(data.quantity ?? 1)));
     const normalizedEmail = this.normalizeEmail(data.customerEmail);
     const status = data.isFree
@@ -400,6 +400,8 @@ export class RegistrationsService {
       const txAny = tx as any;
       // Serialize registrations for this product so the capacity check-and-reserve is atomic.
       await tx.$queryRawUnsafe(`SELECT id FROM "RegistrationProduct" WHERE id = $1 FOR UPDATE`, data.productId);
+
+      let pendingToReplace: any | null = null;
 
       // Dedup: unless the event allows duplicates, one active entry per email.
       if (!data.allowDuplicateRegistrations && normalizedEmail) {
@@ -414,24 +416,43 @@ export class RegistrationsService {
         });
         if (existing) {
           if (existing.status === 'PENDING_PAYMENT') {
-            return { outcome: 'PENDING_EXISTS' as const, entry: existing };
+            const samePendingCheckout =
+              (existing.quantity ?? 1) === quantity &&
+              (existing.amountMinor ?? 0) === amountMinor &&
+              (existing.ticketTypeId ?? null) === (data.ticketTypeId ?? null);
+            if (samePendingCheckout) {
+              return { outcome: 'PENDING_EXISTS' as const, entry: existing };
+            }
+            pendingToReplace = existing;
+          } else {
+            return { outcome: 'ALREADY_REGISTERED' as const, entry: existing };
           }
-          return { outcome: 'ALREADY_REGISTERED' as const, entry: existing };
         }
       }
 
       // Atomic capacity reserve — event-level (overall) first, then per-tier if the tier is capped.
       if (data.capacity !== null && data.capacity !== undefined) {
         const used = await this.getUsedSpots(data.productId, txAny);
-        if (used + quantity > data.capacity) {
-          return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.capacity - used) };
+        const replacing = pendingToReplace ? (pendingToReplace.quantity ?? 1) : 0;
+        if (used - replacing + quantity > data.capacity) {
+          return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.capacity - (used - replacing)) };
         }
       }
       if (data.ticketTypeId && data.tierCapacity !== null && data.tierCapacity !== undefined) {
         const usedTier = await this.getUsedSpots(data.productId, txAny, data.ticketTypeId);
-        if (usedTier + quantity > data.tierCapacity) {
-          return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.tierCapacity - usedTier) };
+        const replacingSameTier = pendingToReplace && pendingToReplace.ticketTypeId === data.ticketTypeId
+          ? (pendingToReplace.quantity ?? 1)
+          : 0;
+        if (usedTier - replacingSameTier + quantity > data.tierCapacity) {
+          return { outcome: 'AT_CAPACITY' as const, spotsLeft: Math.max(0, data.tierCapacity - (usedTier - replacingSameTier)) };
         }
+      }
+
+      if (pendingToReplace) {
+        await txAny.registrationEntry.update({
+          where: { id: pendingToReplace.id },
+          data: { status: 'CANCELLED' },
+        });
       }
 
       const entry = await txAny.registrationEntry.create({
@@ -453,7 +474,7 @@ export class RegistrationsService {
         },
         include: { product: true },
       });
-      return { outcome: 'CREATED' as const, entry };
+      return { outcome: 'CREATED' as const, entry, replacedPending: Boolean(pendingToReplace) };
     });
 
     // Free events skip payment entirely — send the ticket as soon as the entry is confirmed.
@@ -986,7 +1007,9 @@ export class RegistrationsService {
           outcome: 'PENDING_PAYMENT',
           payment_url: paymentUrl,
           amount: money(total),
-          message: `Details captured for ${quantity} ticket(s) to ${product.name}. Payment of ${money(total)} is required to finalize — give the customer the payment link and make clear the registration is not complete until they pay.`,
+          message: result.replacedPending
+            ? `Updated the pending registration to ${quantity} ticket(s) to ${product.name}. Payment of ${money(total)} is required to finalize — give the customer this NEW payment link, tell them to use this new link only, and make clear the registration is not complete until they pay.`
+            : `Details captured for ${quantity} ticket(s) to ${product.name}. Payment of ${money(total)} is required to finalize — give the customer the payment link and make clear the registration is not complete until they pay.`,
         };
       } catch {
         return { outcome: 'PENDING_PAYMENT', message: 'Details captured, but the payment link could not be generated right now. Tell the customer a teammate will follow up with payment details.' };

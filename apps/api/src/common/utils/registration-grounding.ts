@@ -33,6 +33,7 @@ export async function buildRegistrationContextBlock(params: {
     const requiredFields = [
       describeField('Full name', 'customer_name'),
       describeField('Email address', 'customer_email'),
+      describeField('Number of tickets', 'quantity'),
       ...fields.filter((f) => f.required).map((f) => describeField(f.label, f.key)),
     ];
     const optionalFields = fields.filter((f) => !f.required).map((f) => describeField(f.label, f.key));
@@ -84,6 +85,9 @@ export async function buildRegistrationContextBlock(params: {
     // the model's to deliver. Crucially, there is NO automatic send — collecting fields is not the end.
     lines.push(
       'To register a customer you MUST call the register_for_event tool — that is the ONLY thing that creates the registration and its payment link. Identify the matching event (use its ID above), collect the required fields (name, email, and any listed) conversationally, and once the customer is ready, CALL register_for_event in that same turn.',
+    );
+    lines.push(
+      'Always ask for the number of tickets before creating a payment link. Do not treat "a ticket" or "another ticket" as enough to assume quantity 1.',
     );
     lines.push(
       'There is NO automatic registration and NO automatic payment link: nothing happens until you call the tool. Never say a link "will be sent", "has been sent", or that the system will handle it — that is not true. The tool returns the result and YOU deliver it in the chat.',
