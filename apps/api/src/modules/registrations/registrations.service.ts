@@ -180,6 +180,8 @@ export class RegistrationsService {
         ...(dto.bannerUrl !== undefined && { bannerUrl: dto.bannerUrl || null }),
         ...(dto.flierUrl !== undefined && { flierUrl: dto.flierUrl || null }),
         ...(dto.venue !== undefined && { venue: dto.venue || null }),
+        ...(dto.reminderBeforeEvent !== undefined && { reminderBeforeEvent: dto.reminderBeforeEvent }),
+        ...(dto.reminderUnpaidNudge !== undefined && { reminderUnpaidNudge: dto.reminderUnpaidNudge }),
       },
       include: { _count: { select: { entries: true } }, ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
@@ -1498,6 +1500,95 @@ export class RegistrationsService {
   async listAnnouncements(orgId: string, productId: string) {
     const prismaAny = this.prisma as any;
     return prismaAny.eventAnnouncement.findMany({ where: { orgId, productId }, orderBy: { createdAt: 'desc' } });
+  }
+
+  // ── Automatic reminders (periodic sweep) ──────────────────────────────────────
+  // One idempotent sweep sends the opt-in transactional reminders: a pre-event reminder to confirmed
+  // attendees, and a nudge to registrants who haven't paid. Each recipient is marked per reminder
+  // type so a re-run never double-sends. Reuses the announcement worker + Messages history (flagged
+  // `automated`). Called from the scheduler.
+
+  async sendDueReminders(): Promise<void> {
+    await this.sendPreEventReminders().catch((e) => this.logger.warn(`Pre-event reminder sweep failed: ${String(e)}`));
+    await this.sendUnpaidNudges().catch((e) => this.logger.warn(`Unpaid-nudge sweep failed: ${String(e)}`));
+  }
+
+  /** Shared: create an automated announcement record, enqueue a job per unique recipient, and mark
+   * every matched entry so the next sweep skips them. Returns how many recipients were queued. */
+  private async dispatchReminder(
+    product: { id: string; orgId: string; name: string; organization?: { name: string | null } | null },
+    entries: Array<{ id: string; customerName: string | null; customerEmail: string | null; paystackAccessCode?: string | null }>,
+    reminderType: string, segment: string, subject: string, bodyFor: (e: any) => string,
+  ): Promise<number> {
+    const prismaAny = this.prisma as any;
+    const byEmail = new Map<string, string>();
+    for (const e of entries) {
+      const em = (e.customerEmail ?? '').trim().toLowerCase();
+      if (em && !byEmail.has(em)) byEmail.set(em, bodyFor(e));
+    }
+    if (byEmail.size === 0) return 0;
+
+    const ann = await prismaAny.eventAnnouncement.create({
+      data: { orgId: product.orgId, productId: product.id, subject, body: '(automated reminder)', segment, automated: true, totalRecipients: byEmail.size },
+    });
+    const orgName = product.organization?.name ?? null;
+    for (const [email, body] of byEmail) {
+      // Reuse the announcement worker + delivery tally.
+      await this.receiptsQueue.add(
+        RECEIPT_JOB.ANNOUNCEMENT,
+        { announcementId: ann.id, orgId: product.orgId, to: email, subject, body, eventName: product.name, orgName },
+        RECEIPT_JOB_OPTIONS,
+      ).catch((err) => this.logger.error(`Failed to enqueue reminder for ${email}: ${String(err)}`));
+    }
+    // Mark every matched entry (not just the deduped emails) so none re-trigger next sweep.
+    await prismaAny.registrationEntry.updateMany({ where: { id: { in: entries.map((e) => e.id) } }, data: { remindersSent: { push: reminderType } } });
+    return byEmail.size;
+  }
+
+  private async sendPreEventReminders(): Promise<void> {
+    const prismaAny = this.prisma as any;
+    const now = new Date();
+    const soon = new Date(now.getTime() + 24 * 3600_000);
+    const products = await prismaAny.registrationProduct.findMany({
+      where: { reminderBeforeEvent: true, isActive: true, eventDate: { gte: now, lte: soon } },
+      include: { organization: { select: { name: true } } },
+    });
+    for (const product of products) {
+      const entries = await prismaAny.registrationEntry.findMany({
+        where: { productId: product.id, status: 'CONFIRMED', checkedInAt: null, customerEmail: { not: null }, NOT: { remindersSent: { has: 'BEFORE_EVENT' } } },
+        select: { id: true, customerName: true, customerEmail: true },
+      });
+      if (!entries.length) continue;
+      const dateStr = product.eventDate ? new Date(product.eventDate).toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' }) : 'soon';
+      const first = (n: string | null) => (n ? ` ${n.split(' ')[0]}` : '');
+      await this.dispatchReminder(product, entries, 'BEFORE_EVENT', 'CONFIRMED', `Reminder: ${product.name} is coming up`,
+        (e) => `Hi${first(e.customerName)},\n\nJust a reminder that ${product.name} is happening ${dateStr}${product.venue ? ` at ${product.venue}` : ''}. Bring your ticket QR for a quick check-in.\n\nSee you there!`);
+      this.logger.log(`Pre-event reminder queued for ${entries.length} attendee(s) of "${product.name}"`);
+    }
+  }
+
+  private async sendUnpaidNudges(): Promise<void> {
+    const prismaAny = this.prisma as any;
+    const cutoff = new Date(Date.now() - 12 * 3600_000);
+    const appUrl = this.getPublicAppUrl();
+    const products = await prismaAny.registrationProduct.findMany({
+      where: { reminderUnpaidNudge: true, isActive: true },
+      include: { organization: { select: { name: true } } },
+    });
+    for (const product of products) {
+      const entries = await prismaAny.registrationEntry.findMany({
+        where: { productId: product.id, status: 'PENDING_PAYMENT', createdAt: { lt: cutoff }, customerEmail: { not: null }, NOT: { remindersSent: { has: 'UNPAID_NUDGE' } } },
+        select: { id: true, customerName: true, customerEmail: true, paystackAccessCode: true },
+      });
+      if (!entries.length) continue;
+      const first = (n: string | null) => (n ? ` ${n.split(' ')[0]}` : '');
+      await this.dispatchReminder(product, entries, 'UNPAID_NUDGE', 'PENDING', `Complete your registration for ${product.name}`,
+        (e) => {
+          const link = e.paystackAccessCode ? `https://checkout.paystack.com/${e.paystackAccessCode}` : `${appUrl}/ticket/${e.id}`;
+          return `Hi${first(e.customerName)},\n\nYou registered for ${product.name} but your payment isn't complete yet — your spot isn't secured until it is.\n\nComplete it here: ${link}\n\nSee you there!`;
+        });
+      this.logger.log(`Unpaid nudge queued for ${entries.length} registrant(s) of "${product.name}"`);
+    }
   }
 
   // ── Dead letter queue (failed receipt jobs) ──────────────────────────────

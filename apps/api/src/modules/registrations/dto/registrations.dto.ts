@@ -53,6 +53,8 @@ export class UpdateRegistrationProductDto {
   @IsOptional() @IsString() bannerUrl?: string;
   @IsOptional() @IsString() flierUrl?: string;
   @IsOptional() @IsString() @MaxLength(200) venue?: string;
+  @IsOptional() @IsBoolean() reminderBeforeEvent?: boolean;
+  @IsOptional() @IsBoolean() reminderUnpaidNudge?: boolean;
 }
 
 export class UpdateRegistrationEntryDto {

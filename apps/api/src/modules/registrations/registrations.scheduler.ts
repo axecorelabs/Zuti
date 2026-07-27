@@ -21,4 +21,17 @@ export class RegistrationsScheduler {
       this.logger.warn(`Payment reconciliation sweep failed: ${String(err)}`);
     }
   }
+
+  /**
+   * Every 30 minutes, send any due automatic reminders (pre-event reminder, unpaid nudge). The sweep
+   * is idempotent — each recipient is marked per reminder type, so this never double-sends.
+   */
+  @Cron(CronExpression.EVERY_30_MINUTES)
+  async sendReminders() {
+    try {
+      await this.registrations.sendDueReminders();
+    } catch (err) {
+      this.logger.warn(`Reminder sweep failed: ${String(err)}`);
+    }
+  }
 }

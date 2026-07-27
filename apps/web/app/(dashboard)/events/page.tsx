@@ -49,6 +49,8 @@ interface RegistrationProduct {
   bannerUrl?: string | null;
   flierUrl?: string | null;
   venue?: string | null;
+  reminderBeforeEvent?: boolean;
+  reminderUnpaidNudge?: boolean;
   _count: { entries: number };
   usedSpots?: number;
   createdAt: string;
@@ -1156,6 +1158,53 @@ interface EventSettingsTabProps {
   onDeleted: () => void;
 }
 
+// Automatic-reminder toggles (opt-in per event). Saved immediately on toggle.
+function RemindersSection({ orgId, product }: { orgId: string; product: RegistrationProduct }) {
+  const [before, setBefore] = useState(product.reminderBeforeEvent ?? false);
+  const [nudge, setNudge] = useState(product.reminderUnpaidNudge ?? false);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const toggle = async (which: 'before' | 'nudge', value: boolean) => {
+    setBusy(which);
+    const prev = which === 'before' ? before : nudge;
+    (which === 'before' ? setBefore : setNudge)(value);
+    try {
+      await registrationsApi.updateProduct(orgId, product.id, which === 'before' ? { reminderBeforeEvent: value } : { reminderUnpaidNudge: value });
+      toast.success('Reminders updated');
+    } catch {
+      (which === 'before' ? setBefore : setNudge)(prev); // revert on failure
+      toast.error('Could not update');
+    } finally { setBusy(null); }
+  };
+
+  const Row = ({ id, on, onChange, title, desc }: { id: string; on: boolean; onChange: (v: boolean) => void; title: string; desc: string }) => (
+    <button type="button" disabled={busy === id} onClick={() => onChange(!on)} className="w-full flex items-center justify-between gap-3 text-left py-2.5 disabled:opacity-60">
+      <span className="min-w-0">
+        <span className="block text-sm text-zinc-200">{title}</span>
+        <span className="block text-xs text-zinc-500 mt-0.5">{desc}</span>
+      </span>
+      <span className="relative shrink-0 w-10 h-[22px] rounded-full transition-colors" style={{ background: on ? '#2563eb' : '#3f3f46' }}>
+        <span className="absolute top-0.5 w-[18px] h-[18px] rounded-full bg-white transition-all" style={{ left: on ? 20 : 2 }} />
+      </span>
+    </button>
+  );
+
+  return (
+    <div className="card p-6">
+      <div className="mb-1"><h2 className="text-sm font-semibold text-white">Automatic reminders</h2></div>
+      <p className="text-xs text-zinc-500 font-light mb-3">Transactional emails the system sends on your behalf. They appear in the Messages history when they go out.</p>
+      <div className="divide-y divide-zinc-800/60">
+        <Row id="before" on={before} onChange={(v) => toggle('before', v)}
+          title="Remind confirmed attendees before the event"
+          desc={product.eventDate ? `Sends ~24h before ${new Date(product.eventDate).toLocaleDateString()}.` : 'Add an event date to enable — sends ~24h before.'} />
+        <Row id="nudge" on={nudge} onChange={(v) => toggle('nudge', v)}
+          title="Nudge registrants who haven't paid"
+          desc="Sends a payment reminder ~12h after they register (before the 24h hold expires)." />
+      </div>
+    </div>
+  );
+}
+
 function EventSettingsTab({ orgId, bots, product, onSaved, onDeleted }: EventSettingsTabProps) {
   const form = useProductForm(product);
   const [saving, setSaving] = useState(false);
@@ -1192,6 +1241,8 @@ function EventSettingsTab({ orgId, bots, product, onSaved, onDeleted }: EventSet
   return (
     <div className="max-w-3xl space-y-5">
       <ProductFormFields form={form} bots={bots} variant="sectioned" orgId={orgId} product={product} />
+
+      <RemindersSection orgId={orgId} product={product} />
 
       {/* Save bar */}
       <div className="flex justify-end gap-2 sticky bottom-0 bg-gradient-to-t from-black/40 to-transparent pt-2">

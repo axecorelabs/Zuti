@@ -1329,6 +1329,9 @@ model RegistrationProduct {
   bannerUrl           String?
   flierUrl            String?
   venue               String?
+  // Automatic transactional reminders (opt-in per event). A periodic sweep sends these.
+  reminderBeforeEvent Boolean   @default(false) // remind confirmed attendees ~24h before eventDate
+  reminderUnpaidNudge Boolean   @default(false) // nudge pending-payment registrants after ~12h
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -1357,6 +1360,7 @@ model EventAnnouncement {
   sentCount       Int      @default(0)
   failedCount     Int      @default(0)
   status          String   @default("SENDING") // SENDING | SENT | PARTIAL
+  automated       Boolean  @default(false) // true when sent by the reminder sweep, not a person
   sentBy          String?
   createdAt       DateTime @default(now())
 
@@ -1437,6 +1441,9 @@ model RegistrationEntry {
   // Groups the individual tickets bought in one purchase (each ticket is its own entry + QR, but
   // they share one payment). Null for standalone/legacy single registrations.
   purchaseGroupId     String?
+  // Automatic-reminder idempotency: which reminder types have already been sent to this entry
+  // (e.g. 'BEFORE_EVENT', 'UNPAID_NUDGE'), so the sweep never re-sends.
+  remindersSent       String[]                @default([])
   createdAt           DateTime                @default(now())
   updatedAt           DateTime                @updatedAt
 

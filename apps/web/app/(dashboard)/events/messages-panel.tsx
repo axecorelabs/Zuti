@@ -7,7 +7,7 @@ import { registrationsApi } from '@/lib/api';
 
 interface Announcement {
   id: string; subject: string; segment: string; tierId: string | null;
-  totalRecipients: number; sentCount: number; failedCount: number; status: string; createdAt: string;
+  totalRecipients: number; sentCount: number; failedCount: number; status: string; automated?: boolean; createdAt: string;
 }
 interface Counts { all: number; confirmed: number; pending: number; checkedIn: number; tiers: { id: string; name: string; count: number }[] }
 
@@ -54,6 +54,7 @@ export default function MessagesPanel({ orgId, productId }: { orgId: string; pro
             <div key={a.id} className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-3 py-2.5">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-zinc-200 truncate flex-1">{a.subject}</span>
+                {a.automated && <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-zinc-700/40 text-zinc-400 border-zinc-600/40">Auto</span>}
                 <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium border capitalize ${STATUS_STYLE[a.status] ?? STATUS_STYLE.SENDING}`}>{a.status.toLowerCase()}</span>
               </div>
               <p className="text-[11px] text-zinc-600 mt-0.5">
