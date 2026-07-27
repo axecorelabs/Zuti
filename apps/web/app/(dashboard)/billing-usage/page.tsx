@@ -472,20 +472,20 @@ export default function BillingUsagePage() {
                   Overview
                 </button>
                 <button
-                  onClick={() => setActiveTab('BUY_CREDITS')}
-                  className={`billing-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
-                    activeTab === 'BUY_CREDITS' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
-                  }`}
-                >
-                  Buy credits
-                </button>
-                <button
                   onClick={() => setActiveTab('PAYOUTS')}
                   className={`billing-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
                     activeTab === 'PAYOUTS' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
                   }`}
                 >
                   Payouts
+                </button>
+                <button
+                  onClick={() => setActiveTab('BUY_CREDITS')}
+                  className={`billing-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    activeTab === 'BUY_CREDITS' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  Buy credits
                 </button>
               </div>
             </div>
