@@ -93,7 +93,7 @@ const orgNavItems = [
     ],
   },
   { label: 'Operations', href: '/operations', icon: Briefcase, agentVisible: true },
-  { label: 'Billing & Usage', href: '/billing-usage', icon: CreditCard, agentVisible: false },
+  { label: 'Billing & Payouts', href: '/billing-usage', icon: CreditCard, agentVisible: false },
   { label: 'Activity', href: '/activity', icon: Activity, agentVisible: true },
   { label: 'Settings', href: '/settings', icon: Settings, agentVisible: true },
 ];

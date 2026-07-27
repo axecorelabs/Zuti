@@ -161,6 +161,13 @@ export const orgsApi = {
     withCachedOrgs('summary', options?.forceRefresh === true),
   overview: () => api.get('/organizations/overview'),
   globalOverview: () => api.get('/organizations/global-overview'),
+  // Payout account (Paystack subaccount) — where the org's sales settle.
+  payoutBanks: () => api.get('/organizations/payout/banks'),
+  resolvePayout: (accountNumber: string, bankCode: string) =>
+    api.get('/organizations/payout/resolve', { params: { accountNumber, bankCode } }),
+  getPayout: (orgId: string) => api.get(`/organizations/${orgId}/payout`),
+  setupPayout: (orgId: string, data: { businessName: string; settlementBank: string; bankName?: string; accountNumber: string; primaryContactEmail?: string }) =>
+    api.post(`/organizations/${orgId}/payout`, data),
   get: (slug: string) => api.get(`/organizations/${slug}`),
   create: (name: string, slug: string) =>
     api.post('/organizations', { name, slug }).then((res) => {

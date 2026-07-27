@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Calendar, CheckCircle2, Gauge, RefreshCw, Repeat, Wallet, XCircle } from 'lucide-react';
 import { aiUsageApi, billingApi, orgsApi, pricingApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
+import PayoutsTab from './payouts-tab';
 
 type PaymentModalState = {
   open: boolean;
@@ -158,7 +159,9 @@ export default function BillingUsagePage() {
   const [wallet, setWallet] = useState<WalletSnapshot | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   const [billingNotice, setBillingNotice] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'BUY_CREDITS'>('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<'OVERVIEW' | 'BUY_CREDITS' | 'PAYOUTS'>(
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tab') === 'payouts' ? 'PAYOUTS' : 'OVERVIEW',
+  );
   const [paymentModal, setPaymentModal] = useState<PaymentModalState>({
     open: false,
     phase: 'verifying',
@@ -476,6 +479,14 @@ export default function BillingUsagePage() {
                 >
                   Buy credits
                 </button>
+                <button
+                  onClick={() => setActiveTab('PAYOUTS')}
+                  className={`billing-tab-btn px-3 py-1.5 text-xs rounded-lg transition-colors ${
+                    activeTab === 'PAYOUTS' ? 'is-active bg-zinc-700 text-white' : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  Payouts
+                </button>
               </div>
             </div>
             <div className={`items-center gap-2 ${activeTab === 'OVERVIEW' ? 'flex' : 'hidden'}`}>
@@ -510,7 +521,9 @@ export default function BillingUsagePage() {
           </div>
         ) : null}
 
-        {activeTab === 'OVERVIEW' ? (
+        {activeTab === 'PAYOUTS' ? (
+          <PayoutsTab orgId={org?.id} />
+        ) : activeTab === 'OVERVIEW' ? (
           <>
             <section className="billing-stat-grid grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           <div className="billing-stat-card card p-6">
