@@ -15,7 +15,7 @@ interface PayoutStatus {
   platformFeePercent: number;
 }
 
-export default function PayoutsTab({ orgId }: { orgId: string | undefined }) {
+export default function PayoutsTab({ orgId, orgName }: { orgId: string | undefined; orgName?: string }) {
   const isOwner = useActiveRole() === 'OWNER';
   const [status, setStatus] = useState<PayoutStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,6 +40,11 @@ export default function PayoutsTab({ orgId }: { orgId: string | undefined }) {
     if (!isOwner) return;
     (async () => { try { const res = await orgsApi.payoutBanks(); setBanks(res.data ?? []); } catch { /* ignore */ } })();
   }, [isOwner]);
+
+  // Default the business name to the org's name (editable — their registered name may differ).
+  useEffect(() => {
+    if (orgName) setBusinessName((prev) => prev || orgName);
+  }, [orgName]);
 
   // Resolve the account name once we have a 10-digit number + a bank.
   useEffect(() => {
