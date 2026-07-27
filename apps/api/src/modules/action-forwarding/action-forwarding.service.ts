@@ -91,6 +91,17 @@ interface BotAiConfig {
   [key: string]: unknown;
 }
 
+type RegistrationProductForAction = {
+  id: string;
+  name: string;
+  isFree: boolean;
+  requiresApproval: boolean;
+  capacity: number | null;
+  priceMinor: number | null;
+  allowDuplicateRegistrations: boolean;
+  fields: unknown;
+};
+
 type ContractFieldKey =
   | 'customer_name'
   | 'customer_email'
@@ -259,6 +270,15 @@ function normalizeFieldKey(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+function normalizeActionMatchTerms(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter((term) => term.length > 2 && !['the', 'and', 'for', 'ticket', 'tickets', 'pass', 'passes', 'spot', 'spots', 'seat', 'seats'].includes(term));
 }
 
 function isStrictEmail(value: string): boolean {
@@ -667,6 +687,53 @@ export class ActionForwardingService {
     }
 
     return null;
+  }
+
+  private async findRegistrationProductFromTicketRequest(input: InboundActionSignalInput): Promise<RegistrationProductForAction | null> {
+    const text = input.messageText.trim();
+    const normalized = text.toLowerCase();
+    const mentionsTicket = /\b(tickets?|passes?|spots?|seats?)\b/i.test(normalized);
+    const hasAcquireIntent = /\b(buy|get|book|reserve|purchase|order|need|want|another)\b/i.test(normalized);
+    if (!mentionsTicket || !hasAcquireIntent) return null;
+
+    const prismaAny = this.prisma as any;
+    const products = await prismaAny.registrationProduct.findMany({
+      where: {
+        orgId: input.organizationId,
+        isActive: true,
+        OR: [{ botId: input.botId }, { botId: null }],
+      },
+      select: {
+        id: true,
+        name: true,
+        isFree: true,
+        requiresApproval: true,
+        capacity: true,
+        priceMinor: true,
+        allowDuplicateRegistrations: true,
+        fields: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    }) as RegistrationProductForAction[];
+    if (products.length === 0) return null;
+
+    if (input.registrationProductId) {
+      return products.find((product) => product.id === input.registrationProductId) ?? null;
+    }
+
+    const textTerms = new Set(normalizeActionMatchTerms(text));
+    let best: { product: RegistrationProductForAction; score: number } | null = null;
+    for (const product of products) {
+      const productTerms = normalizeActionMatchTerms(product.name);
+      if (productTerms.length === 0) continue;
+      const exactName = normalized.includes(product.name.toLowerCase());
+      const matched = productTerms.filter((term) => textTerms.has(term)).length;
+      const score = exactName ? 1 : matched / productTerms.length;
+      if (!best || score > best.score) best = { product, score };
+    }
+
+    if (best && best.score >= 0.6) return best.product;
+    return products.length === 1 ? products[0] : null;
   }
 
   private async detectActionWithAi(text: string): Promise<{ actionType: ActionType; confidence: number; summary: string } | null> {
@@ -1300,7 +1367,7 @@ export class ActionForwardingService {
     input: InboundActionSignalInput,
     preClassifiedDetected?: { actionType: ActionType; confidence: number; summary: string },
   ): Promise<ActionForwardingResult> {
-    let registrationProduct: { id: string; name: string; isFree: boolean; requiresApproval: boolean; capacity: number | null; priceMinor: number | null; allowDuplicateRegistrations: boolean; fields: unknown } | null = null;
+    let registrationProduct: RegistrationProductForAction | null = null;
     let registrationPaymentUrl: string | null = null;
     // Payment link for a bridged commerce order (awaited synchronously so the AI reply carries it).
     let commercePaymentUrl: string | null = null;
@@ -1369,6 +1436,19 @@ export class ActionForwardingService {
             reason: 'NO_ACTIONABLE_INTENT',
           });
         }
+      }
+    }
+
+    if (detected.actionType === 'SALES_ORDER_REQUEST') {
+      const ticketProduct = await this.findRegistrationProductFromTicketRequest(input);
+      if (ticketProduct) {
+        registrationProduct = ticketProduct;
+        detected = {
+          actionType: 'REGISTRATION_REQUEST',
+          confidence: Math.max(detected.confidence, 0.82),
+          summary: `Customer wants a ticket/pass for the event "${ticketProduct.name}".`,
+        };
+        input.registrationProductId = ticketProduct.id;
       }
     }
 

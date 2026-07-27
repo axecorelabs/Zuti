@@ -416,10 +416,10 @@ JSON schema (all fields required):
 Intent classification guide:
 - MEETING_REQUEST: customer wants to book/schedule a call or meeting.
 - CONSULTATION_REQUEST: customer wants a demo, consultation, or specialist follow-up.
-- SALES_ORDER_REQUEST: customer clearly expresses intent to buy/order.
+- SALES_ORDER_REQUEST: customer clearly expresses intent to buy/order a store/catalog product. Do NOT use this for event tickets, passes, spots, or seats.
 - OWNER_ATTENTION_NEEDED: customer explicitly requests owner or management involvement.
 - TECHNICAL_ISSUE: customer has a specific, describable technical problem that needs human follow-up. See qualification rules below.
-- REGISTRATION_REQUEST: customer wants to register for an event, session, or other registerable product listed in the available registrations. Only use this when a matching registration product exists.
+- REGISTRATION_REQUEST: customer wants to register for, buy, get, reserve, order, or purchase a ticket/pass/spot/seat for an event, session, or other registerable product listed in the available registrations. Only use this when a matching registration product exists; natural phrases like "buy a ticket" still mean registration, not sales.
 - NONE: no actionable forwarding intent, or issue is not yet specific enough to forward.
 
 REGISTRATION_REQUEST field collection — CRITICAL for completing registrations:

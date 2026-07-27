@@ -102,7 +102,7 @@ export class InternalToolsController {
         productId,
         ticketTypeId: String(args.ticket_type_id ?? '').trim() || undefined,
         ticketTypeName: String(args.ticket_type_name ?? '').trim() || undefined,
-        quantity: typeof args.quantity === 'number' ? args.quantity : Number(args.quantity) || 1,
+        quantity: args.quantity == null ? undefined : (typeof args.quantity === 'number' ? args.quantity : Number(args.quantity) || undefined),
         customerName: typeof args.customer_name === 'string' ? args.customer_name : undefined,
         customerEmail: typeof args.customer_email === 'string' ? args.customer_email : undefined,
         fields: args.fields && typeof args.fields === 'object' ? (args.fields as Record<string, string>) : undefined,

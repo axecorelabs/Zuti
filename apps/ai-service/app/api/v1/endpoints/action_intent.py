@@ -7,14 +7,15 @@ router = APIRouter()
 
 ACTION_INTENT_PROMPT = """You classify whether a customer message should create an external action-forwarding task.
 You must return a strict JSON object only, with these keys:
-- action_type: one of [MEETING_REQUEST, CONSULTATION_REQUEST, SALES_ORDER_REQUEST, OWNER_ATTENTION_NEEDED, TECHNICAL_ISSUE, NONE]
+- action_type: one of [MEETING_REQUEST, CONSULTATION_REQUEST, SALES_ORDER_REQUEST, OWNER_ATTENTION_NEEDED, TECHNICAL_ISSUE, REGISTRATION_REQUEST, NONE]
 - confidence: number between 0 and 1
 - summary: short string summary
 
 Classification guide:
 - MEETING_REQUEST: user asks to schedule/book a meeting or call with owner/team.
 - CONSULTATION_REQUEST: user asks for a consultation, demo, sales discussion, implementation/integration discussion, or wants a specialist to contact them about services.
-- SALES_ORDER_REQUEST: user clearly expresses buying/order intent.
+- SALES_ORDER_REQUEST: user clearly expresses buying/order intent for a store/catalog product. Do not use this for event tickets, passes, spots, or seats.
+- REGISTRATION_REQUEST: user wants to register for, buy, get, reserve, order, or purchase a ticket/pass/spot/seat for an event.
 - OWNER_ATTENTION_NEEDED: user explicitly asks owner/management involvement or urgent leadership attention.
 - TECHNICAL_ISSUE: user reports breakage, outage, bug, or technical malfunction needing follow-up.
 - NONE: no actionable forwarding intent.
@@ -57,6 +58,7 @@ async def classify_action_intent(request: ActionIntentRequest):
             "SALES_ORDER_REQUEST",
             "OWNER_ATTENTION_NEEDED",
             "TECHNICAL_ISSUE",
+            "REGISTRATION_REQUEST",
             "NONE",
         }
         if action_type not in allowed:

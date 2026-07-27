@@ -259,6 +259,14 @@ export class RegistrationsService {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  private isUsableRegistrationEmail(email: string | null | undefined): boolean {
+    const normalized = this.normalizeEmail(email);
+    if (!normalized) return false;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) return false;
+    const domain = normalized.split('@')[1] ?? '';
+    return !['example.com', 'example.net', 'example.org', 'test.com', 'invalid.test'].includes(domain);
+  }
+
   /** Spots consumed by an event = SUM of quantities across non-cancelled entries. */
   async getUsedSpots(productId: string, tx?: any, ticketTypeId?: string): Promise<number> {
     const client = tx ?? this.prisma;
@@ -646,7 +654,7 @@ export class RegistrationsService {
     const tiers = product.ticketTypes as Array<{ id: string; name: string; priceMinor: number | null; capacity: number | null }>;
     const payerName = params.payerName?.trim() || null;
     const payerEmail = this.normalizeEmail(params.payerEmail) ?? '';
-    if (!payerEmail) return { outcome: 'MISSING_FIELDS', message: 'A payer email is required.', missing: ['customer_email'] };
+    if (!this.isUsableRegistrationEmail(payerEmail)) return { outcome: 'MISSING_FIELDS', message: 'A real payer email is required. Ask the customer for their actual email address before registering.', missing: ['customer_email'] };
 
     const productFields = (Array.isArray(product.fields) ? product.fields : []) as { key: string; label: string; required: boolean }[];
     const requiredFieldKeys = productFields.filter((f) => f.required).map((f) => f.key);
@@ -695,7 +703,7 @@ export class RegistrationsService {
       const t = tickets[i];
       const missing: string[] = [];
       if (!t.name) missing.push('name');
-      if (!t.email) missing.push('email');
+      if (!this.isUsableRegistrationEmail(t.email)) missing.push('email');
       for (const k of requiredFieldKeys) if (!t.fields[k] || !String(t.fields[k]).trim()) missing.push(k);
       if (missing.length) return { outcome: 'MISSING_FIELDS', message: `Ticket ${i + 1} is missing: ${missing.join(', ')}.`, missing };
     }
@@ -908,12 +916,20 @@ export class RegistrationsService {
     const collected: Record<string, string> = { ...(params.fields ?? {}) };
     if (params.customerName) collected.customer_name = params.customerName.trim();
     if (params.customerEmail) collected.customer_email = params.customerEmail.trim();
+    if (collected.customer_email && !this.isUsableRegistrationEmail(collected.customer_email)) {
+      return {
+        outcome: 'MISSING_FIELDS',
+        message: 'Cannot register with an invalid, placeholder, or example email address. Ask the customer for their actual email address.',
+        missing_fields: ['customer_email'],
+      };
+    }
 
     const productFields = (Array.isArray(product.fields) ? product.fields : []) as { key: string; label: string; required: boolean }[];
     const requiredKeys = ['customer_name', 'customer_email', ...productFields.filter((f) => f.required).map((f) => f.key)];
     const missing = requiredKeys.filter((k) => !collected[k] || String(collected[k]).trim().length === 0);
+    if (params.quantity == null) missing.push('quantity');
     if (missing.length > 0) {
-      const labels = missing.map((k) => (k === 'customer_name' ? 'full name' : k === 'customer_email' ? 'email address' : (productFields.find((f) => f.key === k)?.label ?? k)));
+      const labels = missing.map((k) => (k === 'customer_name' ? 'full name' : k === 'customer_email' ? 'email address' : k === 'quantity' ? 'number of tickets' : (productFields.find((f) => f.key === k)?.label ?? k)));
       return { outcome: 'MISSING_FIELDS', message: `Cannot register yet — still need: ${labels.join(', ')}. Ask the customer for these.`, missing_fields: missing };
     }
 

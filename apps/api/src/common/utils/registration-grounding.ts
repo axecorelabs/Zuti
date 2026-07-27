@@ -16,6 +16,7 @@ export async function buildRegistrationContextBlock(params: {
     // botId is null for events created with "— Any bot —" — an exact-equality filter would
     // exclude those from every bot's context, so org-wide events must be OR'd in explicitly.
     where: { orgId: params.orgId, isActive: true, OR: [{ botId: params.botId }, { botId: null }] },
+    include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     orderBy: { createdAt: 'asc' },
   });
   if (products.length === 0) return null;
@@ -39,7 +40,24 @@ export async function buildRegistrationContextBlock(params: {
     const parts: string[] = [`- ID: ${p.id} | Name: "${p.name}"`];
     if (p.description) parts.push(`Description: ${p.description}`);
     if (p.eventDate) parts.push(`Date: ${p.eventDate.toISOString().split('T')[0]}`);
-    parts.push(p.isFree ? 'Price: Free' : `Price: ${(p.currency ?? 'NGN')} ${((p.priceMinor ?? 0) / 100).toFixed(2)}`);
+    const ticketTypes = ((p as any).ticketTypes ?? []) as Array<{
+      name: string;
+      priceMinor: number | null;
+      currency: string | null;
+      capacity: number | null;
+    }>;
+    if (ticketTypes.length > 0) {
+      const describeTier = (t: (typeof ticketTypes)[number]) => {
+        const price = t.priceMinor && t.priceMinor > 0
+          ? `${t.currency ?? p.currency ?? 'NGN'} ${(t.priceMinor / 100).toFixed(2)}`
+          : 'Free';
+        const cap = t.capacity != null ? `, capacity ${t.capacity}` : '';
+        return `${t.name} (${price}${cap})`;
+      };
+      parts.push(`Ticket tiers (price is tier-specific; ask the customer which tier): ${ticketTypes.map(describeTier).join('; ')}`);
+    } else {
+      parts.push(p.isFree ? 'Price: Free' : `Price: ${(p.currency ?? 'NGN')} ${((p.priceMinor ?? 0) / 100).toFixed(2)}`);
+    }
     parts.push(`Required info (collect all before confirming): ${requiredFields.join(', ')}`);
     if (optionalFields.length > 0) parts.push(`Optional info: ${optionalFields.join(', ')}`);
 
