@@ -1216,16 +1216,23 @@ export class OrganizationsService {
       },
     });
 
-    return orgs.map((org) => ({
-      ...org,
-      billing: org.billing
-        ? {
-            ...org.billing,
-            creditBalance: Number((org.billing.creditBalanceUnits / 100).toFixed(2)),
-            committedMonthlyCredits: Number((org.billing.committedMonthlyCreditsUnits / 100).toFixed(2)),
-          }
-        : org.billing,
-    }));
+    return orgs.map((org) => {
+      // Never expose the payout account (subaccount code + bank details) in the general org list —
+      // it's read by every member (incl. AGENTs); those fields belong only to the OWNER-gated
+      // Payouts endpoint.
+      const { paystackSubaccountCode, payoutBusinessName, payoutBankName, payoutAccountLast4, payoutAccountName, ...safe } = org;
+      void paystackSubaccountCode; void payoutBusinessName; void payoutBankName; void payoutAccountLast4; void payoutAccountName;
+      return {
+        ...safe,
+        billing: org.billing
+          ? {
+              ...org.billing,
+              creditBalance: Number((org.billing.creditBalanceUnits / 100).toFixed(2)),
+              committedMonthlyCredits: Number((org.billing.committedMonthlyCreditsUnits / 100).toFixed(2)),
+            }
+          : org.billing,
+      };
+    });
   }
 
   async findSummaryForUser(userId: string) {
@@ -1474,13 +1481,19 @@ export class OrganizationsService {
       return org;
     }
 
-    return this.prisma.organization.findUnique({
+    const full = await this.prisma.organization.findUnique({
       where: { slug },
       include: {
         members: { include: { user: { select: { id: true, name: true, email: true } } } },
         _count: { select: { bots: true, conversations: true, knowledgeFiles: true } },
       },
     });
+    if (!full) throw new NotFoundException('Organization not found');
+    // Keep the raw payout account (subaccount code + bank details) out of the general org payload;
+    // it's served only by the OWNER-gated Payouts endpoint.
+    const { paystackSubaccountCode, payoutBusinessName, payoutBankName, payoutAccountLast4, payoutAccountName, ...safe } = full;
+    void paystackSubaccountCode; void payoutBusinessName; void payoutBankName; void payoutAccountLast4; void payoutAccountName;
+    return safe;
   }
 
   async removeMember(orgId: string, requestingUserId: string, targetUserId: string) {

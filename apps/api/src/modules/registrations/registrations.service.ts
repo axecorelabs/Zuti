@@ -287,6 +287,12 @@ export class RegistrationsService {
 
   async createTicketType(orgId: string, productId: string, dto: CreateTicketTypeDto) {
     await this.assertProduct(orgId, productId);
+    // Gate: adding a PAID tier to an already-public event requires a connected payout account —
+    // otherwise it bypasses the publish gate and paid tickets would sell into the platform account.
+    if ((dto.priceMinor ?? 0) > 0) {
+      const product = await this.prisma.registrationProduct.findUnique({ where: { id: productId }, select: { isPublic: true } });
+      if (product?.isPublic && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
+    }
     return this.prisma.registrationTicketType.create({
       data: {
         productId,
@@ -306,6 +312,11 @@ export class RegistrationsService {
       select: { id: true, productId: true },
     });
     if (!tier) throw new NotFoundException('Ticket type not found');
+    // Gate: turning a tier paid (or re-pricing it up) on a public event requires a payout account.
+    if (dto.priceMinor !== undefined && dto.priceMinor > 0) {
+      const product = await this.prisma.registrationProduct.findUnique({ where: { id: tier.productId }, select: { isPublic: true } });
+      if (product?.isPublic && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
+    }
     // Capacity can be raised, lowered, or removed (null = unlimited) — but never set below the number
     // already sold or held for this tier, or those tickets would be stranded above the cap.
     if (dto.capacity !== undefined && dto.capacity !== null) {
