@@ -1529,16 +1529,16 @@ export default function EventsPage() {
       {selectedProduct && (
         <div className="flex-1 flex flex-col min-w-0">
           {/* Detail header */}
-          <div className="p-5 border-b border-zinc-800/60 flex items-start justify-between gap-4">
-            <div className="flex items-center gap-3">
+          <div className="p-5 border-b border-zinc-800/60 flex flex-col gap-3">
+            <div className="flex items-start gap-3 min-w-0">
               <button
                 onClick={() => setSelectedProduct(null)}
-                className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors md:hidden"
+                className="p-1.5 rounded-lg text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors md:hidden shrink-0"
               >
                 <X className="w-4 h-4" />
               </button>
-              <div>
-                <h2 className="text-sm font-semibold text-white">{selectedProduct.name}</h2>
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold text-white break-words">{selectedProduct.name}</h2>
                 <p className="text-xs text-zinc-500 mt-0.5">
                   {selectedProduct._count.entries} registrant{selectedProduct._count.entries !== 1 ? 's' : ''}
                   {selectedProduct.capacity ? ` · ${selectedProduct.usedSpots ?? selectedProduct._count.entries}/${selectedProduct.capacity} spots` : ''}
@@ -1547,7 +1547,7 @@ export default function EventsPage() {
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5 flex-wrap">
               <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800 mr-1">
                 <button
                   onClick={() => setDetailTab('registrants')}
