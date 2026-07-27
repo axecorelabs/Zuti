@@ -51,7 +51,7 @@ const ID_META: Record<IdType, { label: string; icon: any }> = {
 const STAGE_META: Record<Lifecycle, { label: string; cls: string }> = {
   LEAD: { label: 'Lead', cls: 'bg-zinc-700/40 text-zinc-300 border-zinc-600/40' },
   ENGAGED: { label: 'Engaged', cls: 'bg-blue-500/15 text-blue-300 border-blue-500/25' },
-  CUSTOMER: { label: 'Customer', cls: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/25' },
+  CUSTOMER: { label: 'Customer', cls: 'bg-emerald-600/20 text-emerald-400 border-emerald-600/40' },
 };
 const STAGES: (Lifecycle | 'ALL')[] = ['ALL', 'CUSTOMER', 'ENGAGED', 'LEAD'];
 

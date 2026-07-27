@@ -829,9 +829,9 @@ function ProductFormFields({ form, bots, variant, orgId, product, wizardStep }: 
       </div>
 
       {form.isPublic && shareUrl && (
-        <div className="flex items-center gap-2 rounded-xl border border-emerald-600/20 bg-emerald-600/5 px-3 py-2">
-          <Globe className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-          <span className="text-xs text-emerald-300 truncate flex-1 font-mono">{shareUrl}</span>
+        <div className="flex items-center gap-2 rounded-xl border border-blue-600/20 bg-blue-600/5 px-3 py-2">
+          <Globe className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+          <span className="text-xs text-blue-300 truncate flex-1 font-mono">{shareUrl}</span>
           <button type="button" onClick={() => { navigator.clipboard.writeText(shareUrl).catch(() => {}); toast.success('Link copied'); }} className="p-1 text-zinc-400 hover:text-white" title="Copy link"><Copy className="w-3.5 h-3.5" /></button>
           <a href={shareUrl} target="_blank" rel="noreferrer" className="p-1 text-zinc-400 hover:text-white" title="Open"><ExternalLink className="w-3.5 h-3.5" /></a>
         </div>
