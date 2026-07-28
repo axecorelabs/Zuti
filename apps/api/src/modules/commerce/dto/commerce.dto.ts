@@ -415,7 +415,7 @@ export class SetupCommerceStoreSubaccountDto {
   @MaxLength(20)
   declare accountNumber: string;
 
-  @ApiPropertyOptional({ example: 0, description: 'Percentage of transaction to send to subaccount (0–100)' })
+  @ApiPropertyOptional({ example: 0, description: 'Unused — the platform fee percentage is fixed server-side, not caller-supplied.' })
   @IsOptional()
   @IsInt()
   @Min(0)

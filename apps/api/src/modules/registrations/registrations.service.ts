@@ -12,6 +12,7 @@ import { CustomerIdentityService } from '../customers/customer-identity.service'
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto, PublicCartDto } from './dto/registrations.dto';
+import { computeGrossUpForSubaccount } from '../../common/utils/payment-split';
 
 type PaystackInitResponse = {
   status: boolean;
@@ -804,33 +805,10 @@ export class RegistrationsService {
     return !!(await this.getOrgSubaccount(orgId));
   }
 
-  /** Gross up a ticket-price total so the customer pays enough to cover both the Paystack
-   * processing fee and the platform fee, leaving the organiser's subaccount receiving exactly
-   * `ticketMinor`. Uses Paystack Nigeria standard fee: 1.5% of gross + ₦100 flat (> ₦2,500),
-   * capped at ₦2,000. `transactionCharge` is passed to Paystack as `transaction_charge`; with
-   * `bearer: 'account'`, Paystack deducts its actual fee from Zuti's cut — absorbing any
-   * rounding variance — while the subaccount always receives exactly `ticketMinor`. */
+  /** Gross up a ticket-price total for a subaccount split charge. See payment-split.ts for the
+   * mechanism (transaction_charge + bearer:account) and why it's safe against Paystack fee drift. */
   private computeRegistrationGross(ticketMinor: number): { gross: number; transactionCharge: number } {
-    if (ticketMinor <= 0) return { gross: 0, transactionCharge: 0 };
-    const PLATFORM_RATE    = 0.05;     // 5% of ticket price goes to Zuti's main account
-    const PS_RATE          = 0.015;    // Paystack 1.5% of gross charge
-    const PS_FLAT_KS       = 10_000;   // ₦100 in kobo (applied when gross > ₦2,500)
-    const PS_FLAT_THRESH   = 250_000;  // ₦2,500 in kobo
-    const PS_CAP           = 200_000;  // ₦2,000 cap in kobo
-
-    const platformFee = Math.ceil(ticketMinor * PLATFORM_RATE);
-    const base = ticketMinor + platformFee;
-
-    // Solve gross = base + paystackFee(gross) iteratively — converges in ≤ 3 steps.
-    let gross = base;
-    for (let i = 0; i < 3; i++) {
-      const flat = gross > PS_FLAT_THRESH ? PS_FLAT_KS : 0;
-      gross = base + Math.min(PS_CAP, Math.ceil(gross * PS_RATE) + flat);
-    }
-    const flat = gross > PS_FLAT_THRESH ? PS_FLAT_KS : 0;
-    const paystackFee = Math.min(PS_CAP, Math.ceil(gross * PS_RATE) + flat);
-    gross = base + paystackFee;
-    return { gross, transactionCharge: platformFee + paystackFee };
+    return computeGrossUpForSubaccount(ticketMinor);
   }
 
   private readonly PAYOUT_GATE_MSG = 'Connect a payout account (Billing → Payouts) before publishing a paid event, so ticket money reaches your bank.';

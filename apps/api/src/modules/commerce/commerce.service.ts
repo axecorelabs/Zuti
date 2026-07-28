@@ -32,6 +32,7 @@ import {
   OrderFulfillmentStatus,
 } from './dto/commerce.dto';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage, toPublicStorageUrl } from '../../common/utils/supabase-storage';
+import { computeGrossUpForSubaccount } from '../../common/utils/payment-split';
 
 type PaystackInitializeResponse = {
   status: boolean;
@@ -372,7 +373,11 @@ export class CommerceService {
           business_name: dto.businessName,
           settlement_bank: dto.settlementBank,
           account_number: dto.accountNumber,
-          percentage_charge: 95, // Zuti platform fee: 5%; merchant receives 95%
+          // Paystack's percentage_charge is the PLATFORM's share, not the merchant's (verified against
+          // Paystack's docs). 5 means Zuti takes 5% and the merchant keeps 95% by default. Order
+          // payments override this per-transaction via transaction_charge (see payment-split.ts), so
+          // this stored value only matters as the fallback for a charge that skips the override.
+          percentage_charge: 5,
           primary_contact_email: dto.primaryContactEmail,
           primary_contact_name: dto.primaryContactName,
           primary_contact_phone: dto.primaryContactPhone,
@@ -1489,9 +1494,16 @@ export class CommerceService {
       ? metadataFromStore.paystackSubaccountCode
       : undefined;
 
+    // When the store has a subaccount, gross up so Paystack's fee and Zuti's platform fee are added
+    // on top of the order total rather than deducted from it — the store's settlement is always the
+    // full order total. See payment-split.ts for the mechanism.
+    const { gross: chargedAmount, transactionCharge } = subaccount
+      ? computeGrossUpForSubaccount(order.totalMinor)
+      : { gross: order.totalMinor, transactionCharge: 0 };
+
     const reference = `zuti_commerce_${Date.now()}_${randomBytes(6).toString('hex')}`;
     const payload: Record<string, unknown> = {
-      amount: order.totalMinor,
+      amount: chargedAmount,
       email: customerEmail,
       currency: order.currency,
       reference,
@@ -1502,7 +1514,7 @@ export class CommerceService {
       },
     };
     if (callbackUrl) payload.callback_url = callbackUrl;
-    if (subaccount) payload.subaccount = subaccount;
+    if (subaccount) { payload.subaccount = subaccount; payload.bearer = 'account'; payload.transaction_charge = transactionCharge; }
 
     const response = await firstValueFrom(
       this.httpService.post<PaystackInitializeResponse>('https://api.paystack.co/transaction/initialize', payload, {
@@ -1526,7 +1538,10 @@ export class CommerceService {
         orderId: order.id,
         provider: 'PAYSTACK',
         reference: paymentReference,
-        amountMinor: order.totalMinor,
+        // The amount actually charged (grossed up when a subaccount is attached) — this is what
+        // verifyOrderPayment compares Paystack's returned amount against, so verification stays
+        // correct without recomputation. order.totalMinor remains the true order value everywhere else.
+        amountMinor: chargedAmount,
         currency: order.currency,
         status: CommercePaymentStatus.PENDING,
         authorizationUrl,

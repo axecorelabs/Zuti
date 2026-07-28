@@ -127,7 +127,12 @@ export class OrganizationsService {
           business_name: dto.businessName,
           settlement_bank: dto.settlementBank,
           account_number: dto.accountNumber,
-          percentage_charge: 95, // merchant receives 95%; Zuti platform fee 5% — same split as commerce
+          // Paystack's percentage_charge is the PLATFORM's share, not the subaccount's (verified
+          // against Paystack's docs — "20% going to main account and the rest going to subaccount").
+          // 5 means Zuti takes 5% and the merchant keeps 95% by default. Registration payments always
+          // override this per-transaction via transaction_charge (see payment-split.ts), so this
+          // stored value only matters as the fallback for any charge that doesn't send an override.
+          percentage_charge: 5,
           ...(dto.primaryContactEmail ? { primary_contact_email: dto.primaryContactEmail } : {}),
         },
         { headers: { Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' } },

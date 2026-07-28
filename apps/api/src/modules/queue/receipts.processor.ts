@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import { EventsGateway } from '../events/events.gateway';
 import { sendWhatsAppText } from '../../common/utils/whatsapp';
+import { computeGrossUpForSubaccount } from '../../common/utils/payment-split';
 
 // ── Job payloads ──────────────────────────────────────────────────────────────
 
@@ -120,7 +121,28 @@ export class ReceiptsProcessor {
     const receiptNumber = `REC-${reference.slice(-8).toUpperCase()}`;
     const quantity = entry.quantity ?? 1;
     const unitPrice = entry.product.priceMinor ?? 0;
-    const totalMinor = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : unitPrice * quantity;
+    const ticketMinor = (entry.amountMinor && entry.amountMinor > 0) ? entry.amountMinor : unitPrice * quantity;
+
+    // The customer may have been charged MORE than the ticket price (Paystack/platform fees grossed
+    // on top when the org has a payout account — see payment-split.ts). A purchase can cover several
+    // tickets sharing one payment reference, each getting its own receipt, so recover the REAL total
+    // charged for the whole purchase and give this ticket its proportional share of the fee, so every
+    // receipt is honest about what was actually charged (never understates it).
+    let totalMinor = ticketMinor;
+    let feeShareMinor = 0;
+    if (!entry.product.isFree && entry.paystackReference) {
+      const siblings = await prismaAny.registrationEntry.findMany({
+        where: { paystackReference: entry.paystackReference, orgId },
+        select: { amountMinor: true },
+      });
+      const groupTicketMinor = siblings.reduce((s: number, e: { amountMinor: number | null }) => s + (e.amountMinor ?? 0), 0) || ticketMinor;
+      const orgSubaccount = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { paystackSubaccountCode: true } });
+      if (orgSubaccount?.paystackSubaccountCode) {
+        const groupFee = computeGrossUpForSubaccount(groupTicketMinor).gross - groupTicketMinor;
+        feeShareMinor = groupTicketMinor > 0 ? Math.round(groupFee * (ticketMinor / groupTicketMinor)) : 0;
+        totalMinor = ticketMinor + feeShareMinor;
+      }
+    }
 
     // 1. Event ticket email
     await this.mail.sendEventTicket({
@@ -143,11 +165,14 @@ export class ReceiptsProcessor {
         recipientName: entry.customerName,
         receiptNumber,
         description: `${entry.product.name} — Event Registration`,
-        lineItems: [{
-          label: quantity > 1 ? `${entry.product.name} (${quantity} tickets × ${entry.product.currency ?? 'NGN'} ${(unitPrice / 100).toFixed(2)})` : entry.product.name,
-          amountMinor: totalMinor,
-          currency: entry.product.currency ?? 'NGN',
-        }],
+        lineItems: [
+          {
+            label: quantity > 1 ? `${entry.product.name} (${quantity} tickets × ${entry.product.currency ?? 'NGN'} ${(unitPrice / 100).toFixed(2)})` : entry.product.name,
+            amountMinor: ticketMinor,
+            currency: entry.product.currency ?? 'NGN',
+          },
+          ...(feeShareMinor > 0 ? [{ label: 'Payment processing fee', amountMinor: feeShareMinor, currency: entry.product.currency ?? 'NGN' }] : []),
+        ],
         totalMinor,
         currency: entry.product.currency ?? 'NGN',
         reference,
@@ -304,6 +329,13 @@ export class ReceiptsProcessor {
       amountMinor: item.lineTotalMinor,
       currency: order.currency,
     }));
+    // payment.amountMinor is the amount ACTUALLY charged (grossed up for Paystack/platform fees when
+    // the store has a payout account — see commerce.service.ts initializeOrderPayment); order.totalMinor
+    // is the true order value. Show the difference as its own line so the receipt never understates
+    // what the customer's card was charged.
+    const totalCharged = (payment?.amountMinor && payment.amountMinor > 0) ? payment.amountMinor : order.totalMinor;
+    const feeMinor = Math.max(0, totalCharged - order.totalMinor);
+    if (feeMinor > 0) lineItems.push({ label: 'Payment processing fee', amountMinor: feeMinor, currency: order.currency });
 
     await this.mail.sendPaymentReceipt({
       to: order.customerEmail,
@@ -311,7 +343,7 @@ export class ReceiptsProcessor {
       receiptNumber,
       description: `${order.store.name} — Order Receipt`,
       lineItems,
-      totalMinor: order.totalMinor,
+      totalMinor: totalCharged,
       currency: order.currency,
       reference,
       paidAt: payment?.paidAt ?? new Date(),
