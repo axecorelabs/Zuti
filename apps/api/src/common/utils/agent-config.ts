@@ -180,7 +180,16 @@ export function buildAgentSystemPrompt(config: RawConfig, botName: string): stri
   return lines.join('\n');
 }
 
-export function buildSkillBehaviorPromptBlock(_config: RawConfig, actionType?: unknown): string | null {
+/**
+ * `actionType` comes from the pre-turn KEYWORD classifier on the customer's raw message — a guess
+ * that can be wrong (e.g. "buy a ticket" pattern-matches SALES before the tool loop resolves it to a
+ * registration). `capabilityBlocked` should be true when that classified action's capability isn't
+ * even enabled for this bot (forwardingResult.reason === 'SKILL_NOT_ENABLED') — in that case the model
+ * can't act on the guess anyway and will route elsewhere via a tool, so injecting this workflow's tone
+ * guidance would just be noise for the wrong task. Skip it rather than mistarget the reply's tone.
+ */
+export function buildSkillBehaviorPromptBlock(_config: RawConfig, actionType?: unknown, capabilityBlocked = false): string | null {
+  if (capabilityBlocked) return null;
   const key = mapActionTypeToSkillKey(actionType);
   if (!key) return null;
 

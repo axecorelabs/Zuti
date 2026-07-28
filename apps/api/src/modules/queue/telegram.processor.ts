@@ -767,7 +767,7 @@ export class TelegramProcessor {
 
       await this.callAiAndRespond(
         conversation.id, botId, telegramChatId, telegramToken, organizationId, resolvedUserText,
-        bot?.name ?? 'Assistant', systemPrompt, aiConfig, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id, recentMessagesPromise,
+        bot?.name ?? 'Assistant', systemPrompt, aiConfig, buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType, isAgenticEnabled(this.config) && forwardingResult.reason === 'SKILL_NOT_ENABLED'), org?.name ?? null, forwardingResult, routeToRoles, userMessage.id, recentMessagesPromise,
       );
     }
   }
@@ -839,8 +839,15 @@ export class TelegramProcessor {
       return;
     }
 
-    // Hard capability gate before any LLM call.
-    if (isBlockedCapabilityReason(forwardingResult.reason)) {
+    // Hard capability gate before any LLM call — LEGACY/non-agentic fallback only. In agentic mode
+    // this must NOT run: forwardingResult.reason comes from a pre-turn KEYWORD guess at the action
+    // type, which can be wrong (e.g. "buy a ticket" guessed as SALES before the tool loop resolves it
+    // to a registration) or based on a capability flag that's stale relative to which tools are
+    // actually enabled (register_for_event is enabled by having events, independent of these flags).
+    // A wrong guess here would return a refusal WITHOUT EVER CALLING THE MODEL — no prompt-level fix
+    // can reach that. In agentic mode the model gets the real, current tool set and correctly declines
+    // (via the operational-integrity guidance) anything it genuinely has no tool for.
+    if (!isAgenticEnabled(this.config) && isBlockedCapabilityReason(forwardingResult.reason)) {
       const deterministic = buildDeterministicFollowUpMessage({
         actionType: forwardingResult.actionType,
         forwardingReason: forwardingResult.reason,

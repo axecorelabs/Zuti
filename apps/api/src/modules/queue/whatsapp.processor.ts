@@ -791,7 +791,7 @@ export class WhatsAppProcessor {
       aiContext.statePrompt,
       aiContext.responseStylePrompt,
       languageDecision.promptBlock,
-      buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
+      buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType, isAgenticEnabled(this.config) && forwardingResult.reason === 'SKILL_NOT_ENABLED'),
       buildOperationalIntegrityPromptBlock(
         forwardingResult.status,
         forwardingResult.reason,

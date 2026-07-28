@@ -528,7 +528,7 @@ export class EmailProcessor {
       conversation, botId, toAddress, fromEmail, organizationId,
       userText, bot.name, systemPrompt,
       aiConfig,
-      buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType),
+      buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType, isAgenticEnabled(this.config) && forwardingResult.reason === 'SKILL_NOT_ENABLED'),
       bot.organization?.name ?? null,
       bot.organization?.slug ?? null,
       forwardingResult,
@@ -607,8 +607,10 @@ export class EmailProcessor {
       return;
     }
 
-    // Hard capability gate before any LLM call.
-    if (isBlockedCapabilityReason(forwardingResult.reason)) {
+    // Hard capability gate before any LLM call — LEGACY/non-agentic fallback only. See telegram.processor.ts
+    // for the full rationale: in agentic mode a pre-turn keyword guess must never veto the model before
+    // it gets a chance to use its real, current tool set.
+    if (!isAgenticEnabled(this.config) && isBlockedCapabilityReason(forwardingResult.reason)) {
       const deterministic = buildDeterministicFollowUpMessage({
         actionType: forwardingResult.actionType,
         forwardingReason: forwardingResult.reason,
