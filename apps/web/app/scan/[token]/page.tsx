@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState, use } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Html5Qrcode } from 'html5-qrcode';
 import { ScanLine, CheckCircle2, AlertTriangle, XCircle, RefreshCw, Keyboard, ShieldOff } from 'lucide-react';
 
@@ -24,8 +24,8 @@ const STYLE: Record<Outcome, { bg: string; border: string; color: string; icon: 
   ERROR: { bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)', color: '#f87171', icon: XCircle, title: 'Something went wrong' },
 };
 
-export default function ScanSessionPage({ params }: { params: Promise<{ token: string }> }) {
-  const { token } = use(params);
+export default function ScanSessionPage({ params }: { params: { token: string } }) {
+  const { token } = params;
   const [session, setSession] = useState<Resolve | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
