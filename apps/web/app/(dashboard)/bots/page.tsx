@@ -1871,7 +1871,15 @@ onBeforeUnmount(() => {
 
   const confirmGuidedPackFlow = () => {
     if (!pendingGuidedPreset) return;
-    applyGuidedPack(pendingGuidedPreset);
+    // Re-opening "Custom" on a bot that's already on a custom config must NOT overwrite the
+    // (already-hydrated, possibly mid-edit) fields with the blank Custom template — that's the bug
+    // where re-editing wiped everything and forced retyping from scratch. Only apply the preset's
+    // canned values when actually switching TO a template (a genuine reset is the expected behavior
+    // there). The agent-name prompt still runs every time, per how this is meant to work.
+    const reopeningExistingCustom = pendingGuidedPreset.label === 'Custom' && selectedGuidedPreset === 'Custom';
+    if (!reopeningExistingCustom) {
+      applyGuidedPack(pendingGuidedPreset);
+    }
     setEditAgentAlias(presetAgentNameDraft.trim());
     setGuidedStep(2);
     if (pendingGuidedPreset.label === 'Custom') {
@@ -1910,8 +1918,8 @@ onBeforeUnmount(() => {
   };
 
   const validateAiConfig = (): string | null => {
-    if (editExtraDetails.length > 1000) {
-      return 'Extra Details is too long. Keep it under 1000 characters.';
+    if (editExtraDetails.length > 2500) {
+      return 'Extra Details is too long. Keep it under 2500 characters.';
     }
 
     if (editProhibitedTopics.length > 300) {
