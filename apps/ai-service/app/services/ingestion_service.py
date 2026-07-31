@@ -70,7 +70,20 @@ class IngestionService:
                 collection_name=collection,
                 vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
             )
+        await self._ensure_knowledge_file_id_index(client, collection)
         return client, collection
+
+    async def _ensure_knowledge_file_id_index(self, client, collection: str):
+        """Qdrant refuses to filter/delete on a payload field with no index —
+        create it (idempotent, safe to call repeatedly) so deletes by
+        knowledge_file_id work on both new and pre-existing collections."""
+        from qdrant_client.models import PayloadSchemaType
+
+        await client.create_payload_index(
+            collection_name=collection,
+            field_name="knowledge_file_id",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
 
     async def ingest_url(
         self,
@@ -319,10 +332,21 @@ class IngestionService:
 
     async def delete_knowledge_item(self, organization_id: str, knowledge_file_id: str) -> bool:
         from qdrant_client import AsyncQdrantClient
+        from qdrant_client.http.exceptions import UnexpectedResponse
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
         client = AsyncQdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY or None)
         collection = _collection(organization_id)
+
+        try:
+            await client.get_collection(collection)
+        except UnexpectedResponse as exc:
+            if exc.status_code == 404:
+                return False
+            raise
+
+        # Collections created before the payload index existed won't have it yet.
+        await self._ensure_knowledge_file_id_index(client, collection)
 
         await client.delete(
             collection_name=collection,
