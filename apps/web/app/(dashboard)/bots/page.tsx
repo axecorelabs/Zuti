@@ -1947,12 +1947,6 @@ onBeforeUnmount(() => {
     }
 
     const topics = splitList(editProhibitedTopics);
-    if (topics.length > 12) {
-      return 'Use up to 12 prohibited topics for clarity.';
-    }
-    if (topics.some((topic) => topic.length > 60)) {
-      return 'Each prohibited topic should be 60 characters or less.';
-    }
     if (topics.some((topic) => /[<>]/.test(topic))) {
       return 'Prohibited Topics contains unsupported characters.';
     }
