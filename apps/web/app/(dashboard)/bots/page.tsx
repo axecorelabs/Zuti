@@ -1921,9 +1921,29 @@ onBeforeUnmount(() => {
     if (editExtraDetails.length > 2500) {
       return 'Extra Details is too long. Keep it under 2500 characters.';
     }
+    if (editMission.length > 2500) {
+      return 'Mission is too long. Keep it under 2500 characters.';
+    }
+    if (editToneCustom.length > 2500) {
+      return 'Custom Tone is too long. Keep it under 2500 characters.';
+    }
+    if (editPersonaCustom.length > 2500) {
+      return 'Custom Persona is too long. Keep it under 2500 characters.';
+    }
+    if (editLanguageStyle.length > 2500) {
+      return 'Language Style is too long. Keep it under 2500 characters.';
+    }
+    if (editEscalationPolicy.length > 2500) {
+      return 'Escalation Policy is too long. Keep it under 2500 characters.';
+    }
+    // Agent Alias is a display name (shown in chat headers/badges), not a prose field — kept short
+    // rather than raised to 2500 like the free-text personality fields above.
+    if (editAgentAlias.length > 100) {
+      return 'Agent Alias is too long. Keep it under 100 characters.';
+    }
 
-    if (editProhibitedTopics.length > 300) {
-      return 'Prohibited Topics is too long. Keep it under 300 characters.';
+    if (editProhibitedTopics.length > 2500) {
+      return 'Prohibited Topics is too long. Keep it under 2500 characters.';
     }
 
     const topics = splitList(editProhibitedTopics);
