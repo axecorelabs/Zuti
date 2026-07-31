@@ -63,13 +63,19 @@ export default function RegisterForm(props: Props) {
   const [attendees, setAttendees] = useState<Record<number, Partial<Attendee>>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [waitlistTierId, setWaitlistTierId] = useState<string | null>(null); // which sold-out tier row has its join form open
 
   const totalTickets = Object.values(quantities).reduce((s, n) => s + n, 0);
   const totalMinor = tiers.reduce((s, t) => s + (quantities[t.id] ?? 0) * (t.priceMinor || 0), 0);
   const anyPaid = totalMinor > 0;
 
   if (props.soldOut || tiers.every(isSoldOut)) {
-    return <div style={soldOutBox}>This event is sold out.</div>;
+    return (
+      <div>
+        <div style={soldOutBox}>This event is sold out.</div>
+        <WaitlistJoinForm slug={slug} tiers={tiers} fixedTierId={props.hasTiers ? undefined : tiers[0]?.id} />
+      </div>
+    );
   }
 
   // Flattened ticket slots (for per-attendee entry), in tier order.
@@ -151,22 +157,30 @@ export default function RegisterForm(props: Props) {
           const left = tierEffLeft(t.spotsLeft);
           const qty = quantities[t.id] ?? 0;
           return (
-            <div key={t.id} style={{ ...tierRow, opacity: soldOut ? 0.5 : 1 }}>
-              <div style={{ textAlign: 'left', minWidth: 0 }}>
-                <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14 }}>{t.name}</div>
-                {t.description && <div style={{ color: '#9ca3af', fontSize: 12 }}>{t.description}</div>}
-                <div style={{ color: '#71717a', fontSize: 12, marginTop: 2 }}>
-                  {soldOut ? 'Sold out' : t.isFree ? 'Free' : money(t.priceMinor, t.currency)}
-                  {left != null && !soldOut ? ` · ${left <= 5 ? (left === 1 ? 'last one' : `${left} left`) : `${left} left`}` : ''}
+            <div key={t.id}>
+              <div style={{ ...tierRow, opacity: soldOut ? 0.5 : 1 }}>
+                <div style={{ textAlign: 'left', minWidth: 0 }}>
+                  <div style={{ color: '#f4f4f5', fontWeight: 600, fontSize: 14 }}>{t.name}</div>
+                  {t.description && <div style={{ color: '#9ca3af', fontSize: 12 }}>{t.description}</div>}
+                  <div style={{ color: '#71717a', fontSize: 12, marginTop: 2 }}>
+                    {soldOut ? 'Sold out' : t.isFree ? 'Free' : money(t.priceMinor, t.currency)}
+                    {left != null && !soldOut ? ` · ${left <= 5 ? (left === 1 ? 'last one' : `${left} left`) : `${left} left`}` : ''}
+                  </div>
                 </div>
+                {!soldOut && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <button type="button" onClick={() => setQty(t, qty - 1)} disabled={qty <= 0} style={stepBtn(qty <= 0)}>−</button>
+                    <span style={{ minWidth: 18, textAlign: 'center', color: '#f4f4f5', fontWeight: 600 }}>{qty}</span>
+                    <button type="button" onClick={() => setQty(t, qty + 1)} style={stepBtn(false)}>+</button>
+                  </div>
+                )}
+                {soldOut && (
+                  <button type="button" onClick={() => setWaitlistTierId((cur) => (cur === t.id ? null : t.id))} style={{ background: 'none', border: 'none', color: '#a5b4fc', fontSize: 12, fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    {waitlistTierId === t.id ? 'Cancel' : 'Join waitlist'}
+                  </button>
+                )}
               </div>
-              {!soldOut && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <button type="button" onClick={() => setQty(t, qty - 1)} disabled={qty <= 0} style={stepBtn(qty <= 0)}>−</button>
-                  <span style={{ minWidth: 18, textAlign: 'center', color: '#f4f4f5', fontWeight: 600 }}>{qty}</span>
-                  <button type="button" onClick={() => setQty(t, qty + 1)} style={stepBtn(false)}>+</button>
-                </div>
-              )}
+              {soldOut && waitlistTierId === t.id && <WaitlistJoinForm slug={slug} tiers={tiers} fixedTierId={t.id} />}
             </div>
           );
         })}
@@ -230,6 +244,69 @@ export default function RegisterForm(props: Props) {
   );
 }
 
+function WaitlistJoinForm({ slug, tiers, fixedTierId }: { slug: string; tiers: Tier[]; fixedTierId?: string }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [tierId, setTierId] = useState(fixedTierId ?? (tiers.length === 1 ? tiers[0].id : ''));
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<{ outcome: string; position?: number; message?: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const needsTierPick = !fixedTierId && tiers.length > 1;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!email.trim()) { setError('Email is required.'); return; }
+    if (needsTierPick && !tierId) { setError('Choose a ticket tier.'); return; }
+    setSubmitting(true);
+    try {
+      const chosenTierId = tierId === '__single__' ? undefined : tierId || undefined;
+      const res = await fetch(`${API_URL}/api/public/events/${slug}/waitlist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customerName: name.trim() || undefined, customerEmail: email.trim(), ticketTypeId: chosenTierId }),
+      });
+      const data = await res.json();
+      if (!res.ok || data?.outcome === 'PRODUCT_NOT_FOUND' || data?.outcome === 'MISSING_FIELDS') {
+        setError(data?.message ?? 'Could not join the waitlist.');
+        setSubmitting(false);
+        return;
+      }
+      setResult(data);
+    } catch {
+      setError('Something went wrong. Please try again.');
+    }
+    setSubmitting(false);
+  };
+
+  if (result && (result.outcome === 'JOINED' || result.outcome === 'ALREADY_WAITING')) {
+    return (
+      <div style={waitlistJoinedBox}>
+        {result.message ?? (result.position ? `You're on the waitlist — position ${result.position}.` : "You're on the waitlist.")}
+      </div>
+    );
+  }
+
+  return (
+    <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+      <input style={inputStyle} placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
+      <input style={inputStyle} type="email" placeholder="Email address" value={email} onChange={(e) => setEmail(e.target.value)} required />
+      {needsTierPick && (
+        <select style={inputStyle} value={tierId} onChange={(e) => setTierId(e.target.value)} required>
+          <option value="">Which tier?</option>
+          {tiers.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+        </select>
+      )}
+      {error && <div style={errorBox}>{error}</div>}
+      <button type="submit" disabled={submitting} style={{ ...submitBtn, background: '#3f3f46', opacity: submitting ? 0.6 : 1 }}>
+        {submitting ? 'Joining…' : 'Join waitlist'}
+      </button>
+      <p style={{ color: '#71717a', fontSize: 11, textAlign: 'center', margin: 0 }}>We&apos;ll email you the moment a spot opens, with a deadline to claim it.</p>
+    </form>
+  );
+}
+
 const labelStyle: React.CSSProperties = { color: '#9ca3af', fontSize: 12, fontWeight: 500 };
 const inputStyle: React.CSSProperties = { background: '#151519', border: '1px solid #26262c', borderRadius: 10, padding: '11px 13px', color: '#f4f4f5', fontSize: 14, outline: 'none', width: '100%', boxSizing: 'border-box' };
 const tierRow: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, border: '1px solid #26262c', borderRadius: 12, padding: '12px 14px', background: '#151519' };
@@ -237,3 +314,4 @@ const stepBtn = (disabled: boolean): React.CSSProperties => ({ width: 30, height
 const submitBtn: React.CSSProperties = { background: '#6366f1', color: '#fff', border: 'none', borderRadius: 10, padding: '13px', fontSize: 15, fontWeight: 600, cursor: 'pointer', marginTop: 4 };
 const errorBox: React.CSSProperties = { background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', borderRadius: 10, padding: '10px 12px', fontSize: 13 };
 const soldOutBox: React.CSSProperties = { background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', color: '#fca5a5', borderRadius: 12, padding: '16px', fontSize: 14, textAlign: 'center' };
+const waitlistJoinedBox: React.CSSProperties = { background: 'rgba(99,102,241,0.1)', border: '1px solid rgba(99,102,241,0.3)', color: '#a5b4fc', borderRadius: 10, padding: '12px 14px', fontSize: 13, textAlign: 'center', marginTop: 10 };

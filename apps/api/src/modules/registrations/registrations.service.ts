@@ -1844,9 +1844,12 @@ export class RegistrationsService {
       }
     }
     this.logger.log(`Waitlist: expired ${expired.length} unclaimed offer(s)`);
+    // Already running inside a background sweep (not a live request), so await the cascade rather
+    // than fire-and-forget it — the sweep should reliably finish offering the next person before
+    // this run completes, not leave it detached.
     const affectedProductIds = Array.from(new Set<string>(expired.map((e: any) => e.productId)));
     for (const productId of affectedProductIds) {
-      this.releaseWaitlistOffers(productId).catch((err) => this.logger.warn(`Waitlist release failed for ${productId}: ${String(err)}`));
+      await this.releaseWaitlistOffers(productId).catch((err) => this.logger.warn(`Waitlist release failed for ${productId}: ${String(err)}`));
     }
   }
 

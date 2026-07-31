@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import TicketScanner from './ticket-scanner';
 import ScanSessionsPanel from './scan-sessions-panel';
+import WaitlistPanel from './waitlist-panel';
 import MessagesPanel from './messages-panel';
 import {
   AreaChart, Area, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -1787,6 +1788,7 @@ export default function EventsPage() {
                 </table>
                   </div>
                 </div>
+                {canManage && <WaitlistPanel orgId={orgId} productId={selectedProduct.id} />}
               </div>
             )}
           </div>

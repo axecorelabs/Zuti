@@ -684,6 +684,11 @@ export const registrationsApi = {
     api.post(`/organizations/${orgId}/registrations/${productId}/scan-sessions`, data),
   revokeScanSession: (orgId: string, sessionId: string) =>
     api.delete(`/organizations/${orgId}/registrations/scan-sessions/${sessionId}`),
+  // Waitlist — OWNER/ADMIN.
+  listWaitlist: (orgId: string, productId: string) =>
+    api.get(`/organizations/${orgId}/registrations/${productId}/waitlist`),
+  cancelWaitlistEntry: (orgId: string, waitlistEntryId: string) =>
+    api.delete(`/organizations/${orgId}/registrations/waitlist/${waitlistEntryId}`),
   // Attendee announcements (Messages) — OWNER/ADMIN.
   announcementRecipients: (orgId: string, productId: string) =>
     api.get(`/organizations/${orgId}/registrations/${productId}/announcements/recipients`),
