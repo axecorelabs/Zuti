@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "nest start --watch",
-    "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.json --incremental false",
+    "build": "rm -rf dist tsconfig.tsbuildinfo && tsc -p tsconfig.build.json --incremental false",
     "prestart": "pnpm build",
     "start": "node dist/main.js",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
