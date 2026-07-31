@@ -83,6 +83,33 @@ REGISTER_FOR_EVENT_TOOL = {
     },
 }
 
+JOIN_EVENT_WAITLIST_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "join_event_waitlist",
+        "description": (
+            "Join the waitlist for an event/tier that is SOLD OUT. Only call this after register_for_event "
+            "has actually returned AT_CAPACITY for this event — never guess that something is full. Ask the "
+            "customer if they'd like to be waitlisted before calling. If they're waiting for a specific "
+            "tier, pass ticket_type_name. The customer is NOT registered or charged by this — it only "
+            "reserves their place in line. Tell them their position and that they'll be emailed the moment "
+            "a spot opens, with a deadline to claim it. Do not claim they have a ticket."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "product_id": {"type": "string", "description": "The exact 'ID:' of the event from the available registrations context."},
+                "ticket_type_name": {"type": "string", "description": "The tier they're waiting for (e.g. 'VIP'), if the event has tiers."},
+                "ticket_type_id": {"type": "string", "description": "Optional tier id if known. Prefer ticket_type_name."},
+                "quantity": {"type": "integer", "description": "How many spots they want (default 1). Ask — do not assume."},
+                "customer_name": {"type": "string", "description": "The customer's full name."},
+                "customer_email": {"type": "string", "description": "The customer's email address. Never invent or auto-complete this."},
+            },
+            "required": ["product_id", "customer_name", "customer_email"],
+        },
+    },
+}
+
 def _contact_props(extra: dict) -> dict:
     """Common customer contact fields shared by every action tool, plus tool-specific fields."""
     base = {
@@ -305,6 +332,7 @@ ACTION_TOOL_REGISTRY = {
     "report_knowledge_gap": REPORT_KNOWLEDGE_GAP_TOOL,
     "search_products": SEARCH_PRODUCTS_TOOL,
     "register_for_event": REGISTER_FOR_EVENT_TOOL,
+    "join_event_waitlist": JOIN_EVENT_WAITLIST_TOOL,
     "book_meeting": BOOK_MEETING_TOOL,
     "request_consultation": REQUEST_CONSULTATION_TOOL,
     "create_sales_order": CREATE_SALES_ORDER_TOOL,
@@ -824,6 +852,13 @@ class LlmService:
                 "do NOT send a sign-off, and do NOT mark it resolved — you still owe them the link. If you're "
                 "missing only the quantity, ask for it — do not assume 1 and do not abandon the purchase."
             )
+            if "join_event_waitlist" in action_tool_names:
+                tool_guidance += (
+                    " SOLD OUT: if register_for_event returns AT_CAPACITY, don't just apologize — offer to add "
+                    "them to the waitlist, and call join_event_waitlist if they say yes. Tell them their queue "
+                    "position and that they'll be emailed the moment a spot opens, with a deadline to claim it. "
+                    "Never claim they have a ticket from this — it only reserves their place in line."
+                )
         if "search_products" in tool_names:
             tool_guidance += (
                 "\n\nSTORE / PRODUCTS: this bot has a store. For ANY question about what you sell, product "

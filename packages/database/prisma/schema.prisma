@@ -1348,9 +1348,40 @@ model RegistrationProduct {
   ticketTypes         RegistrationTicketType[]
   scanSessions        EventScanSession[]
   announcements       EventAnnouncement[]
+  waitlistEntries     RegistrationWaitlistEntry[]
 
   @@index([orgId, isActive])
   @@index([botId, isActive])
+}
+
+// A request to be notified when a spot frees up on a sold-out event/tier. FIFO by createdAt (strict —
+// a party wanting more tickets than just freed up keeps its place; nobody behind them is offered
+// anything until they're served). WAITING -> OFFERED (a real RegistrationEntry is reserved for them,
+// offerExpiresAt set) -> CONVERTED (they paid/confirmed) or EXPIRED (offer lapsed, cascades to the
+// next WAITING entry via the same reconcile sweep that expires normal payment holds) or CANCELLED
+// (they withdrew).
+model RegistrationWaitlistEntry {
+  id             String    @id @default(cuid())
+  orgId          String
+  productId      String
+  ticketTypeId   String?   // null = event-level waitlist (no tiers, or waiting on overall capacity)
+  botId          String?
+  conversationId String?   // set when joined via the AI agent, so the offer can also notify in-channel
+  customerName   String?
+  customerEmail  String
+  quantity       Int       @default(1)
+  status         String    @default("WAITING") // WAITING | OFFERED | CONVERTED | EXPIRED | CANCELLED
+  offeredEntryId String?   // the real RegistrationEntry reserved for them once offered
+  offerExpiresAt DateTime?
+  customerId     String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  product        RegistrationProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, ticketTypeId, status, createdAt])
+  @@index([orgId])
+  @@index([customerEmail])
 }
 
 // A transactional announcement sent to an event's attendees (venue change, reminder, payment nudge).

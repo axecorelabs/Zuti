@@ -39,11 +39,20 @@ export interface AnnouncementJobPayload {
   orgName: string | null;
 }
 
+export interface WaitlistOfferJobPayload {
+  waitlistEntryId: string;
+  entryId: string;
+  orgId: string;
+  paymentUrl: string | null; // null for free events (already confirmed, no payment step)
+  offerExpiresAt: string | null; // ISO string; null for free events
+}
+
 export const RECEIPT_JOB = {
   REGISTRATION: 'registration',
   CREDITS: 'credits',
   ECOMMERCE: 'ecommerce',
   ANNOUNCEMENT: 'announcement',
+  WAITLIST_OFFER: 'waitlist_offer',
 } as const;
 
 // Default job options used everywhere receipts are enqueued
@@ -231,6 +240,56 @@ export class ReceiptsProcessor {
     try {
       this.events.emitAnnouncementUpdate(a.orgId, { id: a.id, productId: a.productId, status: finalStatus, sentCount: a.sentCount, failedCount: a.failedCount, totalRecipients: a.totalRecipients });
     } catch { /* non-fatal */ }
+  }
+
+  // ── Waitlist offer — a spot opened up; notify the next person in line ─────
+
+  @Process(RECEIPT_JOB.WAITLIST_OFFER)
+  async handleWaitlistOffer(job: Job<WaitlistOfferJobPayload>) {
+    const { waitlistEntryId, entryId, orgId, paymentUrl, offerExpiresAt } = job.data;
+    const prismaAny = this.prisma as any;
+
+    const waitlistEntry = await prismaAny.registrationWaitlistEntry.findFirst({
+      where: { id: waitlistEntryId, orgId },
+      include: { product: { select: { name: true, venue: true, organization: { select: { name: true } } } } },
+    });
+    if (!waitlistEntry || !waitlistEntry.customerEmail) {
+      this.logger.warn(`Waitlist offer job ${job.id}: entry ${waitlistEntryId} not found or has no email — discarding`);
+      return;
+    }
+    const eventName = waitlistEntry.product.name;
+    const orgName = waitlistEntry.product.organization?.name ?? null;
+    const appUrl = this.getAppUrl();
+
+    const deadline = offerExpiresAt ? new Date(offerExpiresAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : null;
+    const subject = paymentUrl ? `A spot opened up for ${eventName}!` : `You're in! Your spot for ${eventName} is confirmed`;
+    const body = paymentUrl
+      ? `Good news — a spot just opened up for "${eventName}" and it's yours!\n\nComplete your payment by ${deadline} to claim it:\n${paymentUrl}\n\nIf we don't hear from you by then, the spot will pass to the next person on the waitlist.`
+      : `Good news — a spot just opened up for "${eventName}" and you're confirmed!\n\nYour ticket has been emailed separately. See you there!`;
+
+    await this.mail.sendEventAnnouncement({ to: waitlistEntry.customerEmail, subject, body, eventName, orgName });
+
+    // Also notify on the channel they joined from, when available (best-effort).
+    if (waitlistEntry.conversationId) {
+      try {
+        const conv = await prismaAny.conversation.findUnique({ where: { id: waitlistEntry.conversationId }, select: { channel: true, telegramChatId: true, whatsappPhoneNumber: true } });
+        const bot = waitlistEntry.botId ? await prismaAny.bot.findUnique({ where: { id: waitlistEntry.botId }, select: { telegramToken: true, whatsappProvider: true, whatsappChannelIdentifier: true, whatsappConfig: true } }) : null;
+        if (conv && bot) {
+          const msg = paymentUrl
+            ? `A spot opened up for "${eventName}"! Complete payment by ${deadline} to claim it:\n${paymentUrl}`
+            : `A spot opened up for "${eventName}" — you're confirmed! Your ticket has been emailed to you.`;
+          if (conv.channel === 'TELEGRAM' && conv.telegramChatId && bot.telegramToken) {
+            await firstValueFrom(this.http.post(`https://api.telegram.org/bot${bot.telegramToken}/sendMessage`, { chat_id: conv.telegramChatId, text: msg }));
+          } else if (conv.channel === 'WHATSAPP' && conv.whatsappPhoneNumber) {
+            await sendWhatsAppText(this.http, { provider: bot.whatsappProvider, channelIdentifier: bot.whatsappChannelIdentifier, config: bot.whatsappConfig }, conv.whatsappPhoneNumber, msg);
+          }
+        }
+      } catch (err) {
+        this.logger.warn(`Waitlist offer job ${job.id}: channel notify failed (non-fatal): ${String(err)}`);
+      }
+    }
+
+    this.logger.log(`Waitlist offer job ${job.id}: notified ${waitlistEntry.customerEmail} for entry ${entryId}`);
   }
 
   // ── Credits receipt — sent to the purchasing user on behalf of the company ─

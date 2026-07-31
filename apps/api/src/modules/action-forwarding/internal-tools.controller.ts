@@ -109,6 +109,24 @@ export class InternalToolsController {
       });
     }
 
+    // Join the waitlist for a sold-out event/tier — only meaningful right after register_for_event
+    // returned AT_CAPACITY.
+    if (toolName === 'join_event_waitlist') {
+      const productId = String(args.product_id ?? '').trim();
+      if (!productId) return { outcome: 'PRODUCT_NOT_FOUND', message: 'Missing product id.' };
+      return this.registrations.joinWaitlist({
+        orgId: body.orgId,
+        botId: body.botId,
+        conversationId: body.conversationId,
+        productId,
+        ticketTypeId: String(args.ticket_type_id ?? '').trim() || undefined,
+        ticketTypeName: String(args.ticket_type_name ?? '').trim() || undefined,
+        quantity: args.quantity == null ? undefined : (typeof args.quantity === 'number' ? args.quantity : Number(args.quantity) || undefined),
+        customerName: typeof args.customer_name === 'string' ? args.customer_name : undefined,
+        customerEmail: typeof args.customer_email === 'string' ? args.customer_email : '',
+      });
+    }
+
     // Customer hub write loop: the agent records durable facts about THIS conversation's customer.
     // Server-gated to enrichment fields only (note/tags/name-if-empty); contact details, consent,
     // identity anchors, and merge are structurally unreachable from here.

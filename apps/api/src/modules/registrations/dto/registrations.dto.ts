@@ -111,6 +111,15 @@ export class PublicCartDto {
   @IsArray() @ValidateNested({ each: true }) @Type(() => CartItemDto) items: CartItemDto[];
 }
 
+// Join the waitlist for a sold-out event/tier (public page).
+export class JoinWaitlistDto {
+  @IsOptional() @IsString() @MaxLength(120) customerName?: string;
+  @IsEmail() customerEmail: string;
+  @IsOptional() @IsString() ticketTypeId?: string;
+  @IsOptional() @IsString() ticketTypeName?: string;
+  @IsOptional() @IsInt() @Min(1) @Max(10) quantity?: number;
+}
+
 // ── Ticket tiers ────────────────────────────────────────────────────────────
 export class CreateTicketTypeDto {
   @IsString() @MaxLength(80) name: string;

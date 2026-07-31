@@ -2441,8 +2441,12 @@ export class ActionForwardingService {
       // Commerce-store bots get the catalog lookup tool; they order by variant_id (see executeActionTool).
       if (opts?.hasCommerceStore) tools.push('search_products');
     }
-    // Context tool: self-service registration, enabled whenever the bot has events (forwarding-independent).
-    if (opts?.hasEvents && !tools.includes('register_for_event')) tools.push('register_for_event');
+    // Context tools: self-service registration + waitlist, enabled whenever the bot has events
+    // (forwarding-independent) — same reasoning as register_for_event above.
+    if (opts?.hasEvents) {
+      if (!tools.includes('register_for_event')) tools.push('register_for_event');
+      if (!tools.includes('join_event_waitlist')) tools.push('join_event_waitlist');
+    }
     return tools;
   }
 

@@ -131,6 +131,20 @@ export class RegistrationsController {
     return this.svc.createAnnouncement(orgId, productId, user?.id ?? null, dto);
   }
 
+  // ── Waitlist — OWNER/ADMIN only ────────────────────────────────────────────────
+
+  @Get(':productId/waitlist')
+  @RequireRole('OWNER', 'ADMIN')
+  listWaitlist(@Param('id') orgId: string, @Param('productId') productId: string) {
+    return this.svc.listWaitlist(orgId, productId);
+  }
+
+  @Delete('waitlist/:waitlistEntryId')
+  @RequireRole('OWNER', 'ADMIN')
+  cancelWaitlistEntry(@Param('id') orgId: string, @Param('waitlistEntryId') waitlistEntryId: string) {
+    return this.svc.cancelWaitlistEntry(orgId, waitlistEntryId);
+  }
+
   // Manual admit / undo a specific entry from the Check-in list (fallback when a QR won't scan).
   @Post('entries/:entryId/checkin')
   @HttpCode(HttpStatus.OK)

@@ -173,7 +173,7 @@ export class RegistrationsService {
     } else if (dto.isPublic === true && !existing.slug) {
       slugUpdate = await this.ensureUniqueSlug(this.slugifyBase(dto.name ?? existing.name), productId);
     }
-    return this.prisma.registrationProduct.update({
+    const updatedProduct = await this.prisma.registrationProduct.update({
       where: { id: productId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
@@ -199,6 +199,11 @@ export class RegistrationsService {
       },
       include: { _count: { select: { entries: true } }, ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
+    // A raised (or unlimited-ed) overall cap may free room for whoever's waiting.
+    if (dto.capacity !== undefined) {
+      this.releaseWaitlistOffers(productId).catch((err) => this.logger.warn(`Waitlist release failed for ${productId}: ${String(err)}`));
+    }
+    return updatedProduct;
   }
 
   async deleteProduct(orgId: string, productId: string) {
@@ -232,10 +237,14 @@ export class RegistrationsService {
     const entry = await this.prisma.registrationEntry.findFirst({ where: { id: entryId, orgId } });
     if (!entry) throw new NotFoundException('Registration entry not found');
     if (entry.status === 'CANCELLED') throw new BadRequestException('Cannot update a cancelled entry');
-    return this.prisma.registrationEntry.update({
+    const updated = await this.prisma.registrationEntry.update({
       where: { id: entryId },
       data: { status: dto.status },
     });
+    if (dto.status === 'CANCELLED') {
+      this.releaseWaitlistOffers(entry.productId).catch((err) => this.logger.warn(`Waitlist release failed for ${entry.productId}: ${String(err)}`));
+    }
+    return updated;
   }
 
   // ── Bot-facing helpers ────────────────────────────────────────────────────
@@ -334,7 +343,7 @@ export class RegistrationsService {
         throw new BadRequestException(`Capacity can't be lower than the ${used} ticket(s) already sold or reserved for this type.`);
       }
     }
-    return this.prisma.registrationTicketType.update({
+    const updated = await this.prisma.registrationTicketType.update({
       where: { id: ticketTypeId },
       data: {
         ...(dto.name !== undefined && { name: dto.name }),
@@ -346,6 +355,11 @@ export class RegistrationsService {
         ...(dto.isActive !== undefined && { isActive: dto.isActive }),
       },
     });
+    // A raised (or unlimited-ed) cap may free room for whoever's waiting on this tier.
+    if (dto.capacity !== undefined) {
+      this.releaseWaitlistOffers(tier.productId).catch((err) => this.logger.warn(`Waitlist release failed for ${tier.productId}: ${String(err)}`));
+    }
+    return updated;
   }
 
   /** Soft-delete: deactivate the tier. Entries keep their (now-inactive) ticketTypeId for history. */
@@ -642,6 +656,23 @@ export class RegistrationsService {
       payerName: dto.customerName,
       payerEmail: dto.customerEmail,
       items: dto.items ?? [],
+    });
+  }
+
+  async joinPublicWaitlist(slug: string, dto: { customerName?: string; customerEmail: string; ticketTypeId?: string; ticketTypeName?: string; quantity?: number }) {
+    const product = await this.prisma.registrationProduct.findFirst({
+      where: { slug, isPublic: true, isActive: true },
+      select: { id: true, orgId: true },
+    });
+    if (!product) throw new NotFoundException('Event not found');
+    return this.joinWaitlist({
+      orgId: product.orgId,
+      productId: product.id,
+      customerName: dto.customerName,
+      customerEmail: dto.customerEmail,
+      ticketTypeId: dto.ticketTypeId,
+      ticketTypeName: dto.ticketTypeName,
+      quantity: dto.quantity,
     });
   }
 
@@ -963,8 +994,8 @@ export class RegistrationsService {
         outcome: 'AT_CAPACITY',
         spots_left: left,
         message: left > 0
-          ? `Only ${left} spot(s) remain — fewer than the ${quantity} requested. Offer the customer the available number or a smaller quantity.`
-          : `${product.name} is fully booked. Let the customer know registration is closed.`,
+          ? `Only ${left} spot(s) remain — fewer than the ${quantity} requested. Offer the customer the available number, or ask if they'd like to join the waitlist (call join_event_waitlist) for the rest.`
+          : `${product.name} is fully booked. Ask if the customer would like to join the waitlist — call join_event_waitlist if they say yes.`,
       };
     }
 
@@ -1067,7 +1098,7 @@ export class RegistrationsService {
       case 'AWAITING_APPROVAL':
         return { outcome: 'AWAITING_APPROVAL', ticket_url: ticketUrls[0], ticket_urls: ticketUrls, message: `${tickets.length} ticket(s) recorded; they need organizer approval. Tell the customer it's pending approval.` };
       case 'AT_CAPACITY':
-        return { outcome: 'AT_CAPACITY', spots_left: res.spotsLeft, message: res.message ?? 'Not enough spots left for the requested tickets.' };
+        return { outcome: 'AT_CAPACITY', spots_left: res.spotsLeft, message: (res.message ?? 'Not enough spots left for the requested tickets.') + ' Ask if the customer would like to join the waitlist — call join_event_waitlist if they say yes.' };
       case 'NEEDS_TICKET_TYPE':
         return {
           outcome: 'NEEDS_TICKET_TYPE',
@@ -1227,13 +1258,27 @@ export class RegistrationsService {
     // Expire abandoned holds: an entry still PENDING_PAYMENT beyond the window is treated as
     // abandoned and CANCELLED, which frees its spot (capacity counts only non-cancelled entries).
     // By this age the 5-min reconcile has re-verified it many times, so it is genuinely unpaid.
-    const expired = await this.prisma.registrationEntry.updateMany({
+    const toExpire = await this.prisma.registrationEntry.findMany({
       where: { status: 'PENDING_PAYMENT', createdAt: { lt: maxAge } },
-      data: { status: 'CANCELLED' },
+      select: { id: true, productId: true },
     });
+    if (toExpire.length > 0) {
+      await this.prisma.registrationEntry.updateMany({
+        where: { id: { in: toExpire.map((e) => e.id) } },
+        data: { status: 'CANCELLED' },
+      });
+      // A hold freeing up is exactly the event a waitlist offer should react to.
+      for (const productId of new Set(toExpire.map((e) => e.productId))) {
+        this.releaseWaitlistOffers(productId).catch((err) => this.logger.warn(`Waitlist release failed for ${productId}: ${String(err)}`));
+      }
+    }
 
-    if (stuck.length > 0 || expired.count > 0) {
-      this.logger.log(`Payment reconciliation: checked ${stuck.length}, confirmed ${confirmed}, expired ${expired.count}`);
+    // Waitlist offers that weren't claimed in time free their reserved entry the same way, and cascade
+    // to the next person in line.
+    await this.expireWaitlistOffers();
+
+    if (stuck.length > 0 || toExpire.length > 0) {
+      this.logger.log(`Payment reconciliation: checked ${stuck.length}, confirmed ${confirmed}, expired ${toExpire.length}`);
     }
     return { checked: stuck.length, confirmed };
   }
@@ -1602,6 +1647,207 @@ export class RegistrationsService {
   async listAnnouncements(orgId: string, productId: string) {
     const prismaAny = this.prisma as any;
     return prismaAny.eventAnnouncement.findMany({ where: { orgId, productId }, orderBy: { createdAt: 'desc' } });
+  }
+
+  // ── Waitlist (sold-out events/tiers) ──────────────────────────────────────────
+  // Strict FIFO: only the front of a product/tier's queue is ever considered — if they need more
+  // capacity than just freed, nobody behind them is offered anything either. An offer reserves a REAL
+  // RegistrationEntry (so nobody else can grab the spot) with a deadline for paid events; the same
+  // reconcile sweep that expires normal payment holds also expires unclaimed offers, cascading to the
+  // next person automatically — no separate cron job.
+
+  private readonly WAITLIST_OFFER_WINDOW_MS = 8 * 60 * 60 * 1000; // 8h to claim a paid offer
+
+  private resolveWaitlistTier(product: any, ticketTypeId?: string, ticketTypeName?: string): { tier: any; needsTierChoice: boolean } {
+    const tiers = (product.ticketTypes ?? []) as Array<{ id: string; name: string; priceMinor: number | null; capacity: number | null }>;
+    if (tiers.length === 0) return { tier: null, needsTierChoice: false };
+    const nameQ = (ticketTypeName ?? '').trim().toLowerCase();
+    const tier =
+      tiers.find((t) => t.id === ticketTypeId) ??
+      (nameQ
+        ? tiers.find((t) => t.name.trim().toLowerCase() === nameQ) ?? tiers.find((t) => { const tn = t.name.trim().toLowerCase(); return tn.includes(nameQ) || nameQ.includes(tn); }) ?? null
+        : null) ??
+      (tiers.length === 1 ? tiers[0] : null);
+    return { tier, needsTierChoice: !tier };
+  }
+
+  /** Join the waitlist for a sold-out event/tier. Only makes sense when it's genuinely full right
+   * now — callers should only offer this after a real registration attempt returned AT_CAPACITY. */
+  async joinWaitlist(params: {
+    orgId: string; productId: string; ticketTypeId?: string; ticketTypeName?: string;
+    customerName?: string; customerEmail: string; quantity?: number;
+    botId?: string; conversationId?: string;
+  }): Promise<{
+    outcome: 'JOINED' | 'ALREADY_WAITING' | 'NOT_FULL' | 'PRODUCT_NOT_FOUND' | 'NEEDS_TICKET_TYPE' | 'MISSING_FIELDS';
+    position?: number; message?: string;
+    ticket_types?: Array<{ id: string; name: string; price: string; spots_left: number | null }>;
+  }> {
+    const prismaAny = this.prisma as any;
+    const product = await prismaAny.registrationProduct.findFirst({
+      where: { id: params.productId, orgId: params.orgId, isActive: true },
+      include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
+    });
+    if (!product) return { outcome: 'PRODUCT_NOT_FOUND', message: 'No active event matches that id.' };
+
+    const email = this.normalizeEmail(params.customerEmail);
+    if (!this.isUsableRegistrationEmail(email)) return { outcome: 'MISSING_FIELDS', message: 'A real email is required to join the waitlist.' };
+
+    const { tier, needsTierChoice } = this.resolveWaitlistTier(product, params.ticketTypeId, params.ticketTypeName);
+    if (needsTierChoice) {
+      const money = (m: number | null) => (m && m > 0 ? `${product.currency} ${(m / 100).toFixed(2)}` : 'Free');
+      const ticket_types = await Promise.all((product.ticketTypes as any[]).map(async (t) => ({ id: t.id, name: t.name, price: money(t.priceMinor), spots_left: t.capacity != null ? Math.max(0, t.capacity - (await this.getUsedSpots(product.id, undefined, t.id))) : null })));
+      return { outcome: 'NEEDS_TICKET_TYPE', ticket_types, message: 'This event has multiple ticket tiers — which one should the waitlist be for?' };
+    }
+    const ticketTypeId: string | null = tier?.id ?? null;
+    const quantity = Math.max(1, Math.min(10, Math.floor(params.quantity ?? 1)));
+
+    // Only worth joining if it's genuinely full right now.
+    const usedEvent = await this.getUsedSpots(product.id);
+    const eventFull = product.capacity != null && usedEvent + quantity > product.capacity;
+    const usedTier = ticketTypeId ? await this.getUsedSpots(product.id, undefined, ticketTypeId) : 0;
+    const tierFull = tier?.capacity != null && usedTier + quantity > tier.capacity;
+    if (!eventFull && !tierFull) return { outcome: 'NOT_FULL', message: 'There is room — register normally instead of joining the waitlist.' };
+
+    const existing = await prismaAny.registrationWaitlistEntry.findFirst({
+      where: { productId: product.id, ticketTypeId, customerEmail: email, status: { in: ['WAITING', 'OFFERED'] } },
+    });
+    if (existing) {
+      const position = existing.status === 'WAITING'
+        ? 1 + await prismaAny.registrationWaitlistEntry.count({ where: { productId: product.id, ticketTypeId, status: 'WAITING', createdAt: { lt: existing.createdAt } } })
+        : 0;
+      return { outcome: 'ALREADY_WAITING', position, message: existing.status === 'OFFERED' ? 'A spot has already been offered to this email — check the inbox.' : `Already on the waitlist, position ${position}.` };
+    }
+
+    const entry = await prismaAny.registrationWaitlistEntry.create({
+      data: {
+        orgId: params.orgId, productId: product.id, ticketTypeId, botId: params.botId ?? null, conversationId: params.conversationId ?? null,
+        customerName: params.customerName?.trim() || null, customerEmail: email, quantity, status: 'WAITING',
+      },
+    });
+    const position = 1 + await prismaAny.registrationWaitlistEntry.count({ where: { productId: product.id, ticketTypeId, status: 'WAITING', createdAt: { lt: entry.createdAt } } });
+    return { outcome: 'JOINED', position, message: `Added to the waitlist — position ${position}. We'll email ${email} the moment a spot opens.` };
+  }
+
+  /** OWNER/ADMIN: the active waitlist for an event (all tiers), FIFO order. */
+  async listWaitlist(orgId: string, productId: string) {
+    const prismaAny = this.prisma as any;
+    await this.assertProduct(orgId, productId);
+    return prismaAny.registrationWaitlistEntry.findMany({
+      where: { orgId, productId, status: { in: ['WAITING', 'OFFERED'] } },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async cancelWaitlistEntry(orgId: string, waitlistEntryId: string) {
+    const prismaAny = this.prisma as any;
+    const entry = await prismaAny.registrationWaitlistEntry.findFirst({ where: { id: waitlistEntryId, orgId } });
+    if (!entry) throw new NotFoundException('Waitlist entry not found');
+    if (entry.status === 'WAITING' || entry.status === 'OFFERED') {
+      await prismaAny.registrationWaitlistEntry.update({ where: { id: waitlistEntryId }, data: { status: 'CANCELLED' } });
+      // If they'd been offered a held spot, releasing it should offer it to the next person.
+      if (entry.status === 'OFFERED' && entry.offeredEntryId) {
+        await this.prisma.registrationEntry.updateMany({ where: { id: entry.offeredEntryId, status: 'PENDING_PAYMENT' }, data: { status: 'CANCELLED' } });
+        this.releaseWaitlistOffers(entry.productId).catch((err) => this.logger.warn(`Waitlist release failed for ${entry.productId}: ${String(err)}`));
+      }
+    }
+    return { cancelled: true };
+  }
+
+  /** Offer the next FIFO waitlist entry for every tier (and the event-level bucket) of a product that
+   * currently has WAITING entries. Safe to call opportunistically — no-ops when nothing fits. */
+  async releaseWaitlistOffers(productId: string): Promise<void> {
+    const prismaAny = this.prisma as any;
+    const buckets: Array<{ ticketTypeId: string | null }> = await prismaAny.registrationWaitlistEntry.findMany({
+      where: { productId, status: 'WAITING' },
+      distinct: ['ticketTypeId'],
+      select: { ticketTypeId: true },
+    });
+    for (const bucket of buckets) {
+      await this.tryOfferNextWaitlistEntry(productId, bucket.ticketTypeId);
+    }
+  }
+
+  private async tryOfferNextWaitlistEntry(productId: string, ticketTypeId: string | null): Promise<void> {
+    const offer = await this.prisma.$transaction(async (tx) => {
+      const txAny = tx as any;
+      await tx.$queryRawUnsafe(`SELECT id FROM "RegistrationProduct" WHERE id = $1 FOR UPDATE`, productId);
+      const product = await txAny.registrationProduct.findUnique({ where: { id: productId }, include: { ticketTypes: true } });
+      if (!product || !product.isActive) return null;
+
+      const next = await txAny.registrationWaitlistEntry.findFirst({
+        where: { productId, ticketTypeId, status: 'WAITING' },
+        orderBy: { createdAt: 'asc' },
+      });
+      if (!next) return null;
+
+      const usedEvent = await this.getUsedSpots(productId, txAny);
+      if (product.capacity != null && usedEvent + next.quantity > product.capacity) return null; // doesn't fit yet — strict FIFO, stop
+
+      let tier: any = null;
+      if (ticketTypeId) {
+        tier = product.ticketTypes.find((t: any) => t.id === ticketTypeId) ?? null;
+        if (tier?.capacity != null) {
+          const usedTier = await this.getUsedSpots(productId, txAny, ticketTypeId);
+          if (usedTier + next.quantity > tier.capacity) return null;
+        }
+      }
+
+      const priceMinor = tier ? tier.priceMinor : product.priceMinor;
+      const isFree = tier ? !tier.priceMinor : product.isFree;
+      const status = isFree ? (product.requiresApproval ? 'AWAITING_APPROVAL' : 'CONFIRMED') : 'PENDING_PAYMENT';
+      const entry = await txAny.registrationEntry.create({
+        data: {
+          productId, ticketTypeId, orgId: next.orgId, botId: next.botId, conversationId: next.conversationId,
+          customerName: next.customerName, customerEmail: next.customerEmail,
+          status, quantity: next.quantity, amountMinor: isFree ? 0 : (priceMinor ?? 0) * next.quantity,
+          checkInCode: this.newCheckInCode(),
+        },
+      });
+      const offerExpiresAt = isFree ? null : new Date(Date.now() + this.WAITLIST_OFFER_WINDOW_MS);
+      await txAny.registrationWaitlistEntry.update({
+        where: { id: next.id },
+        data: { status: isFree ? 'CONVERTED' : 'OFFERED', offeredEntryId: entry.id, offerExpiresAt },
+      });
+      return { waitlistEntryId: next.id, entryId: entry.id, orgId: next.orgId, isFree, offerExpiresAt };
+    });
+
+    if (!offer) return;
+
+    if (offer.isFree) {
+      await this.enqueueRegistrationReceipt(offer.entryId, offer.orgId);
+      await this.receiptsQueue.add(RECEIPT_JOB.WAITLIST_OFFER, { waitlistEntryId: offer.waitlistEntryId, entryId: offer.entryId, orgId: offer.orgId, paymentUrl: null, offerExpiresAt: null }, RECEIPT_JOB_OPTIONS)
+        .catch((err) => this.logger.error(`Failed to enqueue waitlist offer notify for ${offer.entryId}: ${String(err)}`));
+      return;
+    }
+    try {
+      const { paymentUrl } = await this.initializePayment(offer.entryId, offer.orgId);
+      await this.receiptsQueue.add(RECEIPT_JOB.WAITLIST_OFFER, { waitlistEntryId: offer.waitlistEntryId, entryId: offer.entryId, orgId: offer.orgId, paymentUrl, offerExpiresAt: offer.offerExpiresAt?.toISOString() ?? null }, RECEIPT_JOB_OPTIONS)
+        .catch((err) => this.logger.error(`Failed to enqueue waitlist offer notify for ${offer.entryId}: ${String(err)}`));
+    } catch (err) {
+      this.logger.warn(`Waitlist offer payment init failed for entry ${offer.entryId}: ${String(err)}`);
+    }
+  }
+
+  /** Reconcile-sweep companion: cancel any waitlist offer whose deadline has passed (freeing its
+   * reserved entry), then cascade to offer the next person in line for that product/tier. */
+  async expireWaitlistOffers(): Promise<void> {
+    const prismaAny = this.prisma as any;
+    const expired = await prismaAny.registrationWaitlistEntry.findMany({
+      where: { status: 'OFFERED', offerExpiresAt: { lt: new Date() } },
+      select: { id: true, productId: true, offeredEntryId: true },
+    });
+    if (expired.length === 0) return;
+    for (const e of expired) {
+      await prismaAny.registrationWaitlistEntry.update({ where: { id: e.id }, data: { status: 'EXPIRED' } });
+      if (e.offeredEntryId) {
+        await this.prisma.registrationEntry.updateMany({ where: { id: e.offeredEntryId, status: 'PENDING_PAYMENT' }, data: { status: 'CANCELLED' } });
+      }
+    }
+    this.logger.log(`Waitlist: expired ${expired.length} unclaimed offer(s)`);
+    const affectedProductIds = Array.from(new Set<string>(expired.map((e: any) => e.productId)));
+    for (const productId of affectedProductIds) {
+      this.releaseWaitlistOffers(productId).catch((err) => this.logger.warn(`Waitlist release failed for ${productId}: ${String(err)}`));
+    }
   }
 
   // ── Automatic reminders (periodic sweep) ──────────────────────────────────────
