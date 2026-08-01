@@ -299,6 +299,91 @@ export class TelegramProcessor {
     return { bytes, mimeType: mimeType ?? undefined, fileName: fileName ?? undefined };
   }
 
+  private defaultForwardingResult(): ActionForwardingResult {
+    return {
+      status: 'NO_INTENT',
+      reason: 'SYSTEM_ERROR',
+      canClaimCompleted: false,
+      claimLevel: 'REQUESTED',
+      deliveryStatus: 'DELIVERY_UNKNOWN',
+      operationalTruth: {
+        intentDetected: false,
+        capabilityEnabled: false,
+        actionAttempted: false,
+        actionResult: 'FAILED',
+        deliveryStatus: 'DELIVERY_UNKNOWN',
+        missingFields: [],
+        evidenceIds: [],
+      },
+    };
+  }
+
+  /** Re-generate a reply for a conversation whose last message is an unanswered customer message
+   * (e.g. it hit INSUFFICIENT_CREDITS and the inbound job's retries were exhausted before a top-up
+   * landed). Reuses the already-stored message — never creates a duplicate. */
+  async retryReply(conversationId: string): Promise<{ ok: boolean; reason?: string }> {
+    const conversation = await this.prisma.conversation.findUnique({ where: { id: conversationId } });
+    if (!conversation || conversation.channel !== 'TELEGRAM') return { ok: false, reason: 'Not a Telegram conversation' };
+    if (conversation.mode !== 'AI') return { ok: false, reason: 'Conversation is in human mode' };
+    if (!conversation.telegramChatId) return { ok: false, reason: 'Missing Telegram chat id' };
+
+    const lastMessage = await this.prisma.message.findFirst({
+      where: { conversationId, role: 'USER' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!lastMessage) return { ok: false, reason: 'No customer message to reply to' };
+
+    // Race guard: something may have already answered since this was flagged as stuck.
+    const alreadyAnswered = await this.prisma.message.findFirst({
+      where: { conversationId, role: 'ASSISTANT', createdAt: { gt: lastMessage.createdAt } },
+    });
+    if (alreadyAnswered) return { ok: false, reason: 'Already answered' };
+
+    const bot = await this.prisma.bot.findUnique({
+      where: { id: conversation.botId },
+      select: { name: true, aiConfig: true, routeToRoles: true, actionForwardingEnabled: true, telegramToken: true },
+    });
+    if (!bot?.telegramToken) return { ok: false, reason: 'Bot has no Telegram token configured' };
+
+    const aiConfig = (bot.aiConfig as Record<string, unknown>) ?? {};
+    const systemPrompt = buildAgentSystemPrompt(aiConfig, bot.name ?? 'Assistant');
+    const routeToRoles = Array.isArray(bot.routeToRoles) && bot.routeToRoles.length > 0 ? bot.routeToRoles : ['AGENT'];
+    const org = await this.prisma.organization.findUnique({ where: { id: conversation.organizationId }, select: { name: true } });
+
+    let forwardingResult = this.defaultForwardingResult();
+    await this.actionForwarding.detectAndQueue({
+      organizationId: conversation.organizationId,
+      botId: conversation.botId,
+      conversationId: conversation.id,
+      messageId: lastMessage.id,
+      messageText: lastMessage.content,
+      channel: 'TELEGRAM',
+      customerName: conversation.customerName,
+      customerEmail: null,
+      actionForwardingEnabled: bot.actionForwardingEnabled === true,
+      skipAiClassification: true,
+      classifyOnly: isAgenticEnabled(this.config),
+    }).then((result) => {
+      forwardingResult = result;
+    }).catch((err: unknown) => {
+      this.logger.warn(`Action forwarding detect failed (telegram retry): ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+    const recentMessagesPromise = this.prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+    });
+
+    await this.callAiAndRespond(
+      conversation.id, conversation.botId, conversation.telegramChatId, bot.telegramToken, conversation.organizationId,
+      lastMessage.content, bot.name ?? 'Assistant', systemPrompt, aiConfig,
+      buildSkillBehaviorPromptBlock(aiConfig, forwardingResult.actionType, isAgenticEnabled(this.config) && forwardingResult.reason === 'SKILL_NOT_ENABLED'),
+      org?.name ?? null, forwardingResult, routeToRoles, lastMessage.id, recentMessagesPromise,
+    );
+    return { ok: true };
+  }
+
   @Process()
   async handleMessage(job: Job<TelegramMessageJob>) {
     const { botId, telegramChatId, telegramToken, organizationId, message } = job.data;

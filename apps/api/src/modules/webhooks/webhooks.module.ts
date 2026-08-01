@@ -38,5 +38,6 @@ import { CustomersModule } from '../customers/customers.module';
   ],
   controllers: [WebhooksController],
   providers: [TelegramProcessor, EmailProcessor, WhatsAppProcessor],
+  exports: [TelegramProcessor, EmailProcessor, WhatsAppProcessor],
 })
 export class WebhooksModule {}

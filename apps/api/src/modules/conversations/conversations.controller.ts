@@ -2,9 +2,16 @@ import { Controller, Get, Param, Query, Body, Patch, Post, UseGuards, HttpCode, 
 import { IsString, IsNotEmpty, IsOptional, IsIn, IsEmail, IsBoolean } from 'class-validator';
 import { ApiProperty, ApiBearerAuth, ApiOperation, ApiQuery, ApiTags, ApiPropertyOptional } from '@nestjs/swagger';
 import { ConversationsService } from './conversations.service';
+import { ConversationRecoveryService } from './conversation-recovery.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
+
+class RetryStuckDto {
+  @ApiPropertyOptional({ description: 'Specific conversation ids to retry; omit to retry every stuck conversation' })
+  @IsOptional()
+  conversationIds?: string[];
+}
 
 class SendMessageDto {
   @ApiProperty()
@@ -88,7 +95,10 @@ class StartInternalConversationDto {
 @UseGuards(JwtAuthGuard, OrgMemberGuard)
 @Controller('organizations/:id/conversations')
 export class ConversationsController {
-  constructor(private readonly service: ConversationsService) {}
+  constructor(
+    private readonly service: ConversationsService,
+    private readonly recovery: ConversationRecoveryService,
+  ) {}
 
   @Post('start-internal')
   @ApiOperation({ summary: 'Start an internal-only inbox conversation (no external send)' })
@@ -162,6 +172,18 @@ export class ConversationsController {
   ) {
     const agentId = req.memberRole === 'AGENT' ? req.user.id : undefined;
     return this.service.getOverview(orgId, agentId);
+  }
+
+  @Get('stuck')
+  @ApiOperation({ summary: 'List conversations whose last message is an unanswered customer message (e.g. left hanging by a credit outage or transient failure)' })
+  listStuck(@Param('id') orgId: string) {
+    return this.recovery.findStuckConversations(orgId);
+  }
+
+  @Post('stuck/retry')
+  @ApiOperation({ summary: 'Re-generate a reply for stuck conversations — sends a real message to the customer on their channel' })
+  retryStuck(@Param('id') orgId: string, @Body() dto: RetryStuckDto) {
+    return this.recovery.retryAllStuck(orgId, dto.conversationIds);
   }
 
   @Get(':conversationId')

@@ -444,6 +444,9 @@ export const conversationsApi = {
     params: { days: String(days), ...(botId ? { botId } : {}) },
     ...config,
   }),
+  listStuck: (orgId: string) => api.get(`/organizations/${orgId}/conversations/stuck`),
+  retryStuck: (orgId: string, conversationIds?: string[]) =>
+    api.post(`/organizations/${orgId}/conversations/stuck/retry`, { conversationIds }),
 };
 
 // ── Commerce ─────────────────────────────────────────────────────────────────

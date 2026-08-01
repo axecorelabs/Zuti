@@ -2,13 +2,14 @@
 
 import { Suspense, useEffect, useState, useRef } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download, ChevronsLeft, ChevronsRight } from 'lucide-react';
+import { MessageSquare, Send, Sparkles, User2, AlertTriangle, CheckCircle2, Clock, BotIcon, Search, X, Eye, EyeOff, Info, ArrowLeft, ArrowUpRight, FileText, Mic, Film, Download, ChevronsLeft, ChevronsRight, RefreshCw, Hourglass } from 'lucide-react';
 import { useSocketEvent } from '@/lib/socket';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import toast from 'react-hot-toast';
 import { botsApi, conversationsApi, orgsApi, cannedResponsesApi } from '@/lib/api';
 import { useAuthStore } from '@/lib/store';
+import { useCanManage } from '@/lib/use-role';
 
 interface EmailDeliveryMeta {
   status?: 'ATTEMPTED' | 'SENT' | 'FAILED';
@@ -262,6 +263,7 @@ function formatLanguageBadgeTitle(languageCode: string): string {
 
 function InboxPageContent() {
   const { activeOrgId, orgRoles } = useAuthStore();
+  const canManage = useCanManage();
   const searchParams = useSearchParams();
   const requestedConversationId = searchParams.get('conversationId');
   const [orgId, setOrgId] = useState<string | null>(null);
@@ -281,6 +283,10 @@ function InboxPageContent() {
   const [reply, setReply] = useState('');
   const [sending, setSending] = useState(false);
   const [isNoteMode, setIsNoteMode] = useState(false);
+  // Conversations left hanging by an outage (e.g. credits ran out mid-conversation) — last message
+  // is from the customer with no reply. OWNER/ADMIN can clear the backlog with one click.
+  const [stuckCount, setStuckCount] = useState(0);
+  const [stuckRetrying, setStuckRetrying] = useState(false);
   // Canned responses
   const [cannedItems, setCannedItems] = useState<{ id: string; shortcut: string; title: string; content: string }[]>([]);
   const [cannedLoaded, setCannedLoaded] = useState(false);
@@ -359,6 +365,40 @@ function InboxPageContent() {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
     return () => clearTimeout(t);
   }, [search]);
+
+  const loadStuckCount = async (org: string) => {
+    try {
+      const res = await conversationsApi.listStuck(org);
+      setStuckCount((res.data as unknown[])?.length ?? 0);
+    } catch {
+      // Non-critical — just don't show the banner if the check itself fails.
+    }
+  };
+
+  useEffect(() => {
+    if (!orgId || !canManage) return;
+    void loadStuckCount(orgId);
+  }, [orgId, canManage]);
+
+  const retryStuckConversations = async () => {
+    if (!orgId || stuckRetrying) return;
+    if (!confirm(`Send a fresh reply to ${stuckCount} waiting customer${stuckCount === 1 ? '' : 's'}? This sends a real message on their channel (Telegram/WhatsApp/email).`)) return;
+    setStuckRetrying(true);
+    try {
+      const res = await conversationsApi.retryStuck(orgId);
+      const { succeeded, attempted, failed } = res.data as { succeeded: number; attempted: number; failed: Array<{ reason?: string }> };
+      if (failed?.length) {
+        toast.error(`Answered ${succeeded}/${attempted} — ${failed.length} couldn't be retried`);
+      } else {
+        toast.success(`Answered ${succeeded} waiting conversation${succeeded === 1 ? '' : 's'}`);
+      }
+      await loadStuckCount(orgId);
+    } catch {
+      toast.error('Could not retry stuck conversations');
+    } finally {
+      setStuckRetrying(false);
+    }
+  };
 
   useEffect(() => {
     if (activeOrgId) {
@@ -1176,6 +1216,23 @@ function InboxPageContent() {
               </div>
             </div>
           </div>
+
+          {canManage && stuckCount > 0 && (
+            <div className="mt-2.5 flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/10 px-2.5 py-2">
+              <Hourglass className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <p className="flex-1 text-[11px] text-amber-200 leading-tight">
+                {stuckCount} conversation{stuckCount === 1 ? '' : 's'} waiting for a reply
+              </p>
+              <button
+                onClick={retryStuckConversations}
+                disabled={stuckRetrying}
+                className="shrink-0 inline-flex items-center gap-1 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-[10px] font-medium px-2 py-1 disabled:opacity-50 transition-colors"
+              >
+                {stuckRetrying ? <RefreshCw className="w-3 h-3 animate-spin" /> : null}
+                {stuckRetrying ? 'Retrying…' : 'Retry all'}
+              </button>
+            </div>
+          )}
         </div>
 
         {/* List */}

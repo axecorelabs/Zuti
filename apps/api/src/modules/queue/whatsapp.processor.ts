@@ -241,6 +241,102 @@ export class WhatsAppProcessor {
     return null;
   }
 
+  private defaultForwardingResult(): ActionForwardingResult {
+    return {
+      status: 'NO_INTENT',
+      reason: 'SYSTEM_ERROR',
+      canClaimCompleted: false,
+      claimLevel: 'REQUESTED',
+      deliveryStatus: 'DELIVERY_UNKNOWN',
+      operationalTruth: {
+        intentDetected: false,
+        capabilityEnabled: false,
+        actionAttempted: false,
+        actionResult: 'FAILED',
+        deliveryStatus: 'DELIVERY_UNKNOWN',
+        missingFields: [],
+        evidenceIds: [],
+      },
+    };
+  }
+
+  /** Re-generate a reply for a conversation whose last message is an unanswered customer message
+   * (e.g. it hit INSUFFICIENT_CREDITS and the inbound job's retries were exhausted before a top-up
+   * landed). Reuses the already-stored message — never creates a duplicate. */
+  async retryReply(conversationId: string): Promise<{ ok: boolean; reason?: string }> {
+    const conversation = await this.prisma.conversation.findUnique({ where: { id: conversationId } });
+    if (!conversation || conversation.channel !== 'WHATSAPP') return { ok: false, reason: 'Not a WhatsApp conversation' };
+    if (conversation.mode !== 'AI') return { ok: false, reason: 'Conversation is in human mode' };
+
+    const lastMessage = await this.prisma.message.findFirst({
+      where: { conversationId, role: 'USER' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!lastMessage) return { ok: false, reason: 'No customer message to reply to' };
+
+    const alreadyAnswered = await this.prisma.message.findFirst({
+      where: { conversationId, role: 'ASSISTANT', createdAt: { gt: lastMessage.createdAt } },
+    });
+    if (alreadyAnswered) return { ok: false, reason: 'Already answered' };
+
+    const bot = await this.prisma.bot.findUnique({
+      where: { id: conversation.botId },
+      select: {
+        id: true,
+        name: true,
+        organizationId: true,
+        aiConfig: true,
+        routeToRoles: true,
+        actionForwardingEnabled: true,
+        whatsappProvider: true,
+        whatsappChannelIdentifier: true,
+        whatsappPhoneNumber: true,
+        whatsappConfig: true,
+      },
+    });
+    if (!bot) return { ok: false, reason: 'Bot not found' };
+
+    const replyTarget = conversation.whatsappPhoneNumber ?? conversation.whatsappUserId;
+    if (!replyTarget) return { ok: false, reason: 'Missing WhatsApp recipient' };
+
+    let forwardingResult = this.defaultForwardingResult();
+    await this.actionForwarding.detectAndQueue({
+      organizationId: conversation.organizationId,
+      botId: conversation.botId,
+      conversationId: conversation.id,
+      messageId: lastMessage.id,
+      messageText: lastMessage.content,
+      channel: 'WHATSAPP',
+      customerName: conversation.customerName,
+      customerEmail: null,
+      actionForwardingEnabled: bot.actionForwardingEnabled === true,
+      skipAiClassification: true,
+      classifyOnly: isAgenticEnabled(this.config),
+    }).then((result) => {
+      forwardingResult = result;
+    }).catch((err: unknown) => {
+      this.logger.warn(`Action forwarding detect failed (whatsapp retry): ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+    const recentMessagesPromise = this.prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: 40,
+      select: { role: true, content: true },
+    });
+
+    await this.callAiAndRespond(
+      conversation.id,
+      bot,
+      lastMessage.content,
+      replyTarget,
+      forwardingResult,
+      lastMessage.id,
+      recentMessagesPromise,
+    );
+    return { ok: true };
+  }
+
   @Process()
   async handle(job: Job<WhatsAppMessageJob>) {
     const { botId, organizationId, userId, phoneNumber, profileName, messageId, text, messageType, media } = job.data;
