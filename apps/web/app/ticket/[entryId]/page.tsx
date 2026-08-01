@@ -5,6 +5,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 interface TicketData {
   eventName: string;
   eventDate: string | null;
+  eventEndDate?: string | null;
+  eventDateHasTime?: boolean;
   venue?: string | null;
   customerName: string | null;
   ticketType?: string | null;
@@ -54,9 +56,15 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
 
   const status = STATUS_CONFIG[ticket.status];
   const StatusIcon = status.icon;
-  const eventDate = ticket.eventDate
-    ? new Date(ticket.eventDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
-    : null;
+  const eventDate = (() => {
+    if (!ticket.eventDate) return null;
+    const start = new Date(ticket.eventDate);
+    const dateOpts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' };
+    const startStr = start.toLocaleDateString('en-GB', dateOpts);
+    const end = ticket.eventEndDate ? new Date(ticket.eventEndDate) : null;
+    if (!end || end.toDateString() === start.toDateString()) return startStr;
+    return `${startStr} – ${end.toLocaleDateString('en-GB', dateOpts)}`;
+  })();
 
   return (
     <div style={pageWrap}>

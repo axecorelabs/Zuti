@@ -1318,7 +1318,11 @@ model RegistrationProduct {
   botId               String?
   name                String
   description         String?
-  eventDate           DateTime?
+  eventDate           DateTime? // start date/time
+  eventEndDate        DateTime?
+  // Whether eventDate/eventEndDate carry a meaningful time-of-day, or were entered as date-only
+  // (in which case display formatting should omit the time instead of showing a misleading 12:00 AM).
+  eventDateHasTime    Boolean   @default(true)
   capacity            Int?
   isFree              Boolean   @default(true)
   priceMinor          Int?      // price in lowest denomination (e.g. kobo)

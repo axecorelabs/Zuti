@@ -40,7 +40,11 @@ export async function buildRegistrationContextBlock(params: {
 
     const parts: string[] = [`- ID: ${p.id} | Name: "${p.name}"`];
     if (p.description) parts.push(`Description: ${p.description}`);
-    if (p.eventDate) parts.push(`Date: ${p.eventDate.toISOString().split('T')[0]}`);
+    if (p.eventDate) {
+      const start = p.eventDate.toISOString().split('T')[0];
+      const end = (p as any).eventEndDate ? new Date((p as any).eventEndDate).toISOString().split('T')[0] : null;
+      parts.push(`Date: ${end && end !== start ? `${start} to ${end}` : start}`);
+    }
     const ticketTypes = ((p as any).ticketTypes ?? []) as Array<{
       name: string;
       priceMinor: number | null;

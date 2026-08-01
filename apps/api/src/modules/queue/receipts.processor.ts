@@ -120,10 +120,11 @@ export class ReceiptsProcessor {
       color: { dark: '#000000', light: '#ffffff' },
     });
 
+    const dateOpts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'long', year: 'numeric' };
     const eventDate = entry.product.eventDate
-      ? new Date(entry.product.eventDate).toLocaleDateString('en-GB', {
-          day: 'numeric', month: 'long', year: 'numeric',
-        })
+      ? entry.product.eventEndDate && new Date(entry.product.eventEndDate).toDateString() !== new Date(entry.product.eventDate).toDateString()
+        ? `${new Date(entry.product.eventDate).toLocaleDateString('en-GB', dateOpts)} – ${new Date(entry.product.eventEndDate).toLocaleDateString('en-GB', dateOpts)}`
+        : new Date(entry.product.eventDate).toLocaleDateString('en-GB', dateOpts)
       : null;
 
     const reference = entry.paystackReference ?? entryId;

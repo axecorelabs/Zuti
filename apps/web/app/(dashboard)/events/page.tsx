@@ -35,6 +35,8 @@ interface RegistrationProduct {
   name: string;
   description: string | null;
   eventDate: string | null;
+  eventEndDate: string | null;
+  eventDateHasTime: boolean;
   capacity: number | null;
   isFree: boolean;
   priceMinor: number | null;
@@ -526,11 +528,58 @@ function FieldEditor({ fields, onChange }: { fields: ProductField[]; onChange: (
 
 // ── Shared product form state ──────────────────────────────────────────────────
 
+// Local (not UTC) date/time parts, so a start/end time the user typed re-displays as the exact
+// same wall-clock value on edit — string-slicing the UTC ISO string would shift it for anyone not
+// on UTC. Date-ONLY values are deliberately handled separately (see useProductForm) since those are
+// stored with no timezone concept at all and must never be shifted by a day.
+const toLocalDateValue = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const toLocalTimeValue = (d: Date) =>
+  `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+/** Human-readable start (and optional end) date for an event — omits the time entirely when the
+ * event has no specific time set, and collapses same-day start/end into a single date. */
+function formatEventDateRange(product: { eventDate: string | null; eventEndDate?: string | null; eventDateHasTime?: boolean }): string | null {
+  if (!product.eventDate) return null;
+  const start = new Date(product.eventDate);
+  const end = product.eventEndDate ? new Date(product.eventEndDate) : null;
+  const hasTime = product.eventDateHasTime ?? false;
+  const dateOpts: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' };
+  const timeOpts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+  const startDateStr = start.toLocaleDateString('en-GB', dateOpts);
+  if (!end) return hasTime ? `${startDateStr}, ${start.toLocaleTimeString('en-GB', timeOpts)}` : startDateStr;
+
+  const sameDay = start.toDateString() === end.toDateString();
+  if (sameDay) {
+    return hasTime
+      ? `${startDateStr}, ${start.toLocaleTimeString('en-GB', timeOpts)} – ${end.toLocaleTimeString('en-GB', timeOpts)}`
+      : startDateStr;
+  }
+  const endDateStr = hasTime
+    ? `${end.toLocaleDateString('en-GB', dateOpts)}, ${end.toLocaleTimeString('en-GB', timeOpts)}`
+    : end.toLocaleDateString('en-GB', dateOpts);
+  return `${startDateStr}${hasTime ? `, ${start.toLocaleTimeString('en-GB', timeOpts)}` : ''} – ${endDateStr}`;
+}
+
 function useProductForm(existing?: RegistrationProduct) {
   const [name, setName] = useState(existing?.name ?? '');
   const [description, setDescription] = useState(existing?.description ?? '');
+  const [hasTime, setHasTime] = useState(existing?.eventDateHasTime ?? false);
   const [eventDate, setEventDate] = useState(
-    existing?.eventDate ? existing.eventDate.split('T')[0] : '',
+    existing?.eventDate
+      ? (existing.eventDateHasTime ? toLocalDateValue(new Date(existing.eventDate)) : existing.eventDate.split('T')[0])
+      : '',
+  );
+  const [eventTime, setEventTime] = useState(
+    existing?.eventDate && existing.eventDateHasTime ? toLocalTimeValue(new Date(existing.eventDate)) : '',
+  );
+  const [eventEndDate, setEventEndDate] = useState(
+    existing?.eventEndDate
+      ? (existing.eventDateHasTime ? toLocalDateValue(new Date(existing.eventEndDate)) : existing.eventEndDate.split('T')[0])
+      : '',
+  );
+  const [eventEndTime, setEventEndTime] = useState(
+    existing?.eventEndDate && existing.eventDateHasTime ? toLocalTimeValue(new Date(existing.eventEndDate)) : '',
   );
   const [capacity, setCapacity] = useState(existing?.capacity?.toString() ?? '');
   const [requiresApproval, setRequiresApproval] = useState(existing?.requiresApproval ?? false);
@@ -547,10 +596,14 @@ function useProductForm(existing?: RegistrationProduct) {
   // single "base" price. In edit mode tiers are managed live via the API.
   const [draftTiers, setDraftTiers] = useState<DraftTier[]>(existing ? [] : [{ name: 'General Admission', price: '', capacity: '' }]);
 
+  const combineDateTime = (dateStr: string, timeStr: string) => (dateStr ? `${dateStr}T${timeStr || '00:00'}:00` : null);
+
   const buildPayload = (): Record<string, unknown> => ({
     name: name.trim(),
     description: description.trim() || null,
-    eventDate: eventDate || null,
+    eventDate: eventDate ? (hasTime ? combineDateTime(eventDate, eventTime) : eventDate) : null,
+    eventEndDate: eventEndDate ? (hasTime ? combineDateTime(eventEndDate, eventEndTime) : eventEndDate) : null,
+    eventDateHasTime: hasTime,
     capacity: capacity ? parseInt(capacity, 10) : null,
     currency: 'NGN', // Only Naira is supported for now
     requiresApproval,
@@ -567,6 +620,7 @@ function useProductForm(existing?: RegistrationProduct) {
 
   return {
     name, setName, description, setDescription, eventDate, setEventDate,
+    hasTime, setHasTime, eventTime, setEventTime, eventEndDate, setEventEndDate, eventEndTime, setEventEndTime,
     capacity, setCapacity,
     requiresApproval, setRequiresApproval, allowDuplicateRegistrations, setAllowDuplicateRegistrations,
     confirmationMessage, setConfirmationMessage,
@@ -852,13 +906,35 @@ function ProductFormFields({ form, bots, variant, orgId, product, wizardStep }: 
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className={labelCls}>Event date</label>
+          <label className={labelCls}>Start date</label>
           <input type="date" value={form.eventDate} onChange={(e) => form.setEventDate(e.target.value)} className={inputCls} />
         </div>
         <div>
-          <label className={labelCls}>Overall capacity <span className="text-zinc-600">(optional)</span></label>
-          <input type="number" min="1" value={form.capacity} onChange={(e) => form.setCapacity(e.target.value)} placeholder="e.g. venue limit" className={inputCls} />
+          <label className={labelCls}>End date <span className="text-zinc-600">(optional, for multi-day events)</span></label>
+          <input type="date" value={form.eventEndDate} onChange={(e) => form.setEventEndDate(e.target.value)} min={form.eventDate || undefined} className={inputCls} />
         </div>
+      </div>
+      <div>
+        <label className="flex items-center gap-2 text-xs text-zinc-400 cursor-pointer select-none">
+          <input type="checkbox" checked={form.hasTime} onChange={(e) => form.setHasTime(e.target.checked)} className="rounded border-zinc-700 bg-zinc-900" />
+          Add a specific start/end time
+        </label>
+      </div>
+      {form.hasTime && (
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={labelCls}>Start time</label>
+            <input type="time" value={form.eventTime} onChange={(e) => form.setEventTime(e.target.value)} className={inputCls} />
+          </div>
+          <div>
+            <label className={labelCls}>End time</label>
+            <input type="time" value={form.eventEndTime} onChange={(e) => form.setEventEndTime(e.target.value)} className={inputCls} />
+          </div>
+        </div>
+      )}
+      <div>
+        <label className={labelCls}>Overall capacity <span className="text-zinc-600">(optional)</span></label>
+        <input type="number" min="1" value={form.capacity} onChange={(e) => form.setCapacity(e.target.value)} placeholder="e.g. venue limit" className={inputCls} />
       </div>
       <p className="text-xs text-zinc-600 -mt-2">Total cap across all ticket types (e.g. a venue limit). Leave blank to let each ticket type&apos;s own quantity define the total.</p>
       {capInconsistent && (
@@ -1197,7 +1273,7 @@ function RemindersSection({ orgId, product }: { orgId: string; product: Registra
       <div className="divide-y divide-zinc-800/60">
         <Row id="before" on={before} onChange={(v) => toggle('before', v)}
           title="Remind confirmed attendees before the event"
-          desc={product.eventDate ? `Sends ~24h before ${new Date(product.eventDate).toLocaleDateString()}.` : 'Add an event date to enable — sends ~24h before.'} />
+          desc={product.eventDate ? `Sends ~24h before ${formatEventDateRange(product)}.` : 'Add an event date to enable — sends ~24h before.'} />
         <Row id="nudge" on={nudge} onChange={(v) => toggle('nudge', v)}
           title="Nudge registrants who haven't paid"
           desc="Sends a payment reminder ~12h after they register (before the 24h hold expires)." />
@@ -1417,9 +1493,6 @@ export default function EventsPage() {
   const formatPrice = (p: RegistrationProduct) =>
     p.isFree ? 'Free' : `${p.currency} ${((p.priceMinor ?? 0) / 100).toFixed(2)}`;
 
-  const formatDate = (iso: string | null) =>
-    iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : null;
-
   return (
     <div className="flex h-full">
       {/* Product list */}
@@ -1500,7 +1573,7 @@ export default function EventsPage() {
                       )}
                     </div>
                     {p.eventDate && (
-                      <p className="text-xs text-zinc-500 mt-0.5">{formatDate(p.eventDate)}</p>
+                      <p className="text-xs text-zinc-500 mt-0.5">{formatEventDateRange(p)}</p>
                     )}
                   </div>
                   <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-zinc-400 transition-colors shrink-0 mt-0.5" />
@@ -1543,7 +1616,7 @@ export default function EventsPage() {
                 <p className="text-xs text-zinc-500 mt-0.5">
                   {selectedProduct._count.entries} registrant{selectedProduct._count.entries !== 1 ? 's' : ''}
                   {selectedProduct.capacity ? ` · ${selectedProduct.usedSpots ?? selectedProduct._count.entries}/${selectedProduct.capacity} spots` : ''}
-                  {selectedProduct.eventDate ? ` · ${formatDate(selectedProduct.eventDate)}` : ''}
+                  {selectedProduct.eventDate ? ` · ${formatEventDateRange(selectedProduct)}` : ''}
                   {' · '}{formatPrice(selectedProduct)}
                 </p>
               </div>

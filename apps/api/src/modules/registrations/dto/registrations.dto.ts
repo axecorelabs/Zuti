@@ -13,6 +13,8 @@ export class CreateRegistrationProductDto {
   @IsString() name: string;
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsDateString() eventDate?: string;
+  @IsOptional() @IsDateString() eventEndDate?: string;
+  @IsOptional() @IsBoolean() eventDateHasTime?: boolean;
   @IsOptional() @IsInt() @Min(1) capacity?: number;
   @IsBoolean() isFree: boolean;
   @IsOptional() @IsInt() @Min(0) priceMinor?: number;
@@ -38,6 +40,8 @@ export class UpdateRegistrationProductDto {
   @IsOptional() @IsString() name?: string;
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsDateString() eventDate?: string;
+  @IsOptional() @IsDateString() eventEndDate?: string;
+  @IsOptional() @IsBoolean() eventDateHasTime?: boolean;
   @IsOptional() @IsInt() @Min(1) capacity?: number;
   @IsOptional() @IsBoolean() isFree?: boolean;
   @IsOptional() @IsInt() @Min(0) priceMinor?: number;

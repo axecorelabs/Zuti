@@ -13,6 +13,7 @@ import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto, PublicCartDto } from './dto/registrations.dto';
 import { computeGrossUpForSubaccount } from '../../common/utils/payment-split';
+import { formatEventDateRange } from '../../common/utils/event-date';
 
 type PaystackInitResponse = {
   status: boolean;
@@ -74,6 +75,8 @@ export class RegistrationsService {
         name: dto.name,
         description: dto.description ?? null,
         eventDate: dto.eventDate ? new Date(dto.eventDate) : null,
+        eventEndDate: dto.eventEndDate ? new Date(dto.eventEndDate) : null,
+        eventDateHasTime: dto.eventDateHasTime ?? true,
         capacity: dto.capacity ?? null,
         isFree: dto.isFree,
         priceMinor: dto.isFree ? null : (dto.priceMinor ?? null),
@@ -179,6 +182,8 @@ export class RegistrationsService {
         ...(dto.name !== undefined && { name: dto.name }),
         ...(dto.description !== undefined && { description: dto.description }),
         ...(dto.eventDate !== undefined && { eventDate: dto.eventDate ? new Date(dto.eventDate) : null }),
+        ...(dto.eventEndDate !== undefined && { eventEndDate: dto.eventEndDate ? new Date(dto.eventEndDate) : null }),
+        ...(dto.eventDateHasTime !== undefined && { eventDateHasTime: dto.eventDateHasTime }),
         ...(dto.capacity !== undefined && { capacity: dto.capacity }),
         ...(dto.isFree !== undefined && { isFree: dto.isFree }),
         ...(dto.priceMinor !== undefined && { priceMinor: dto.priceMinor }),
@@ -546,6 +551,8 @@ export class RegistrationsService {
       name: product.name,
       description: product.description,
       eventDate: product.eventDate,
+      eventEndDate: product.eventEndDate,
+      eventDateHasTime: product.eventDateHasTime,
       venue: product.venue,
       bannerUrl: product.bannerUrl,
       flierUrl: product.flierUrl,
@@ -1393,6 +1400,8 @@ export class RegistrationsService {
     return {
       eventName: entry.product.name,
       eventDate: entry.product.eventDate,
+      eventEndDate: entry.product.eventEndDate,
+      eventDateHasTime: entry.product.eventDateHasTime,
       venue: entry.product.venue ?? null,
       customerName: entry.customerName,
       ticketType: entry.ticketType?.name ?? null,
@@ -1910,7 +1919,9 @@ export class RegistrationsService {
         select: { id: true, customerName: true, customerEmail: true },
       });
       if (!entries.length) continue;
-      const dateStr = product.eventDate ? new Date(product.eventDate).toLocaleString('en-GB', { dateStyle: 'full', timeStyle: 'short' }) : 'soon';
+      const dateStr = product.eventDate
+        ? formatEventDateRange(new Date(product.eventDate), product.eventEndDate ? new Date(product.eventEndDate) : null, product.eventDateHasTime ?? true)
+        : 'soon';
       const first = (n: string | null) => (n ? ` ${n.split(' ')[0]}` : '');
       await this.dispatchReminder(product, entries, 'BEFORE_EVENT', 'CONFIRMED', `Reminder: ${product.name} is coming up`,
         (e) => `Hi${first(e.customerName)},\n\nJust a reminder that ${product.name} is happening ${dateStr}${product.venue ? ` at ${product.venue}` : ''}. Bring your ticket QR for a quick check-in.\n\nSee you there!`);

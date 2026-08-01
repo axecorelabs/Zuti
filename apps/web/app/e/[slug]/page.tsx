@@ -12,11 +12,33 @@ interface Tier {
 }
 interface EventData {
   slug: string; name: string; description: string | null; eventDate: string | null;
+  eventEndDate: string | null; eventDateHasTime: boolean;
   venue: string | null; bannerUrl: string | null; flierUrl: string | null;
   currency: string; isFree: boolean; priceMinor: number; requiresApproval: boolean;
   fields: Array<{ key: string; label: string; type: string; required: boolean; options?: string[] }>;
   hasTiers: boolean; ticketTypes: Tier[]; capacity: number | null; spotsLeft: number | null; soldOut: boolean;
   organizerName: string | null;
+}
+
+function formatPublicEventDate(ev: EventData): string | null {
+  if (!ev.eventDate) return null;
+  const start = new Date(ev.eventDate);
+  const end = ev.eventEndDate ? new Date(ev.eventEndDate) : null;
+  const dateOpts: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' };
+  const timeOpts: Intl.DateTimeFormatOptions = { hour: 'numeric', minute: '2-digit' };
+  const startDateStr = start.toLocaleDateString('en-GB', dateOpts);
+  if (!end) return ev.eventDateHasTime ? `${startDateStr}, ${start.toLocaleTimeString('en-GB', timeOpts)}` : startDateStr;
+
+  const sameDay = start.toDateString() === end.toDateString();
+  if (sameDay) {
+    return ev.eventDateHasTime
+      ? `${startDateStr}, ${start.toLocaleTimeString('en-GB', timeOpts)} – ${end.toLocaleTimeString('en-GB', timeOpts)}`
+      : startDateStr;
+  }
+  const endDateStr = ev.eventDateHasTime
+    ? `${end.toLocaleDateString('en-GB', dateOpts)}, ${end.toLocaleTimeString('en-GB', timeOpts)}`
+    : end.toLocaleDateString('en-GB', dateOpts);
+  return `${startDateStr}${ev.eventDateHasTime ? `, ${start.toLocaleTimeString('en-GB', timeOpts)}` : ''} – ${endDateStr}`;
 }
 
 async function getEvent(slug: string): Promise<EventData | null> {
@@ -73,9 +95,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
     );
   }
 
-  const eventDate = ev.eventDate
-    ? new Date(ev.eventDate).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
-    : null;
+  const eventDate = formatPublicEventDate(ev);
 
   // Cheapest ticket → the "from" price on the sticky bar.
   const tierPrices = ev.hasTiers ? ev.ticketTypes.map((t) => t.priceMinor) : [ev.priceMinor];

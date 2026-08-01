@@ -1,0 +1,2 @@
+ALTER TABLE "RegistrationProduct" ADD COLUMN IF NOT EXISTS "eventEndDate" TIMESTAMP(3);
+ALTER TABLE "RegistrationProduct" ADD COLUMN IF NOT EXISTS "eventDateHasTime" BOOLEAN NOT NULL DEFAULT true;
