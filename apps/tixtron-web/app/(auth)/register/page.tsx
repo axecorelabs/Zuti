@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle2, Eye, EyeOff } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -15,15 +15,23 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [debouncedPassword, setDebouncedPassword] = useState('');
 
-  const passwordRules = [
-    { label: 'At least 8 characters', passed: password.length >= 8 },
-    { label: 'One uppercase letter', passed: /[A-Z]/.test(password) },
-    { label: 'One lowercase letter', passed: /[a-z]/.test(password) },
-    { label: 'One number', passed: /\d/.test(password) },
-    { label: 'One special character', passed: /[^A-Za-z0-9]/.test(password) },
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedPassword(password), 500);
+    return () => clearTimeout(t);
+  }, [password]);
+
+  const evaluatePasswordRules = (value: string) => [
+    { label: 'At least 8 characters', passed: value.length >= 8 },
+    { label: 'One uppercase letter', passed: /[A-Z]/.test(value) },
+    { label: 'One lowercase letter', passed: /[a-z]/.test(value) },
+    { label: 'One number', passed: /\d/.test(value) },
+    { label: 'One special character', passed: /[^A-Za-z0-9]/.test(value) },
   ];
+  const passwordRules = evaluatePasswordRules(password);
   const passwordValid = passwordRules.every((r) => r.passed);
+  const missingPasswordRules = evaluatePasswordRules(debouncedPassword).filter((r) => !r.passed);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -164,14 +172,16 @@ export default function RegisterPage() {
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
                 </div>
-                <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
-                  {passwordRules.map((rule) => (
-                    <div key={rule.label} className={`text-[11px] inline-flex items-center gap-1.5 ${rule.passed ? 'text-emerald-300' : 'text-zinc-600'}`}>
-                      <CheckCircle2 className={`w-3.5 h-3.5 ${rule.passed ? 'text-emerald-300' : 'text-zinc-700'}`} />
-                      {rule.label}
-                    </div>
-                  ))}
-                </div>
+                {debouncedPassword.length > 0 && missingPasswordRules.length > 0 && (
+                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    {missingPasswordRules.map((rule) => (
+                      <div key={rule.label} className="text-[11px] inline-flex items-center gap-1.5 text-zinc-600">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-zinc-700" />
+                        {rule.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Legal disclosure: Tixtron shares Zuti's account/org system, so this must be
