@@ -40,13 +40,6 @@ export class ResendVerificationDto {
   declare email: string;
 }
 
-export class RefreshTokenDto {
-  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' })
-  @IsString()
-  @MinLength(20)
-  declare refreshToken: string;
-}
-
 export class ForgotPasswordDto {
   @ApiProperty({ example: 'john@example.com' })
   @IsEmail()

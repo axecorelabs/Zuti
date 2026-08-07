@@ -10,22 +10,24 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 const api = axios.create({
   baseURL: `${API_URL}/api`,
   headers: { 'Content-Type': 'application/json' },
+  // Sends/receives the httpOnly refresh-token cookie — required since the API is a different
+  // origin (domain, in admin's case) than this app.
+  withCredentials: true,
 });
 
 let refreshPromise: Promise<string | null> | null = null;
 
+// The refresh token itself is never seen by JS anymore — it lives in an httpOnly cookie the
+// browser attaches automatically (withCredentials above). This just asks the server to use it.
 async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) return refreshPromise;
-  const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
-  if (!refreshToken) return null;
 
   refreshPromise = api
-    .post('/auth/refresh', { refreshToken })
+    .post('/auth/refresh')
     .then((res) => {
       const accessToken = String(res.data?.accessToken ?? '');
-      const nextRefresh = String(res.data?.refreshToken ?? '');
-      if (!accessToken || !nextRefresh) return null;
-      setAuthTokens(accessToken, nextRefresh);
+      if (!accessToken) return null;
+      setAuthTokens(accessToken);
       return accessToken;
     })
     .catch(() => null)
@@ -61,6 +63,8 @@ api.interceptors.response.use(
       }
 
       clearAuthTokens();
+      // Best-effort: clear the now-invalid refresh-token cookie server-side too.
+      api.post('/auth/logout').catch(() => {});
       if (typeof window !== 'undefined') {
         window.location.href = '/login';
       }
@@ -74,6 +78,7 @@ export type OrgSummary = { id: string; name: string; slug: string; role: string 
 
 export const authApi = {
   login: (email: string, password: string) => api.post('/auth/login', { email, password }),
+  logout: () => api.post('/auth/logout'),
 };
 
 export const orgApi = {
@@ -111,4 +116,30 @@ export const adminApi = {
     api.get('/admin/operations', { params }),
   getSystemHealth: (params?: { limit?: number }) =>
     api.get('/admin/system-health', { params }),
+};
+
+// Tixtron Ops — gated by TixtronOpsGuard (org membership in the internal Tixtron HQ org), not the
+// SuperAdminGuard email allowlist above. Self-management panels reuse the exact same org-scoped
+// endpoints any organizer uses (bots/communities/registrations), just against Tixtron HQ's own
+// org id, resolved dynamically via getContext() rather than hardcoded.
+export const tixtronOpsApi = {
+  getContext: () => api.get<{ organizationId: string; organizationName: string }>('/admin/tixtron/context'),
+  listBots: (orgId: string) => api.get(`/organizations/${orgId}/bots`),
+  createBot: (orgId: string, data: { name: string; telegramToken: string; botType: 'COMMAND' }) =>
+    api.post(`/organizations/${orgId}/bots`, data),
+  setBotWebhook: (orgId: string, botId: string) => api.post(`/organizations/${orgId}/bots/${botId}/webhook`),
+  removeBot: (orgId: string, botId: string) => api.delete(`/organizations/${orgId}/bots/${botId}`),
+  getCommunity: (orgId: string) => api.get(`/organizations/${orgId}/communities`),
+  createCommunity: (orgId: string, data: { botId: string; telegramChatId: string; telegramChatUsername?: string; name: string }) =>
+    api.post(`/organizations/${orgId}/communities`, data),
+  removeCommunity: (orgId: string, communityId: string) => api.delete(`/organizations/${orgId}/communities/${communityId}`),
+  listEvents: (orgId: string) => api.get(`/organizations/${orgId}/registrations`),
+  createEvent: (orgId: string, data: { name: string; isFree: boolean; requiresApproval: boolean; fields: unknown[]; eventDate?: string }) =>
+    api.post(`/organizations/${orgId}/registrations`, data),
+  // Marketplace-operator tools — cross-org, not scoped to Tixtron HQ's own org id.
+  listOrganizers: () => api.get('/admin/tixtron/organizers'),
+  listCurationEvents: (q?: string) => api.get('/admin/tixtron/events', { params: q ? { q } : undefined }),
+  setEventFeatured: (productId: string, data: { isFeatured: boolean; featuredOrder?: number }) =>
+    api.patch(`/admin/tixtron/events/${productId}/featured`, data),
+  listEmailSubscribers: () => api.get('/admin/tixtron/subscribers'),
 };

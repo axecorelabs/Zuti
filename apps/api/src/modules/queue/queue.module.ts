@@ -7,6 +7,8 @@ export const EMAIL_QUEUE = 'email-messages';
 export const WHATSAPP_QUEUE = 'whatsapp-messages';
 export const ACTION_FORWARDING_QUEUE = 'action-forwarding';
 export const RECEIPTS_QUEUE = 'receipts';
+export const MARKETING_QUEUE = 'marketing-broadcasts';
+export const PAYSTACK_WEBHOOK_QUEUE = 'paystack-webhooks';
 
 @Global()
 @Module({
@@ -23,6 +25,8 @@ export const RECEIPTS_QUEUE = 'receipts';
     BullModule.registerQueue({ name: WHATSAPP_QUEUE }),
     BullModule.registerQueue({ name: ACTION_FORWARDING_QUEUE }),
     BullModule.registerQueue({ name: RECEIPTS_QUEUE }),
+    BullModule.registerQueue({ name: MARKETING_QUEUE }),
+    BullModule.registerQueue({ name: PAYSTACK_WEBHOOK_QUEUE }),
   ],
   exports: [BullModule],
 })

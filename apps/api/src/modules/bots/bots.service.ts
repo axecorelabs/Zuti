@@ -8,8 +8,11 @@ import {
 import { Prisma } from '@prisma/client';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
 import { firstValueFrom } from 'rxjs';
 import { randomBytes } from 'crypto';
+import { MARKETING_QUEUE } from '../queue/queue.module';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
@@ -19,7 +22,7 @@ import { CsatClassifierService } from '../ai-usage/csat-classifier.service';
 import { LanguagePreferenceService } from '../ai-usage/language-preference.service';
 import { TeamChatService } from '../team-chat/team-chat.service';
 import { BillingService } from '../billing/billing.service';
-import { computeUsageCredits } from '../billing/credit-model';
+import { computeUsageCredits, CREDIT_UNITS_PER_CREDIT } from '../billing/credit-model';
 import { buildAgentSystemPrompt, buildSkillBehaviorPromptBlock } from '../../common/utils/agent-config';
 import { buildCompactAiContext, buildConversationMetadataPatch, getCachedPreviousCustomerContext } from '../../common/utils/ai-context';
 import {
@@ -35,6 +38,8 @@ import { CustomerIdentityService } from '../customers/customer-identity.service'
 import { extractWhatsAppConfig, prepareWhatsAppConfigForStorage } from '../../common/utils/whatsapp';
 import { buildLocalizedCsatPositiveMessage, getPreferredLanguageFromMetadata } from '../../common/utils/language';
 import { buildCommerceGroundingContextBlock } from '../../common/utils/commerce-grounding';
+import { toLocalDateKey } from '../../common/utils/date-bucket';
+import { formatEventDateRange } from '../../common/utils/event-date';
 
 function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value ?? '').length / 4);
@@ -42,6 +47,10 @@ function estimateTokens(value: unknown): number {
 
 function estimateUsageCredits(promptTokens: number, completionTokens: number): number {
   return computeUsageCredits(promptTokens, completionTokens, 1);
+}
+
+function escapeTelegramHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 type BotTemplate = 'GENERAL' | 'SALES' | 'SUPPORT' | 'BOOKING' | 'TECHNICAL' | 'ECOMMERCE';
@@ -510,6 +519,7 @@ export class BotsService {
     private readonly orgs: OrganizationsService,
     private readonly actionForwarding: ActionForwardingService,
     private readonly customerIdentity: CustomerIdentityService,
+    @InjectQueue(MARKETING_QUEUE) private readonly marketingQueue: Queue,
   ) {}
 
   private async hasForwardingRouteConfiguration(organizationId: string, botId?: string): Promise<boolean> {
@@ -539,15 +549,54 @@ export class BotsService {
     });
   }
 
-  private sanitizeBot<T extends Record<string, unknown>>(bot: T): Omit<T, 'whatsappConfig' | 'whatsappVerifyToken'> {
-    const { whatsappConfig: _whatsappConfig, whatsappVerifyToken: _whatsappVerifyToken, ...safeBot } = bot as T & {
+  // webhookSecret verifies inbound Telegram requests are genuinely from Telegram (checked against
+  // the X-Telegram-Bot-Api-Secret-Token header in webhooks.controller.ts) — it must never reach a
+  // client, or anyone who obtains it (XSS, a compromised extension, etc.) could forge fake webhook
+  // calls to the bot's public endpoint. telegramToken is deliberately kept: the dashboard's own
+  // "copy token" / connection-status UI relies on organizers being able to see their own bot's token.
+  private sanitizeBot<T extends Record<string, unknown>>(bot: T): Omit<T, 'whatsappConfig' | 'whatsappVerifyToken' | 'webhookSecret'> {
+    const { whatsappConfig: _whatsappConfig, whatsappVerifyToken: _whatsappVerifyToken, webhookSecret: _webhookSecret, ...safeBot } = bot as T & {
       whatsappConfig?: unknown;
       whatsappVerifyToken?: unknown;
+      webhookSecret?: unknown;
     };
     return safeBot;
   }
 
   async create(organizationId: string, dto: CreateBotDto) {
+    // COMMAND bots (Tixtron's ticketing bot) skip every AI-specific concept entirely — no
+    // skills/capabilities/aiConfig, no forwarding-route requirement, no LLM usage. They're just a
+    // name + a validated Telegram token, routed at webhook-receive time to the command dispatcher
+    // instead of the AI pipeline (see webhooks.controller.ts).
+    if (dto.botType === 'COMMAND') {
+      const telegramToken = dto.telegramToken?.trim();
+      if (!telegramToken) throw new BadRequestException('Telegram token is required');
+
+      const nameConflict = await this.prisma.bot.findFirst({
+        where: { organizationId, name: { equals: dto.name, mode: 'insensitive' } },
+        select: { id: true },
+      });
+      if (nameConflict) throw new BadRequestException('A bot with this name already exists in your organization');
+
+      const botInfo = await this.getTelegramBotInfo(telegramToken);
+      const existing = await this.prisma.bot.findUnique({ where: { telegramToken } });
+      if (existing) throw new BadRequestException('This Telegram bot token is already registered');
+
+      const created = await this.prisma.bot.create({
+        data: {
+          organizationId,
+          name: dto.name,
+          botType: 'COMMAND',
+          primaryChannel: 'TELEGRAM',
+          telegramToken,
+          telegramUsername: botInfo.username,
+          isActive: true,
+          actionForwardingEnabled: false,
+        },
+      });
+      return this.sanitizeBot(created as any);
+    }
+
     const primaryChannel: BotPrimaryChannel = dto.primaryChannel ?? 'TELEGRAM';
     const telegramToken = dto.telegramToken?.trim();
     const needsTelegram = primaryChannel === 'TELEGRAM';
@@ -1465,7 +1514,9 @@ export class BotsService {
       this.http.post<any>(`https://api.telegram.org/bot${bot.telegramToken}/setWebhook`, {
         url: webhookUrl,
         secret_token: webhookSecret,
-        allowed_updates: ['message', 'callback_query'],
+        // chat_member is needed for COMMAND bots that run a Community — it's how we learn a Telegram
+        // invite link was actually used (or the person later left), see CommandBotService.
+        allowed_updates: ['message', 'callback_query', 'chat_member'],
         drop_pending_updates: true,
       }),
     );
@@ -1486,6 +1537,232 @@ export class BotsService {
     await firstValueFrom(
       this.http.post(`https://api.telegram.org/bot${telegramToken}/deleteWebhook`),
     );
+  }
+
+  // ── Command bot stats + Telegram marketing (Tixtron) ───────────────────────
+
+  private async getCommandBot(orgId: string, botId: string) {
+    const bot = await this.prisma.bot.findFirst({ where: { id: botId, organizationId: orgId, botType: 'COMMAND' } });
+    if (!bot) throw new NotFoundException('Bot not found');
+    return bot;
+  }
+
+  async getCommandBotStats(orgId: string, botId: string) {
+    const bot = await this.getCommandBot(orgId, botId);
+    const prismaAny = this.prisma as any;
+
+    // Commands per day, last 30 days. Uses LOCAL date components for the bucket key — not
+    // toISOString(), which shifts the calendar date for any timezone not exactly UTC+0 (e.g. WAT,
+    // UTC+1: local midnight today renders as "yesterday" in ISO/UTC).
+    const DAYS = 30;
+    const DAY_MS = 24 * 3600_000;
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const since = new Date(startOfToday.getTime() - (DAYS - 1) * DAY_MS);
+
+    const [totalCommands, distinctCustomers, commandGroups, lastEvent, hitRateGroups, recentEvents] = await Promise.all([
+      prismaAny.commandBotEvent.count({ where: { botId } }),
+      prismaAny.commandBotEvent.findMany({ where: { botId, customerId: { not: null } }, select: { customerId: true }, distinct: ['customerId'] }),
+      prismaAny.commandBotEvent.groupBy({ by: ['command'], where: { botId }, _count: { command: true } }),
+      prismaAny.commandBotEvent.findFirst({ where: { botId }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+      // All-time /mytickets hit-rate, grouped in the DB on the resultMeta JSON field — previously
+      // this fetched every /mytickets invocation ever (full rows, just to read one JSON key) and
+      // categorized them in a JS loop. This is now the same one-round-trip shape as `commandGroups`.
+      this.prisma.$queryRawUnsafe<Array<{ result: string | null; count: bigint }>>(
+        `SELECT "resultMeta"->>'result' AS result, COUNT(*) AS count
+        FROM "CommandBotEvent"
+        WHERE "botId" = $1 AND command = 'mytickets'
+        GROUP BY "resultMeta"->>'result'`,
+        botId,
+      ),
+      // Independent of the aggregates above (no shared dependency) — folded into the same
+      // Promise.all instead of awaited afterward, saving one round trip per stats-page load.
+      prismaAny.commandBotEvent.findMany({ where: { botId, createdAt: { gte: since } }, select: { createdAt: true } }),
+    ]);
+
+    const customerIds: string[] = distinctCustomers.map((c: { customerId: string }) => c.customerId);
+    const subscriberCount = customerIds.length === 0 ? 0 : await this.prisma.customer.count({
+      where: { id: { in: customerIds }, marketingConsentAt: { not: null }, telegramOptOut: false },
+    });
+
+    const commandBreakdown = commandGroups
+      .map((g: { command: string; _count: { command: number } }) => ({ command: g.command, count: g._count.command }))
+      .sort((a: { count: number }, b: { count: number }) => b.count - a.count);
+
+    const hitRate = { found: 0, notFound: 0, invalidEmail: 0 };
+    for (const g of hitRateGroups) {
+      const count = Number(g.count);
+      if (g.result === 'found') hitRate.found += count;
+      else if (g.result === 'not_found') hitRate.notFound += count;
+      else if (g.result === 'invalid_email') hitRate.invalidEmail += count;
+    }
+
+    const buckets: Array<{ date: string; count: number }> = [];
+    for (let i = DAYS - 1; i >= 0; i--) {
+      buckets.push({ date: toLocalDateKey(new Date(startOfToday.getTime() - i * DAY_MS)), count: 0 });
+    }
+    const bucketIndex = new Map(buckets.map((b, i) => [b.date, i]));
+    for (const e of recentEvents) {
+      const idx = bucketIndex.get(toLocalDateKey(new Date(e.createdAt)));
+      if (idx !== undefined) buckets[idx].count += 1;
+    }
+
+    return {
+      botName: bot.name,
+      telegramUsername: bot.telegramUsername,
+      webhookSet: bot.webhookSet,
+      isActive: bot.isActive,
+      totalCommands,
+      uniqueUsers: customerIds.length,
+      subscriberCount,
+      lastMessageAt: lastEvent?.createdAt ?? null,
+      commandBreakdown,
+      myTicketsHitRate: hitRate,
+      activityOverTime: buckets,
+    };
+  }
+
+  /** Customers eligible for a Telegram marketing send: have interacted with this bot AND
+   *  explicitly opted in AND haven't opted back out. */
+  private async getMarketingRecipients(orgId: string, botId: string) {
+    const prismaAny = this.prisma as any;
+    const distinctCustomers = await prismaAny.commandBotEvent.findMany({
+      where: { orgId, botId, customerId: { not: null } },
+      select: { customerId: true },
+      distinct: ['customerId'],
+    });
+    const customerIds: string[] = distinctCustomers.map((c: { customerId: string }) => c.customerId);
+    if (customerIds.length === 0) return [];
+
+    const eligible = await this.prisma.customer.findMany({
+      where: { id: { in: customerIds }, orgId, marketingConsentAt: { not: null }, telegramOptOut: false },
+      select: { id: true },
+    });
+    if (eligible.length === 0) return [];
+
+    const identifiers = await prismaAny.customerIdentifier.findMany({
+      where: { orgId, customerId: { in: eligible.map((c: { id: string }) => c.id) }, type: 'TELEGRAM_CHAT' },
+      select: { customerId: true, value: true },
+    });
+    return identifiers as Array<{ customerId: string; value: string }>;
+  }
+
+  async getMarketingRecipientCount(orgId: string, botId: string): Promise<{ count: number }> {
+    await this.getCommandBot(orgId, botId);
+    const recipients = await this.getMarketingRecipients(orgId, botId);
+    return { count: recipients.length };
+  }
+
+  /** Cost preview for a broadcast to the bot's current subscriber list — how many of them are
+   *  covered by this month's 50-free-recipient comms allotment, how many would be charged, and
+   *  whether the org's credit balance covers it. Shown before the send is actually triggered. */
+  async getMarketingCostEstimate(orgId: string, botId: string) {
+    await this.getCommandBot(orgId, botId);
+    const recipients = await this.getMarketingRecipients(orgId, botId);
+    return this.billing.getCommsChargeEstimate(orgId, recipients.length);
+  }
+
+  /** Builds the rich "boosted" caption from a real event's own data — title, date, venue, price
+   * range — plus an optional organizer-written one-liner. Telegram HTML parse mode. */
+  private buildBoostCaption(
+    event: { name: string; eventDate: Date | null; eventEndDate: Date | null; eventDateHasTime: boolean; venue: string | null; currency: string; priceMinor: number | null; ticketTypes: Array<{ priceMinor: number | null }> },
+    customBlurb: string,
+  ): string {
+    const dateStr = event.eventDate ? formatEventDateRange(new Date(event.eventDate), event.eventEndDate, event.eventDateHasTime) : null;
+    const prices = event.ticketTypes.length > 0 ? event.ticketTypes.map((t) => t.priceMinor ?? 0) : [event.priceMinor ?? 0];
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const money = (m: number) => `${event.currency} ${(m / 100).toLocaleString()}`;
+    const priceStr = min === 0 && max === 0 ? 'Free' : min === max ? money(min) : `${money(min)} – ${money(max)}`;
+
+    const lines = [
+      `<b>${escapeTelegramHtml(event.name)}</b>`,
+      dateStr ? `📅 ${escapeTelegramHtml(dateStr)}` : null,
+      event.venue ? `📍 ${escapeTelegramHtml(event.venue)}` : null,
+      `🎫 ${priceStr}`,
+    ].filter(Boolean) as string[];
+
+    if (customBlurb.trim()) lines.push('', escapeTelegramHtml(customBlurb.trim()));
+    return lines.join('\n');
+  }
+
+  /** Creates and sends a broadcast. Charged synchronously up front via the org's comms credits
+   * (50 free recipients/month, then 10 units/₦1 per recipient beyond that) — if the charge fails
+   * (insufficient credits) nothing is created and nothing is queued. Once charged, the actual
+   * Telegram delivery happens in the background (MarketingBroadcastProcessor). */
+  async createBroadcast(
+    orgId: string,
+    botId: string,
+    dto: { message: string; eventId?: string },
+  ): Promise<{ broadcastId: string; status: string; recipientCount: number; freeApplied: number; creditsDebited: number }> {
+    const bot = await this.getCommandBot(orgId, botId);
+    if (!bot.telegramToken) throw new BadRequestException('This bot has no Telegram token');
+    const trimmedMessage = dto.message.trim();
+    if (!trimmedMessage) throw new BadRequestException('Message cannot be empty');
+
+    let imageUrl: string | null = null;
+    let ctaLabel: string | null = null;
+    let ctaUrl: string | null = null;
+    let finalMessage = trimmedMessage;
+
+    if (dto.eventId) {
+      const event = await this.prisma.registrationProduct.findFirst({
+        where: { id: dto.eventId, orgId },
+        include: { ticketTypes: { where: { isActive: true }, select: { priceMinor: true } } },
+      });
+      if (!event) throw new NotFoundException('Event not found');
+      // Tixtron's own app, not Zuti's dashboard (APP_URL) — see registrations.service.ts's identical note.
+      const appUrl = (this.config.get<string>('TIXTRON_APP_URL') ?? 'http://localhost:3004').replace(/\/$/, '');
+      imageUrl = event.bannerUrl ?? event.flierUrl ?? null;
+      if (event.slug) {
+        ctaLabel = 'Get Tickets';
+        ctaUrl = `${appUrl}/e/${event.slug}`;
+      }
+      finalMessage = this.buildBoostCaption(event, trimmedMessage);
+    }
+
+    const recipients = await this.getMarketingRecipients(orgId, botId);
+    if (recipients.length === 0) throw new BadRequestException('No opted-in subscribers to send to yet');
+
+    // Charge BEFORE creating any broadcast row — if this throws (insufficient credits), nothing
+    // is left behind to clean up.
+    const chargeKey = `broadcast_${randomBytes(12).toString('hex')}`;
+    const charge = await this.billing.chargeCommsRecipients({
+      organizationId: orgId,
+      recipientCount: recipients.length,
+      commsType: 'TELEGRAM_BROADCAST',
+      idempotencyKey: chargeKey,
+      metadata: { botId },
+    });
+
+    const broadcast = await this.prisma.marketingBroadcast.create({
+      data: {
+        orgId, botId, eventId: dto.eventId ?? null, message: finalMessage, imageUrl, ctaLabel, ctaUrl,
+        status: 'SENDING', amountMinor: 0, recipientCount: recipients.length,
+        creditsChargedUnits: charge.creditsDebitedUnits, freeRecipientsApplied: charge.freeApplied,
+      },
+    });
+
+    await this.marketingQueue.add({ broadcastId: broadcast.id });
+    return { broadcastId: broadcast.id, status: 'SENDING', recipientCount: recipients.length, freeApplied: charge.freeApplied, creditsDebited: charge.creditsDebited };
+  }
+
+  /** Broadcast history + aggregate stats for the Marketing page. Most recent first — the frontend
+   * also polls this to show live progress on whichever broadcast is currently SENDING. */
+  async listBroadcasts(orgId: string, botId: string) {
+    await this.getCommandBot(orgId, botId);
+    const broadcasts = await this.prisma.marketingBroadcast.findMany({
+      where: { orgId, botId },
+      orderBy: { createdAt: 'desc' },
+      take: 30,
+    });
+    const sentBroadcasts = broadcasts.filter((b) => b.status === 'SENT');
+    const totals = {
+      broadcastCount: sentBroadcasts.length,
+      delivered: sentBroadcasts.reduce((sum, b) => sum + b.sentCount, 0),
+      creditsSpent: sentBroadcasts.reduce((sum, b) => sum + b.creditsChargedUnits, 0) / CREDIT_UNITS_PER_CREDIT,
+    };
+    return { broadcasts, totals };
   }
 
   private async getTelegramBotInfo(token: string): Promise<{ username: string; id: number }> {

@@ -7,15 +7,17 @@ export function getAccessToken(): string | null {
   return localStorage.getItem(ACCESS_TOKEN_KEY);
 }
 
-export function setAuthTokens(accessToken: string, refreshToken: string) {
+// The refresh token itself now lives in an httpOnly cookie (see apps/api auth.controller.ts) —
+// only the short-lived access token is ever JS-readable.
+export function setAuthTokens(accessToken: string) {
   if (typeof window === 'undefined') return;
   localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
 }
 
 export function clearAuthTokens() {
   if (typeof window === 'undefined') return;
   localStorage.removeItem(ACCESS_TOKEN_KEY);
+  // Also clears any pre-migration refreshToken value left over in existing users' browsers.
   localStorage.removeItem(REFRESH_TOKEN_KEY);
 }
 

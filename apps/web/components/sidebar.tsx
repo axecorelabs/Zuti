@@ -34,7 +34,7 @@ import {
   Contact,
 } from 'lucide-react';
 import { useAuthStore } from '@/lib/store';
-import { orgsApi, invitationsApi, notificationsApi } from '@/lib/api';
+import { orgsApi, invitationsApi, notificationsApi, authApi } from '@/lib/api';
 import toast from 'react-hot-toast';
 
 interface Org {
@@ -294,6 +294,7 @@ export default function Sidebar({
   };
 
   const handleLogout = () => {
+    authApi.logout().catch(() => {});
     clearAuth();
     router.push('/login');
   };

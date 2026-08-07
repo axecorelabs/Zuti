@@ -2,7 +2,7 @@ import {
   Controller, Post, Param, Body, Headers, Get, Query,
   Logger, HttpCode, HttpStatus, UseInterceptors, Req, ForbiddenException, UploadedFiles,
 } from '@nestjs/common';
-import { createHash, createHmac, timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { AnyFilesInterceptor } from '@nestjs/platform-express';
@@ -10,17 +10,16 @@ import { ApiExcludeController } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { PrismaService } from '../prisma/prisma.service';
 import { Public } from '../../common/decorators/public.decorator';
-import { TELEGRAM_QUEUE, EMAIL_QUEUE, WHATSAPP_QUEUE } from '../queue/queue.module';
+import { TELEGRAM_QUEUE, EMAIL_QUEUE, WHATSAPP_QUEUE, PAYSTACK_WEBHOOK_QUEUE } from '../queue/queue.module';
 import { TelegramMessageJob } from '../queue/telegram.processor';
 import { EmailMessageJob } from '../queue/email.processor';
 import { WhatsAppMessageJob } from '../queue/whatsapp.processor';
-import { BillingService } from '../billing/billing.service';
-import { CommerceService } from '../commerce/commerce.service';
-import { RegistrationsService } from '../registrations/registrations.service';
+import { PAYSTACK_WEBHOOK_JOB, PAYSTACK_WEBHOOK_JOB_OPTIONS } from '../queue/paystack-webhook.processor';
 import { ConfigService } from '@nestjs/config';
 import { extractWhatsAppConfig, verifyMetaWebhookSignature, verifyTwilioWebhookSignature } from '../../common/utils/whatsapp';
 import { resolveSupabaseStorageConfig, uploadBufferToSupabaseStorage } from '../../common/utils/supabase-storage';
 import { callMediaProcess } from '../../common/utils/media-processing';
+import { CommandBotService } from './command-bot.service';
 
 @ApiExcludeController()
 @Controller('webhooks')
@@ -55,18 +54,6 @@ export class WebhooksController {
     const expectedDigest = createHash('sha256').update(expected).digest();
     const actualDigest = createHash('sha256').update(actual).digest();
     return timingSafeEqual(expectedDigest, actualDigest);
-  }
-
-  private isPaystackSignatureValid(signature: string | undefined, rawBody: Buffer): boolean {
-    const secret = this.config.get<string>('PAYSTACK_SECRET_KEY');
-    if (!secret) return false;
-    if (!signature || !rawBody?.length) return false;
-    if (!/^[a-fA-F0-9]{128}$/.test(signature)) return false;
-    const digest = createHmac('sha512', secret).update(rawBody).digest('hex').toLowerCase();
-    const digestBuf = Buffer.from(digest, 'utf8');
-    const sigBuf = Buffer.from(signature.toLowerCase(), 'utf8');
-    if (digestBuf.length !== sigBuf.length) return false;
-    return timingSafeEqual(digestBuf, sigBuf);
   }
 
   private async scanInboundFiles(files: Array<Express.Multer.File>): Promise<void> {
@@ -137,10 +124,9 @@ export class WebhooksController {
     @InjectQueue(TELEGRAM_QUEUE) private readonly telegramQueue: Queue,
     @InjectQueue(EMAIL_QUEUE) private readonly emailQueue: Queue,
     @InjectQueue(WHATSAPP_QUEUE) private readonly whatsappQueue: Queue,
-    private readonly billing: BillingService,
-    private readonly commerce: CommerceService,
-    private readonly registrations: RegistrationsService,
+    @InjectQueue(PAYSTACK_WEBHOOK_QUEUE) private readonly paystackWebhookQueue: Queue,
     private readonly config: ConfigService,
+    private readonly commandBot: CommandBotService,
   ) {}
 
   // ── Telegram ──────────────────────────────────────────────────────────────
@@ -171,6 +157,21 @@ export class WebhooksController {
     }
 
     const message = update?.message;
+
+    // COMMAND bots (Tixtron) never enter the AI pipeline below — fixed /commands only, handled
+    // synchronously since there's no LLM call to buffer against. chat_member updates (channel
+    // join/leave, for Communities) arrive with no `.message`, so they're handled here too, before
+    // the message-required early return below.
+    if (bot.botType === 'COMMAND') {
+      if (update?.chat_member) {
+        await this.commandBot.handleChatMemberUpdate(bot, update);
+        return { ok: true };
+      }
+      if (!message) return { ok: true };
+      await this.commandBot.handleUpdate(bot, update);
+      return { ok: true };
+    }
+
     if (!message) return { ok: true };
 
     const telegramMedia = message.video
@@ -580,24 +581,18 @@ export class WebhooksController {
   ) {
     const rawBody = req?.rawBody as Buffer | undefined;
     const body = rawBody ?? Buffer.from('');
-    await this.billing.handlePaystackWebhook(signature, body, payload);
-    await this.commerce.handlePaystackWebhook(signature, body, payload);
 
-    // Handle registration payments — verify signature independently before acting
-    if (payload?.event === 'charge.success' && payload?.data?.metadata?.source === 'zuti-registration') {
-      if (!this.isPaystackSignatureValid(signature, body)) {
-        this.logger.warn('Ignoring registration Paystack webhook with invalid signature');
-      } else {
-        const reference = payload?.data?.reference;
-        if (typeof reference === 'string' && reference) {
-          try {
-            await this.registrations.handlePaymentConfirmed(reference);
-          } catch (err) {
-            this.logger.warn(`Registration payment confirmation failed for reference ${reference}: ${String(err)}`);
-          }
-        }
-      }
-    }
+    // The actual work (billing credit, commerce order confirmation, ticket-registration
+    // confirmation) each does DB writes plus its own outbound re-verify call to Paystack's API —
+    // moved onto a queue (PaystackWebhookProcessor) so a burst of webhook deliveries can't tie up
+    // request-handling capacity or hold this connection for the duration of an external HTTP call.
+    // If enqueueing itself fails (e.g. Redis unreachable), let it throw — a non-2xx response is the
+    // right outcome here, since Paystack's own redelivery is the only remaining safety net.
+    await this.paystackWebhookQueue.add(
+      PAYSTACK_WEBHOOK_JOB.PROCESS,
+      { signature: signature ?? null, rawBody: body.toString('base64'), payload },
+      PAYSTACK_WEBHOOK_JOB_OPTIONS,
+    );
 
     return { ok: true };
   }

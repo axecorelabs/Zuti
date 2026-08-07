@@ -6,6 +6,13 @@ export const MEDIA_PROCESSING_CREDIT_UNITS = 25;
 export const INCLUDED_PROMPT_TOKENS_PER_ACTION = 1000;
 export const INCLUDED_COMPLETION_TOKENS_PER_ACTION = 500;
 
+// Comms (Telegram broadcasts, event announcements): 50 free recipients/month per org, then
+// 10 units (0.1 credit = ₦1) per recipient beyond that. Deliberately far cheaper than an AI
+// action (50-100 units) — no LLM inference cost behind a templated send, this exists to keep
+// small orgs free and put a real ceiling on blasting thousands of messages for free.
+export const COMMS_FREE_RECIPIENTS_PER_MONTH = 50;
+export const COMMS_CREDIT_UNITS_PER_RECIPIENT = 10;
+
 const PROMPT_TOKENS_PER_CREDIT = 1000;
 const COMPLETION_TOKENS_PER_CREDIT = 500;
 

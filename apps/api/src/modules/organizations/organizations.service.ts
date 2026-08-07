@@ -1474,18 +1474,11 @@ export class OrganizationsService {
   }
 
   async findOne(slug: string, userId: string) {
-    const org = await this.prisma.organization.findUnique({
-      where: { slug },
-      select: { id: true, name: true, slug: true },
-    });
-    if (!org) throw new NotFoundException('Organization not found');
-
-    const membership = await this.getMembershipOrThrow(org.id, userId);
-
-    if (membership.role === 'AGENT') {
-      return org;
-    }
-
+    // One fetch, not two: this used to fetch a light {id,name,slug} row first just to resolve the
+    // id for the membership check, then fetch the SAME organization again in full for the common
+    // (non-AGENT) case — doubling Organization-table reads on every org-detail page load, which is
+    // an OWNER/ADMIN-heavy endpoint (member management, payout status). The AGENT branch below now
+    // trims this same result instead of never having fetched it, rather than the other way round.
     const full = await this.prisma.organization.findUnique({
       where: { slug },
       include: {
@@ -1494,6 +1487,13 @@ export class OrganizationsService {
       },
     });
     if (!full) throw new NotFoundException('Organization not found');
+
+    const membership = await this.getMembershipOrThrow(full.id, userId);
+
+    if (membership.role === 'AGENT') {
+      return { id: full.id, name: full.name, slug: full.slug };
+    }
+
     // Keep the raw payout account (subaccount code + bank details) out of the general org payload;
     // it's served only by the OWNER-gated Payouts endpoint.
     const { paystackSubaccountCode, payoutBusinessName, payoutBankName, payoutAccountLast4, payoutAccountName, ...safe } = full;

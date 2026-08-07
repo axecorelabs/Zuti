@@ -43,7 +43,7 @@ export class CustomersService {
         skip: offset,
         select: {
           id: true, displayName: true, primaryEmail: true, primaryPhone: true, lifecycleStage: true,
-          tags: true, emailOptOut: true, firstSeenAt: true, lastSeenAt: true,
+          tags: true, emailOptOut: true, telegramOptOut: true, marketingConsentAt: true, firstSeenAt: true, lastSeenAt: true,
           identifiers: { select: { type: true, isAnchor: true }, take: 8 },
           _count: { select: { conversations: true } },
         },
@@ -84,6 +84,7 @@ export class CustomersService {
     if (dto.tags !== undefined) data.tags = dto.tags;
     if (dto.notes !== undefined) data.notes = dto.notes || null;
     if (dto.emailOptOut !== undefined) data.emailOptOut = dto.emailOptOut;
+    if (dto.telegramOptOut !== undefined) data.telegramOptOut = dto.telegramOptOut;
     if (dto.marketingConsent !== undefined) data.marketingConsentAt = dto.marketingConsent ? new Date() : null;
     return this.prisma.customer.update({ where: { id: customerId }, data });
   }
@@ -108,14 +109,37 @@ export class CustomersService {
       },
     });
     if (!customer) throw new NotFoundException('Customer not found');
-    return { exportedAt: new Date().toISOString(), customer };
+    const communityMemberships = await this.getCommunityMemberships(customer.identifiers);
+    return { exportedAt: new Date().toISOString(), customer, communityMemberships };
   }
 
-  /** Right to erasure. Cascades identifiers; conversations keep their history with customerId nulled. */
+  /** Right to erasure. Cascades identifiers; conversations keep their history with customerId nulled.
+   * CommunityMembership isn't a direct FK off Customer (membership is keyed by Telegram chat id,
+   * since the platform community spans every org) — erase by that same identity instead, so leaving
+   * this org doesn't leave an orphaned "still invited/joined" record for that person elsewhere. */
   async remove(orgId: string, customerId: string) {
-    await this.assertCustomer(orgId, customerId);
+    const customer = await this.prisma.customer.findFirst({
+      where: { id: customerId, orgId },
+      include: { identifiers: true },
+    });
+    if (!customer) throw new NotFoundException('Customer not found');
+
+    const telegramChatIds = customer.identifiers.filter((i) => i.type === 'TELEGRAM_CHAT').map((i) => i.value);
+    if (telegramChatIds.length > 0) {
+      await this.prisma.communityMembership.deleteMany({ where: { telegramChatId: { in: telegramChatIds } } });
+    }
+
     await this.prisma.customer.delete({ where: { id: customerId } });
     return { ok: true };
+  }
+
+  private async getCommunityMemberships(identifiers: Array<{ type: string; value: string }>) {
+    const telegramChatIds = identifiers.filter((i) => i.type === 'TELEGRAM_CHAT').map((i) => i.value);
+    if (telegramChatIds.length === 0) return [];
+    return this.prisma.communityMembership.findMany({
+      where: { telegramChatId: { in: telegramChatIds } },
+      include: { community: { select: { name: true, orgId: true } } },
+    });
   }
 
   private async assertCustomer(orgId: string, customerId: string) {

@@ -3,8 +3,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Mail, Plus, Send, X, Users, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { registrationsApi } from '@/lib/api';
+import { registrationsApi, billingApi } from '@/lib/api';
 import { useSocketEvent } from '@/lib/socket';
+
+interface CommsEstimate {
+  recipientCount: number; freeRemaining: number; freeApplied: number; chargeableRecipients: number;
+  creditsRequired: number; creditBalance: number; sufficient: boolean;
+}
 
 interface Announcement {
   id: string; subject: string; segment: string; tierId: string | null;
@@ -88,6 +93,7 @@ function ComposeModal({ orgId, productId, onClose, onSent }: { orgId: string; pr
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [sending, setSending] = useState(false);
+  const [estimate, setEstimate] = useState<CommsEstimate | null>(null);
 
   useEffect(() => {
     (async () => { try { const res = await registrationsApi.announcementRecipients(orgId, productId); setCounts(res.data); } catch { /* ignore */ } })();
@@ -101,17 +107,35 @@ function ComposeModal({ orgId, productId, onClose, onSent }: { orgId: string; pr
     : segment === 'TIER' ? (counts.tiers.find((t) => t.id === tierId)?.count ?? 0)
     : 0;
 
-  const canSend = subject.trim().length > 0 && body.trim().length > 0 && recipientCount > 0 && (segment !== 'TIER' || tierId) && !sending;
+  // Re-quote the cost whenever the chosen audience size changes.
+  useEffect(() => {
+    if (recipientCount === 0) { setEstimate(null); return; }
+    let cancelled = false;
+    billingApi.commsEstimate(orgId, recipientCount).then((res) => { if (!cancelled) setEstimate(res.data); }).catch(() => { if (!cancelled) setEstimate(null); });
+    return () => { cancelled = true; };
+  }, [orgId, recipientCount]);
+
+  const canSend = subject.trim().length > 0 && body.trim().length > 0 && recipientCount > 0 && (segment !== 'TIER' || tierId) && !sending && (!estimate || estimate.sufficient);
 
   const send = async () => {
-    if (!confirm(`Email ${recipientCount} ${recipientCount === 1 ? 'person' : 'people'}? This can't be unsent.`)) return;
+    const costNote = estimate && estimate.chargeableRecipients > 0
+      ? ` ${estimate.freeApplied} free, ${estimate.chargeableRecipients} will cost ${estimate.creditsRequired} credits.`
+      : ' Fully covered by this month\'s free allotment.';
+    if (!confirm(`Email ${recipientCount} ${recipientCount === 1 ? 'person' : 'people'}?${costNote} This can't be unsent.`)) return;
     setSending(true);
     try {
       const res = await registrationsApi.createAnnouncement(orgId, productId, { segment, tierId: segment === 'TIER' ? tierId : undefined, subject: subject.trim(), body: body.trim() });
       if (res.data?.outcome === 'NO_RECIPIENTS') { toast.error('No attendees match that audience.'); setSending(false); return; }
       toast.success(`Sending to ${res.data?.totalRecipients ?? recipientCount} people`);
       onSent();
-    } catch (e: any) { toast.error(e?.response?.data?.message ?? 'Could not send'); setSending(false); }
+    } catch (e: any) {
+      if (e?.response?.data?.code === 'INSUFFICIENT_CREDITS') {
+        toast.error('Not enough credits — top up in Billing to reach everyone in this audience.');
+      } else {
+        toast.error(e?.response?.data?.message ?? 'Could not send');
+      }
+      setSending(false);
+    }
   };
 
   const opt = (val: string, label: string, count: number) => (
@@ -166,6 +190,15 @@ function ComposeModal({ orgId, productId, onClose, onSent }: { orgId: string; pr
               className="w-full bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 text-sm text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-600 resize-y" />
           </div>
           <p className="text-[11px] text-zinc-600">Transactional event update. Sent from your organization&apos;s name to people who registered.</p>
+          {estimate && (
+            <p className="text-[11px] text-zinc-600">
+              {estimate.chargeableRecipients === 0
+                ? `Fully covered by this month's free allotment (${estimate.freeRemaining} of 50 left).`
+                : estimate.sufficient
+                  ? `${estimate.freeApplied} free, ${estimate.chargeableRecipients} will cost ${estimate.creditsRequired} credits.`
+                  : `Not enough credits — need ${estimate.creditsRequired}, have ${estimate.creditBalance}.`}
+            </p>
+          )}
         </div>
 
         <div className="px-5 py-4 border-t border-zinc-800 flex items-center justify-between gap-3">
@@ -173,7 +206,7 @@ function ComposeModal({ orgId, productId, onClose, onSent }: { orgId: string; pr
             {recipientCount === 0 ? <><AlertTriangle className="w-3.5 h-3.5 text-amber-500" /> No recipients</> : <><Users className="w-3.5 h-3.5" /> Sending to <span className="text-zinc-200 font-medium">{recipientCount}</span> {recipientCount === 1 ? 'person' : 'people'}</>}
           </span>
           <button onClick={send} disabled={!canSend} className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm font-medium">
-            <Send className="w-4 h-4" /> {sending ? 'Sending…' : `Send${recipientCount > 0 ? ` to ${recipientCount}` : ''}`}
+            <Send className="w-4 h-4" /> {sending ? 'Sending…' : estimate && !estimate.sufficient ? 'Not enough credits' : `Send${recipientCount > 0 ? ` to ${recipientCount}` : ''}`}
           </button>
         </div>
       </div>

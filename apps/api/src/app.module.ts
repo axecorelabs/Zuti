@@ -26,6 +26,8 @@ import { CommerceModule } from './modules/commerce/commerce.module';
 import { RegistrationsModule } from './modules/registrations/registrations.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { AdminModule } from './modules/admin/admin.module';
+import { CommunitiesModule } from './modules/communities/communities.module';
+import { TixtronOpsModule } from './modules/tixtron-ops/tixtron-ops.module';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RateLimitGuard } from './common/guards/rate-limit.guard';
 
@@ -62,6 +64,8 @@ import { RateLimitGuard } from './common/guards/rate-limit.guard';
     RegistrationsModule,
     CustomersModule,
     AdminModule,
+    CommunitiesModule,
+    TixtronOpsModule,
     HealthModule,
   ],
   providers: [

@@ -23,6 +23,13 @@ export class RegistrationsController {
     return this.svc.listProducts(orgId, botId);
   }
 
+  // Must be declared before the ':productId' routes below — otherwise Nest/Express
+  // matches 'overview' as a productId value and this route is never reached.
+  @Get('overview')
+  getOverview(@Param('id') orgId: string) {
+    return this.svc.getOverview(orgId);
+  }
+
   // ── Dead letter queue (failed receipt/ticket deliveries) ──────────────────
   // Must be declared before the ':productId' routes below — otherwise Nest/Express
   // matches 'dead-letter' as a productId value and this route is never reached.

@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import helmet from 'helmet';
+import cookieParser = require('cookie-parser');
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { rawBody: true });
@@ -9,7 +11,34 @@ async function bootstrap() {
   // Respect X-Forwarded-For when running behind a proxy/load balancer.
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
 
+  // Needed to read the httpOnly refresh-token cookie (see auth.controller.ts).
+  app.use(cookieParser());
+
   const isProduction = process.env.NODE_ENV === 'production';
+
+  const shouldEnableSwagger =
+    process.env.ENABLE_SWAGGER === 'true'
+    || process.env.NODE_ENV !== 'production';
+
+  // This is a JSON API consumed cross-origin by three separate frontends (web, tixtron-web, admin)
+  // plus the public widget — crossOriginResourcePolicy must stay 'cross-origin' or those fetches
+  // break. CSP is skipped entirely when Swagger UI is enabled (dev/staging only — its bundled JS
+  // needs inline scripts/styles); in production (Swagger off) a strict default-src 'self' applies,
+  // which mainly protects the rare HTML error page rather than the JSON responses themselves.
+  app.use(
+    helmet({
+      contentSecurityPolicy: shouldEnableSwagger
+        ? false
+        : {
+            directives: {
+              defaultSrc: ["'self'"],
+              objectSrc: ["'none'"],
+              frameAncestors: ["'none'"],
+            },
+          },
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
 
   const configuredOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? '')
     .split(',')
@@ -22,6 +51,7 @@ async function bootstrap() {
       'http://localhost:3000',
       'http://localhost:3002',
       'http://localhost:3003',
+      'http://localhost:3004', // Tixtron (apps/tixtron-web) local dev
     ] : []),
     ...configuredOrigins,
   ]);
@@ -81,9 +111,6 @@ async function bootstrap() {
     return next();
   });
 
-  const shouldEnableSwagger =
-    process.env.ENABLE_SWAGGER === 'true'
-    || process.env.NODE_ENV !== 'production';
   if (shouldEnableSwagger) {
     const config = new DocumentBuilder()
       .setTitle('Zuti API')

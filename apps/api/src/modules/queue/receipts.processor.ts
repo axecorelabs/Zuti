@@ -433,11 +433,12 @@ export class ReceiptsProcessor {
     };
   }
 
+  // Ticket/registration links point at Tixtron's own app, not Zuti's dashboard (APP_URL) — the two
+  // are separate products sharing this backend. See TIXTRON_APP_URL in registrations.service.ts.
   private getAppUrl(): string {
     return (
-      this.config.get<string>('NEXT_PUBLIC_APP_URL') ??
-      this.config.get<string>('APP_URL') ??
-      'https://app.zuti.bords.app'
+      this.config.get<string>('TIXTRON_APP_URL') ??
+      'http://localhost:3004'
     ).replace(/\/$/, '');
   }
 

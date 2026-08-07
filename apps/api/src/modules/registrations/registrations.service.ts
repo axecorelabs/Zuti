@@ -1,4 +1,5 @@
 import { Injectable, Logger, NotFoundException, BadRequestException, ForbiddenException, InternalServerErrorException } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { ConfigService } from '@nestjs/config';
@@ -9,11 +10,15 @@ import * as QRCode from 'qrcode';
 import { PrismaService } from '../prisma/prisma.service';
 import { EventsGateway } from '../events/events.gateway';
 import { CustomerIdentityService } from '../customers/customer-identity.service';
+import { BillingService } from '../billing/billing.service';
+import { CommunitiesService } from '../communities/communities.service';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import { CreateRegistrationProductDto, UpdateRegistrationProductDto, UpdateRegistrationEntryDto, CreateTicketTypeDto, UpdateTicketTypeDto, PublicRegisterDto, PublicCartDto } from './dto/registrations.dto';
 import { computeGrossUpForSubaccount } from '../../common/utils/payment-split';
 import { formatEventDateRange } from '../../common/utils/event-date';
+import { toLocalDateKey } from '../../common/utils/date-bucket';
+import { encodeCommunityInviteToken } from '../../common/utils/community-invite-token';
 
 type PaystackInitResponse = {
   status: boolean;
@@ -39,8 +44,38 @@ export class RegistrationsService {
     private readonly http: HttpService,
     private readonly events: EventsGateway,
     private readonly customerIdentity: CustomerIdentityService,
+    private readonly billing: BillingService,
+    private readonly communities: CommunitiesService,
     @InjectQueue(RECEIPTS_QUEUE) private readonly receiptsQueue: Queue,
   ) {}
+
+  /** The organizer's own community (if set up) and the platform-wide Tixtron community (if it
+   * exists) — each as a t.me deep-link the ticket holder can tap to opt in. Never surfaced until
+   * the ticket is actually CONFIRMED (post-purchase, not at checkout — see the compliance note in
+   * the community-invite-token util: joining is opt-in, never implied by buying a ticket). */
+  private async buildCommunityInviteLinks(orgId: string, entryId: string): Promise<Array<{ name: string; deepLink: string }>> {
+    const [orgCommunity, platformCommunity] = await Promise.all([
+      this.communities.findActiveForOrg(orgId),
+      this.communities.findPlatformCommunity(),
+    ]);
+    const candidates = [orgCommunity, platformCommunity].filter((c): c is NonNullable<typeof c> => !!c);
+    if (candidates.length === 0) return [];
+
+    const bots = await this.prisma.bot.findMany({
+      where: { id: { in: candidates.map((c) => c.botId) } },
+      select: { id: true, telegramUsername: true },
+    });
+    const botById = new Map(bots.map((b) => [b.id, b]));
+
+    const invites: Array<{ name: string; deepLink: string }> = [];
+    for (const community of candidates) {
+      const bot = botById.get(community.botId);
+      if (!bot?.telegramUsername) continue;
+      const token = encodeCommunityInviteToken({ communityId: community.id, registrationEntryId: entryId });
+      invites.push({ name: community.name, deepLink: `https://t.me/${bot.telegramUsername}?start=${token}` });
+    }
+    return invites;
+  }
 
   /** Fire-and-forget: link created registration entries to the buyer's Customer (conversation-anchored;
    *  attendee-safe — never resolves a customer from an attendee's typed email). */
@@ -91,6 +126,11 @@ export class RegistrationsService {
         bannerUrl: dto.bannerUrl ?? null,
         flierUrl: dto.flierUrl ?? null,
         venue: dto.venue ?? null,
+        city: dto.city?.trim() || null,
+        category: dto.category ?? null,
+        locationType: dto.locationType ?? 'PHYSICAL',
+        onlineMeetingUrl: dto.onlineMeetingUrl?.trim() || null,
+        onlineMeetingPlatform: dto.onlineMeetingPlatform?.trim() || null,
         // Create any tiers in the same transaction so an event is never left half-configured.
         ...(dto.ticketTypes && dto.ticketTypes.length > 0
           ? {
@@ -137,11 +177,187 @@ export class RegistrationsService {
       orderBy: { createdAt: 'desc' },
       include: { _count: { select: { entries: true } } },
     });
-    // Attach usedSpots (SUM of ticket quantities across non-cancelled entries) for capacity display.
-    return Promise.all(products.map(async (p) => ({
-      ...p,
-      usedSpots: await this.getUsedSpots(p.id),
-    })));
+    // Attach usedSpots (SUM of ticket quantities across non-cancelled entries) for capacity display
+    // — one grouped aggregate for every event at once, instead of one query per event.
+    const productIds = products.map((p) => p.id);
+    const sums = productIds.length === 0 ? [] : await this.prisma.registrationEntry.groupBy({
+      by: ['productId'],
+      where: { productId: { in: productIds }, status: { not: 'CANCELLED' } },
+      _sum: { quantity: true },
+    });
+    const usedSpotsByProduct = new Map(sums.map((s) => [s.productId, s._sum.quantity ?? 0]));
+    return products.map((p) => ({ ...p, usedSpots: usedSpotsByProduct.get(p.id) ?? 0 }));
+  }
+
+  /** Org-wide aggregate across every event — powers the Tixtron Overview page. */
+  async getOverview(orgId: string) {
+    const products = await this.prisma.registrationProduct.findMany({
+      where: { orgId },
+      select: {
+        id: true, name: true, eventDate: true, eventEndDate: true, eventDateHasTime: true, isActive: true, currency: true,
+        bannerUrl: true, flierUrl: true, venue: true, capacity: true, createdAt: true,
+      },
+    });
+    const productIds = products.map((p) => p.id);
+    const productById = new Map(products.map((p) => [p.id, p]));
+
+    const now = new Date();
+    const DAYS = 30;
+    const DAY_MS = 24 * 3600_000;
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const last30Start = new Date(startOfToday.getTime() - 30 * DAY_MS);
+    const prev30Start = new Date(startOfToday.getTime() - 60 * DAY_MS);
+
+    // All-time totals (tickets sold, revenue, status breakdown, per-product sold counts for
+    // topEvents/nextEvent) are computed as DB aggregates rather than fetching every entry row this
+    // org has ever had — the previous version's `findMany` grew unbounded with the org's lifetime
+    // entry count and got slower every month. groupBy still scans all rows in Postgres, same as any
+    // all-time total must, but nothing is transferred to or held in Node beyond one row per
+    // (product, status) pair.
+    const allTimeGroups = productIds.length === 0 ? [] : await this.prisma.registrationEntry.groupBy({
+      by: ['productId', 'status'],
+      where: { productId: { in: productIds } },
+      _sum: { quantity: true, amountMinor: true },
+      _count: { _all: true },
+    });
+
+    let totalTicketsSold = 0;
+    let totalRegistrants = 0;
+    const soldByProduct = new Map<string, number>();
+    const revenueByCurrency: Record<string, number> = {};
+    const statusBreakdown: Record<string, number> = { CONFIRMED: 0, PENDING_PAYMENT: 0, AWAITING_APPROVAL: 0, CANCELLED: 0 };
+    for (const g of allTimeGroups) {
+      const qty = g._sum.quantity ?? 0;
+      statusBreakdown[g.status] = (statusBreakdown[g.status] ?? 0) + qty;
+      if (g.status !== 'CANCELLED') {
+        totalTicketsSold += qty;
+        totalRegistrants += g._count._all;
+        soldByProduct.set(g.productId, (soldByProduct.get(g.productId) ?? 0) + qty);
+      }
+      if (g.status === 'CONFIRMED' && g._sum.amountMinor) {
+        const currency = productById.get(g.productId)?.currency ?? 'NGN';
+        revenueByCurrency[currency] = (revenueByCurrency[currency] ?? 0) + g._sum.amountMinor;
+      }
+    }
+
+    // Time-series data (the last-30-days chart, the last-60-days trend deltas, the 14-day
+    // sparkline) never looks further back than 60 days, so only that window is fetched — unlike
+    // the all-time totals above, this one WOULD keep growing with entry volume if left unbounded.
+    const entries = productIds.length === 0 ? [] : await this.prisma.registrationEntry.findMany({
+      where: { productId: { in: productIds }, createdAt: { gte: prev30Start } },
+      select: { productId: true, status: true, quantity: true, amountMinor: true, createdAt: true },
+    });
+    const nonCancelled = entries.filter((e) => e.status !== 'CANCELLED');
+
+    const upcomingProducts = products
+      .filter((p) => p.isActive && p.eventDate && new Date(p.eventDate) >= now)
+      .sort((a, b) => new Date(a.eventDate as Date).getTime() - new Date(b.eventDate as Date).getTime());
+
+    const upcomingEvents = upcomingProducts
+      .slice(0, 5)
+      .map((p) => ({
+        id: p.id, name: p.name, eventDate: p.eventDate, eventEndDate: p.eventEndDate, eventDateHasTime: p.eventDateHasTime,
+        bannerUrl: p.bannerUrl, flierUrl: p.flierUrl, venue: p.venue,
+      }));
+
+    const nextUp = upcomingProducts[0];
+    const nextEvent = nextUp ? {
+      id: nextUp.id, name: nextUp.name, eventDate: nextUp.eventDate, eventEndDate: nextUp.eventEndDate, eventDateHasTime: nextUp.eventDateHasTime,
+      bannerUrl: nextUp.bannerUrl, flierUrl: nextUp.flierUrl, venue: nextUp.venue, capacity: nextUp.capacity,
+      ticketsSold: soldByProduct.get(nextUp.id) ?? 0,
+    } : null;
+
+    // Tickets registered per day, last 30 days. Uses LOCAL date components for the bucket key —
+    // not toISOString(), which shifts the calendar date for any timezone not exactly UTC+0 (e.g.
+    // WAT, UTC+1: local midnight today renders as "yesterday" in ISO/UTC).
+    const buckets: Array<{ date: string; tickets: number }> = [];
+    for (let i = DAYS - 1; i >= 0; i--) {
+      buckets.push({ date: toLocalDateKey(new Date(startOfToday.getTime() - i * DAY_MS)), tickets: 0 });
+    }
+    const bucketIndex = new Map(buckets.map((b, i) => [b.date, i]));
+    for (const e of nonCancelled) {
+      const idx = bucketIndex.get(toLocalDateKey(new Date(e.createdAt)));
+      if (idx !== undefined) buckets[idx].tickets += e.quantity;
+    }
+
+    const topEvents = products
+      .map((p) => ({ id: p.id, name: p.name, ticketsSold: soldByProduct.get(p.id) ?? 0, bannerUrl: p.bannerUrl, flierUrl: p.flierUrl }))
+      .filter((p) => p.ticketsSold > 0)
+      .sort((a, b) => b.ticketsSold - a.ticketsSold)
+      .slice(0, 5);
+
+    // 30-day vs prior-30-day deltas, for the stat-card trend indicators. All derived from the
+    // same bounded `entries`/`products` already fetched above — no extra queries.
+    const inWindow = (d: Date, from: Date, to: Date) => d >= from && d < to;
+
+    let ticketsLast30 = 0, ticketsPrev30 = 0, registrantsLast30 = 0, registrantsPrev30 = 0;
+    for (const e of nonCancelled) {
+      const created = new Date(e.createdAt);
+      if (inWindow(created, last30Start, now)) { ticketsLast30 += e.quantity; registrantsLast30 += 1; }
+      else if (inWindow(created, prev30Start, last30Start)) { ticketsPrev30 += e.quantity; registrantsPrev30 += 1; }
+    }
+
+    let revenueLast30 = 0, revenuePrev30 = 0;
+    for (const e of entries) {
+      if (e.status !== 'CONFIRMED' || !e.amountMinor) continue;
+      const created = new Date(e.createdAt);
+      if (inWindow(created, last30Start, now)) revenueLast30 += e.amountMinor;
+      else if (inWindow(created, prev30Start, last30Start)) revenuePrev30 += e.amountMinor;
+    }
+
+    let eventsLast30 = 0, eventsPrev30 = 0;
+    for (const p of products) {
+      const created = new Date(p.createdAt);
+      if (inWindow(created, last30Start, now)) eventsLast30 += 1;
+      else if (inWindow(created, prev30Start, last30Start)) eventsPrev30 += 1;
+    }
+
+    const pctChange = (curr: number, prev: number): number | null => {
+      if (prev === 0) return curr > 0 ? null : 0;
+      return ((curr - prev) / prev) * 100;
+    };
+
+    // Per-day sparkline series, last 14 days — same local-date bucketing as `registrationsOverTime`.
+    const SPARK_DAYS = 14;
+    const sparkDates: string[] = [];
+    for (let i = SPARK_DAYS - 1; i >= 0; i--) sparkDates.push(toLocalDateKey(new Date(startOfToday.getTime() - i * DAY_MS)));
+    const sparkIndex = new Map(sparkDates.map((d, i) => [d, i]));
+    const ticketsSpark = new Array(SPARK_DAYS).fill(0);
+    const registrantsSpark = new Array(SPARK_DAYS).fill(0);
+    const revenueSpark = new Array(SPARK_DAYS).fill(0);
+    const eventsSpark = new Array(SPARK_DAYS).fill(0);
+    for (const e of nonCancelled) {
+      const idx = sparkIndex.get(toLocalDateKey(new Date(e.createdAt)));
+      if (idx !== undefined) { ticketsSpark[idx] += e.quantity; registrantsSpark[idx] += 1; }
+    }
+    for (const e of entries) {
+      if (e.status !== 'CONFIRMED' || !e.amountMinor) continue;
+      const idx = sparkIndex.get(toLocalDateKey(new Date(e.createdAt)));
+      if (idx !== undefined) revenueSpark[idx] += e.amountMinor;
+    }
+    for (const p of products) {
+      const idx = sparkIndex.get(toLocalDateKey(new Date(p.createdAt)));
+      if (idx !== undefined) eventsSpark[idx] += 1;
+    }
+
+    return {
+      totalEvents: products.length,
+      activeEvents: products.filter((p) => p.isActive).length,
+      totalTicketsSold,
+      totalRegistrants,
+      revenueByCurrency,
+      statusBreakdown,
+      registrationsOverTime: buckets,
+      upcomingEvents,
+      topEvents,
+      nextEvent,
+      trends: {
+        tickets: { changePct: pctChange(ticketsLast30, ticketsPrev30), last30: ticketsLast30, prev30: ticketsPrev30, sparkline: ticketsSpark },
+        revenue: { changePct: pctChange(revenueLast30, revenuePrev30), last30: revenueLast30, prev30: revenuePrev30, sparkline: revenueSpark },
+        events: { changePct: pctChange(eventsLast30, eventsPrev30), last30: eventsLast30, prev30: eventsPrev30, sparkline: eventsSpark },
+        registrants: { changePct: pctChange(registrantsLast30, registrantsPrev30), last30: registrantsLast30, prev30: registrantsPrev30, sparkline: registrantsSpark },
+      },
+    };
   }
 
   async getProduct(orgId: string, productId: string) {
@@ -199,6 +415,11 @@ export class RegistrationsService {
         ...(dto.bannerUrl !== undefined && { bannerUrl: dto.bannerUrl || null }),
         ...(dto.flierUrl !== undefined && { flierUrl: dto.flierUrl || null }),
         ...(dto.venue !== undefined && { venue: dto.venue || null }),
+        ...(dto.city !== undefined && { city: dto.city?.trim() || null }),
+        ...(dto.category !== undefined && { category: dto.category || null }),
+        ...(dto.locationType !== undefined && { locationType: dto.locationType }),
+        ...(dto.onlineMeetingUrl !== undefined && { onlineMeetingUrl: dto.onlineMeetingUrl?.trim() || null }),
+        ...(dto.onlineMeetingPlatform !== undefined && { onlineMeetingPlatform: dto.onlineMeetingPlatform?.trim() || null }),
         ...(dto.reminderBeforeEvent !== undefined && { reminderBeforeEvent: dto.reminderBeforeEvent }),
         ...(dto.reminderUnpaidNudge !== undefined && { reminderUnpaidNudge: dto.reminderUnpaidNudge }),
       },
@@ -221,11 +442,18 @@ export class RegistrationsService {
   // ── Entries ───────────────────────────────────────────────────────────────
 
   async listEntries(orgId: string, productId: string) {
-    await this.getProduct(orgId, productId);
+    // Only need to confirm the product exists and belongs to this org — assertProduct does
+    // exactly that with one light query. getProduct was doing this via a heavier call that also
+    // ran a joined _count and a separate usedSpots aggregate, whose results were never used here.
+    await this.assertProduct(orgId, productId);
     return this.prisma.registrationEntry.findMany({
       where: { productId, orgId },
       orderBy: { createdAt: 'desc' },
       include: { ticketType: { select: { id: true, name: true } } },
+      // Not true pagination (the dashboard attendee-list UI expects a plain array, not a paged
+      // response) — just a hard ceiling so a very large event can't turn this into an unbounded
+      // fetch. Comfortably above any real single-event attendance.
+      take: 5000,
     });
   }
 
@@ -292,6 +520,19 @@ export class RegistrationsService {
     return agg._sum.quantity ?? 0;
   }
 
+  /** Same as getUsedSpots, but for every given tier of one product in a single grouped query —
+   * use this instead of calling getUsedSpots in a per-tier loop/Promise.all. */
+  private async getUsedSpotsByTier(productId: string, tierIds: string[], tx?: any): Promise<Map<string, number>> {
+    if (tierIds.length === 0) return new Map();
+    const client = tx ?? this.prisma;
+    const sums = await client.registrationEntry.groupBy({
+      by: ['ticketTypeId'],
+      where: { productId, ticketTypeId: { in: tierIds }, status: { not: 'CANCELLED' } },
+      _sum: { quantity: true },
+    });
+    return new Map(sums.map((s: { ticketTypeId: string | null; _sum: { quantity: number | null } }) => [s.ticketTypeId as string, s._sum.quantity ?? 0]));
+  }
+
   // ── Ticket tiers (CRUD) ─────────────────────────────────────────────────────
   private async assertProduct(orgId: string, productId: string) {
     const product = await this.prisma.registrationProduct.findFirst({ where: { id: productId, orgId }, select: { id: true } });
@@ -305,7 +546,8 @@ export class RegistrationsService {
       where: { productId, isActive: true },
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
     });
-    return Promise.all(tiers.map(async (t) => ({ ...t, usedSpots: await this.getUsedSpots(productId, undefined, t.id) })));
+    const usedByTier = await this.getUsedSpotsByTier(productId, tiers.map((t) => t.id));
+    return tiers.map((t) => ({ ...t, usedSpots: usedByTier.get(t.id) ?? 0 }));
   }
 
   async createTicketType(orgId: string, productId: string, dto: CreateTicketTypeDto) {
@@ -518,6 +760,109 @@ export class RegistrationsService {
     }
   }
 
+  // ── Public event discovery (self-serve, cross-org by design) ────────────────
+  /** Public, unauthenticated search/browse across ALL organizations' published events — the
+   *  data backing the Tixtron landing page's search. Deliberately cross-tenant (this is the one
+   *  place that's meant to be): every org's event is only listed here once the org has explicitly
+   *  published it (isPublic && isActive), and only safe, already-public fields are selected —
+   *  never orgId/botId/onlineMeetingUrl/revenue/registrant data, mirroring getPublicEventBySlug's
+   *  curation below. Excludes clearly-past dated events; undated ("ongoing") events stay listed. */
+  async listPublicEvents(opts: { search?: string; category?: string; city?: string; dateFrom?: string; dateTo?: string; limit?: number; offset?: number }) {
+    const limit = Math.min(Math.max(opts.limit ?? 20, 1), 50);
+    const offset = Math.max(opts.offset ?? 0, 0);
+    const search = opts.search?.trim();
+    const category = opts.category?.trim();
+    const city = opts.city?.trim();
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+
+    // A caller-supplied date only ever narrows the floor forward — never used to sneak past
+    // events back into view.
+    let lowerBound = startOfToday;
+    if (opts.dateFrom) {
+      const parsed = new Date(opts.dateFrom);
+      if (!Number.isNaN(parsed.getTime())) {
+        parsed.setHours(0, 0, 0, 0);
+        if (parsed > startOfToday) lowerBound = parsed;
+      }
+    }
+
+    // Upper bound is optional (used by the "Today" / "This weekend" / "This week" quick filters) —
+    // inclusive of the whole given day.
+    let upperBound: Date | null = null;
+    if (opts.dateTo) {
+      const parsed = new Date(opts.dateTo);
+      if (!Number.isNaN(parsed.getTime())) {
+        parsed.setHours(23, 59, 59, 999);
+        upperBound = parsed;
+      }
+    }
+
+    const dateFilter = upperBound ? { gte: lowerBound, lte: upperBound } : { gte: lowerBound };
+    // An explicit upper bound ("Today" / "This weekend" / "This week") is a request for events
+    // that concretely fall in that window — an undated/TBA event doesn't qualify. Without an
+    // upper bound (general browsing), undated events stay listed as "ongoing".
+    const dateClause = upperBound ? { eventDate: dateFilter } : { OR: [{ eventDate: null }, { eventDate: dateFilter }] };
+
+    const where: Prisma.RegistrationProductWhereInput = {
+      isPublic: true,
+      isActive: true,
+      ...dateClause,
+      ...(search ? {
+        AND: [{
+          OR: [
+            { name: { contains: search, mode: 'insensitive' } },
+            { venue: { contains: search, mode: 'insensitive' } },
+            { city: { contains: search, mode: 'insensitive' } },
+          ],
+        }],
+      } : {}),
+      ...(category ? { category } : {}),
+      ...(city ? { city: { equals: city, mode: 'insensitive' } } : {}),
+    };
+
+    const [total, products] = await Promise.all([
+      this.prisma.registrationProduct.count({ where }),
+      this.prisma.registrationProduct.findMany({
+        where,
+        select: {
+          slug: true, name: true, eventDate: true, eventEndDate: true, eventDateHasTime: true,
+          venue: true, city: true, category: true, locationType: true, bannerUrl: true, flierUrl: true, currency: true,
+          isFree: true, priceMinor: true,
+          organization: { select: { name: true } },
+          ticketTypes: { where: { isActive: true }, select: { priceMinor: true } },
+        },
+        orderBy: [{ eventDate: 'asc' }],
+        take: limit,
+        skip: offset,
+      }),
+    ]);
+
+    const items = products.map((p) => {
+      const tierPrices = p.ticketTypes.map((t) => t.priceMinor ?? 0).filter((n) => n > 0);
+      const fromPriceMinor = p.isFree ? 0 : tierPrices.length > 0 ? Math.min(...tierPrices) : (p.priceMinor ?? 0);
+      return {
+        slug: p.slug,
+        name: p.name,
+        eventDate: p.eventDate,
+        eventEndDate: p.eventEndDate,
+        eventDateHasTime: p.eventDateHasTime,
+        venue: p.venue,
+        city: p.city,
+        category: p.category,
+        locationType: p.locationType,
+        bannerUrl: p.bannerUrl,
+        flierUrl: p.flierUrl,
+        currency: p.currency,
+        isFree: p.isFree,
+        fromPriceMinor,
+        organizerName: p.organization?.name ?? null,
+      };
+    });
+
+    return { items, total, limit, offset };
+  }
+
   // ── Public event page (self-serve) ─────────────────────────────────────────
   /** Public, unauthenticated view of an event by slug — only when published (isPublic && isActive).
    *  Returns a curated payload (no orgId/botId leakage) with per-tier and overall availability. */
@@ -532,8 +877,9 @@ export class RegistrationsService {
     if (!product) throw new NotFoundException('Event not found');
 
     const usedTotal = await this.getUsedSpots(product.id);
-    const ticketTypes = await Promise.all(product.ticketTypes.map(async (t) => {
-      const used = await this.getUsedSpots(product.id, undefined, t.id);
+    const usedByTier = await this.getUsedSpotsByTier(product.id, product.ticketTypes.map((t) => t.id));
+    const ticketTypes = product.ticketTypes.map((t) => {
+      const used = usedByTier.get(t.id) ?? 0;
       return {
         id: t.id,
         name: t.name,
@@ -544,7 +890,7 @@ export class RegistrationsService {
         spotsLeft: t.capacity != null ? Math.max(0, t.capacity - used) : null,
         soldOut: t.capacity != null && used >= t.capacity,
       };
-    }));
+    });
 
     return {
       slug: product.slug,
@@ -554,6 +900,12 @@ export class RegistrationsService {
       eventEndDate: product.eventEndDate,
       eventDateHasTime: product.eventDateHasTime,
       venue: product.venue,
+      city: product.city,
+      category: product.category,
+      // Deliberately NOT including onlineMeetingUrl here — it's only ever surfaced on a confirmed
+      // ticket holder's own private ticket page. locationType alone lets the public page say
+      // "online event" without exposing the link itself.
+      locationType: product.locationType,
       bannerUrl: product.bannerUrl,
       flierUrl: product.flierUrl,
       currency: product.currency,
@@ -735,7 +1087,8 @@ export class RegistrationsService {
           (tiers.length === 1 ? tiers[0] : null);
         if (!tier) {
           const money = (m: number | null) => (m && m > 0 ? `${product.currency} ${(m / 100).toFixed(2)}` : 'Free');
-          const ticket_types = await Promise.all(tiers.map(async (t) => ({ id: t.id, name: t.name, price: money(t.priceMinor), spots_left: t.capacity != null ? Math.max(0, t.capacity - (await this.getUsedSpots(product.id, undefined, t.id))) : null })));
+          const usedByTier = await this.getUsedSpotsByTier(product.id, tiers.map((t) => t.id));
+          const ticket_types = tiers.map((t) => ({ id: t.id, name: t.name, price: money(t.priceMinor), spots_left: t.capacity != null ? Math.max(0, t.capacity - (usedByTier.get(t.id) ?? 0)) : null }));
           return { outcome: 'NEEDS_TICKET_TYPE', ticketTypes: ticket_types, message: `"${product.name}" has ticket tiers — specify which tier for each ticket.` };
         }
       }
@@ -771,11 +1124,55 @@ export class RegistrationsService {
     const totalMinor = tickets.reduce((s, t) => s + (t.isFree ? 0 : (t.priceMinor ?? 0)), 0);
     const paidCart = totalMinor > 0;
     const groupId = randomBytes(12).toString('hex');
+    const money = (m: number) => `${product.currency} ${(m / 100).toFixed(2)}`;
+
+    // Signature for comparing "is this the same cart" — order-insensitive so re-sending the exact
+    // same tickets (a double-click, a retried network request) is recognized as a resubmission
+    // rather than a brand-new purchase.
+    const cartSignature = (rows: { ticketTypeId: string | null; email: string | null; amountMinor: number | null }[]) =>
+      JSON.stringify(rows.map((r) => `${r.ticketTypeId ?? ''}|${(r.email ?? '').toLowerCase()}|${r.amountMinor ?? 0}`).sort());
+    const newSignature = cartSignature(tickets.map((t) => ({ ticketTypeId: t.ticketTypeId, email: t.email, amountMinor: t.isFree ? 0 : (t.priceMinor ?? 0) })));
 
     // Reserve the whole cart's capacity atomically, then create every ticket, in one transaction.
+    // Dedup runs INSIDE this same locked transaction (not before it) so two near-simultaneous
+    // duplicate submissions can't both see "no existing pending cart" and both create one — exactly
+    // the race this exists to close.
     const reserve = await this.prisma.$transaction(async (tx) => {
       const txAny = tx as any;
       await tx.$queryRawUnsafe(`SELECT id FROM "RegistrationProduct" WHERE id = $1 FOR UPDATE`, product.id);
+
+      // Dedup: does the payer already have a pending (unpaid) purchase for this event? The payer's
+      // own email is always one of the entries — either every ticket shares it (shared buyer-details
+      // checkout) or ticket 0 carries it (per-attendee checkout, where slot 0 is documented in the UI
+      // as "payment & receipt contact").
+      if (paidCart) {
+        const candidate = await txAny.registrationEntry.findFirst({
+          where: { productId: product.id, status: 'PENDING_PAYMENT', customerEmail: { equals: payerEmail, mode: 'insensitive' } },
+          orderBy: { createdAt: 'desc' },
+          select: { purchaseGroupId: true },
+        });
+        if (candidate?.purchaseGroupId) {
+          const groupEntries = await txAny.registrationEntry.findMany({
+            where: { purchaseGroupId: candidate.purchaseGroupId, status: 'PENDING_PAYMENT' },
+            select: { id: true, ticketTypeId: true, customerEmail: true, customerName: true, amountMinor: true, paystackReference: true, paystackAccessCode: true },
+          });
+          if (groupEntries.length > 0 && cartSignature(groupEntries.map((e: any) => ({ ticketTypeId: e.ticketTypeId, email: e.customerEmail, amountMinor: e.amountMinor }))) === newSignature) {
+            return {
+              ok: 'reuse' as const,
+              groupId: candidate.purchaseGroupId,
+              ids: groupEntries.map((e: any) => e.id),
+              names: groupEntries.map((e: any) => ({ name: e.customerName, ticketTypeId: e.ticketTypeId })),
+              reference: groupEntries[0].paystackReference as string | null,
+              accessCode: groupEntries[0].paystackAccessCode as string | null,
+            };
+          }
+          if (groupEntries.length > 0) {
+            // A different, stale unpaid attempt — replace it rather than let both linger holding capacity.
+            await txAny.registrationEntry.updateMany({ where: { id: { in: groupEntries.map((e: any) => e.id) } }, data: { status: 'CANCELLED' } });
+          }
+        }
+      }
+
       if (product.capacity != null) {
         const used = await this.getUsedSpots(product.id, txAny);
         if (used + tickets.length > product.capacity) return { ok: false as const, spotsLeft: Math.max(0, product.capacity - used) };
@@ -808,11 +1205,30 @@ export class RegistrationsService {
     if (!reserve.ok) {
       return { outcome: 'AT_CAPACITY', spotsLeft: reserve.spotsLeft, message: reserve.spotsLeft > 0 ? `Only ${reserve.spotsLeft} spot(s) left — fewer than requested.` : `${product.name} is fully booked.` };
     }
+
+    // Resubmission of an already-pending cart — hand back the same held tickets instead of charging
+    // (or reserving capacity) again. If the earlier attempt never got a working payment link, retry
+    // initialization for that SAME held group rather than creating a new one.
+    if (reserve.ok === 'reuse') {
+      const appUrl = this.getPublicAppUrl();
+      const ticketsOut = reserve.ids.map((id, i) => ({ entryId: id, ticketUrl: `${appUrl}/ticket/${id}`, attendeeName: reserve.names[i]?.name ?? null, ticketType: tiers.find((t) => t.id === reserve.names[i]?.ticketTypeId)?.name ?? null }));
+      if (reserve.reference && reserve.accessCode) {
+        return { outcome: 'PENDING_PAYMENT', paymentUrl: `https://checkout.paystack.com/${reserve.accessCode}`, reference: reserve.reference, groupId: reserve.groupId, tickets: ticketsOut, message: 'You already have a pending payment for this exact order — continue where you left off.' };
+      }
+      try {
+        const pay = await this.initializeGroupPayment(reserve.groupId, payerEmail, totalMinor, product.currency, params.orgId);
+        await this.prisma.registrationEntry.updateMany({ where: { purchaseGroupId: reserve.groupId }, data: { paystackReference: pay.reference, paystackAccessCode: pay.accessCode } });
+        return { outcome: 'PENDING_PAYMENT', paymentUrl: pay.paymentUrl, reference: pay.reference, groupId: reserve.groupId, amount: money(pay.chargedAmount), tickets: ticketsOut, message: `${ticketsOut.length} ticket(s) held. Payment of ${money(pay.chargedAmount)} confirms all of them.` };
+      } catch (err) {
+        this.logger.warn(`registerCart: retry payment init failed for group ${reserve.groupId}: ${String(err)}`);
+        return { outcome: 'PENDING_PAYMENT', groupId: reserve.groupId, tickets: ticketsOut, message: 'Tickets held, but the payment link could not be generated right now. A teammate will follow up.' };
+      }
+    }
+
     this.linkEntriesToCustomer(params.orgId, reserve.ids, params.conversationId); // buyer's conversation → Customer
 
     const appUrl = this.getPublicAppUrl();
     const ticketsOut = reserve.ids.map((id, i) => ({ entryId: id, ticketUrl: `${appUrl}/ticket/${id}`, attendeeName: tickets[i].name, ticketType: tickets[i].tierName }));
-    const money = (m: number) => `${product.currency} ${(m / 100).toFixed(2)}`;
 
     if (paidCart) {
       try {
@@ -936,12 +1352,13 @@ export class RegistrationsService {
         (tiers.length === 1 ? tiers[0] : null);
       if (!chosenTier) {
         const moneyT = (m: number | null) => (m && m > 0 ? `${product.currency ?? 'NGN'} ${(m / 100).toFixed(2)}` : 'Free');
-        const ticket_types = await Promise.all(tiers.map(async (t) => ({
+        const usedByTier = await this.getUsedSpotsByTier(product.id, tiers.map((t) => t.id));
+        const ticket_types = tiers.map((t) => ({
           id: t.id,
           name: t.name,
           price: moneyT(t.priceMinor),
-          spots_left: t.capacity != null ? Math.max(0, t.capacity - (await this.getUsedSpots(product.id, undefined, t.id))) : null,
-        })));
+          spots_left: t.capacity != null ? Math.max(0, t.capacity - (usedByTier.get(t.id) ?? 0)) : null,
+        }));
         return {
           outcome: 'NEEDS_TICKET_TYPE',
           ticket_types,
@@ -1201,8 +1618,10 @@ export class RegistrationsService {
     return { paymentUrl: response.data.data.authorization_url, reference: response.data.data.reference, chargedAmount };
   }
 
+  // Tixtron is a separate consumer-facing product from Zuti's own dashboard (APP_URL) even though
+  // they share this backend — ticket/event links must point at Tixtron's app, not Zuti's.
   getPublicAppUrl(): string {
-    return (this.config.get<string>('APP_URL') ?? 'http://localhost:3000').replace(/\/$/, '');
+    return (this.config.get<string>('TIXTRON_APP_URL') ?? 'http://localhost:3004').replace(/\/$/, '');
   }
 
   /** Public payment-return handler: validates the reference shape then confirms. Safe to call
@@ -1374,6 +1793,22 @@ export class RegistrationsService {
     return randomBytes(16).toString('base64url');
   }
 
+  // How long before an online/hybrid event's start the join link appears on the ticket page —
+  // shrinks the window a leaked link is useful for without needing per-person access control.
+  private readonly ONLINE_LINK_REVEAL_MS_BEFORE = 60 * 60 * 1000;
+
+  /** Whether an online event's join link should be revealed yet. Date-only events (no time-of-day)
+   *  unlock from the start of that calendar day, since there's no time to count down to. */
+  private isOnlineLinkUnlocked(product: { eventDate: Date | null; eventDateHasTime: boolean }): boolean {
+    if (!product.eventDate) return true;
+    if (product.eventDateHasTime) {
+      return Date.now() >= product.eventDate.getTime() - this.ONLINE_LINK_REVEAL_MS_BEFORE;
+    }
+    const d = product.eventDate;
+    const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    return Date.now() >= startOfDay;
+  }
+
   async getPublicTicket(entryId: string) {
     const entry = await this.prisma.registrationEntry.findUnique({
       where: { id: entryId },
@@ -1397,12 +1832,31 @@ export class RegistrationsService {
       } catch { qrDataUrl = null; }
     }
 
+    // Online join link: only ever surfaced here (the ticket holder's own private page), only for a
+    // confirmed entry, and only once inside the reveal window — never on the public event page and
+    // never pasted into the mass-sent confirmation email/Telegram text.
+    const isOnline = entry.product.locationType === 'ONLINE' || entry.product.locationType === 'HYBRID';
+    const unlocked = isOnline && entry.status === 'CONFIRMED' && !!entry.product.onlineMeetingUrl && this.isOnlineLinkUnlocked(entry.product);
+    const revealAt = entry.product.eventDateHasTime && entry.product.eventDate
+      ? new Date(entry.product.eventDate.getTime() - this.ONLINE_LINK_REVEAL_MS_BEFORE)
+      : null;
+
+    const communityInvites = entry.status === 'CONFIRMED'
+      ? await this.buildCommunityInviteLinks(entry.orgId, entry.id)
+      : [];
+    const emailOptInAvailable = entry.status === 'CONFIRMED' && !!entry.customerEmail;
+
     return {
       eventName: entry.product.name,
       eventDate: entry.product.eventDate,
       eventEndDate: entry.product.eventEndDate,
       eventDateHasTime: entry.product.eventDateHasTime,
       venue: entry.product.venue ?? null,
+      locationType: entry.product.locationType,
+      onlineMeetingPlatform: isOnline ? entry.product.onlineMeetingPlatform ?? null : null,
+      onlineMeetingUrl: unlocked ? entry.product.onlineMeetingUrl : null,
+      joinLinkLocked: isOnline && !!entry.product.onlineMeetingUrl && !unlocked,
+      joinLinkUnlocksAt: isOnline && !unlocked ? revealAt : null,
       customerName: entry.customerName,
       ticketType: entry.ticketType?.name ?? null,
       status: entry.status,
@@ -1410,7 +1864,25 @@ export class RegistrationsService {
       reference: (entry.paystackReference ?? entry.id).slice(-12).toUpperCase(),
       checkedInAt: entry.checkedInAt,
       qrDataUrl,
+      communityInvites,
+      emailOptInAvailable,
     };
+  }
+
+  /** Explicit, separate opt-in to Tixtron's OWN email list — never implied by buying a ticket, even
+   * though the email is already on file for the transaction. This is a fresh consent for a new
+   * purpose (Tixtron building its own audience), scoped to Tixtron HQ's own org, same as any other
+   * org's Customer/consent primitives — not a new concept, just a different org id. */
+  async optInTixtronEmail(entryId: string): Promise<{ ok: boolean }> {
+    const entry = await this.prisma.registrationEntry.findUnique({
+      where: { id: entryId },
+      select: { status: true, customerName: true, customerEmail: true },
+    });
+    if (!entry || entry.status !== 'CONFIRMED' || !entry.customerEmail) {
+      throw new BadRequestException('This ticket is not eligible for email updates');
+    }
+    await this.communities.optInEmail(entry.customerEmail, entry.customerName);
+    return { ok: true };
   }
 
   /**
@@ -1598,22 +2070,42 @@ export class RegistrationsService {
   }
 
   /** Distinct-email recipient counts per audience, for the compose UI's live count. */
+  /** Distinct-recipient counts for the compose-announcement UI (updates live as the audience
+   * segment changes). Computed as SQL COUNT(DISTINCT ...) — previously this fetched every
+   * non-cancelled entry row for the event and de-duplicated emails in JS with several full-array
+   * .filter() passes (one more per ticket tier); for a large event that meant thousands of rows
+   * transferred and re-scanned on every keystroke just to produce a handful of numbers. */
   async announcementRecipientCounts(orgId: string, productId: string) {
     const prismaAny = this.prisma as any;
     const product = await prismaAny.registrationProduct.findFirst({ where: { id: productId, orgId }, select: { id: true } });
     if (!product) throw new NotFoundException('Event not found');
-    const rows = await prismaAny.registrationEntry.findMany({
-      where: { productId, status: { not: 'CANCELLED' } },
-      select: { customerEmail: true, status: true, checkedInAt: true, ticketTypeId: true },
-    });
-    const uniq = (arr: any[]) => new Set(arr.map((r) => (r.customerEmail ?? '').trim().toLowerCase()).filter(Boolean)).size;
+
+    const [summary] = await this.prisma.$queryRawUnsafe<Array<{ all: bigint; confirmed: bigint; pending: bigint; checkedIn: bigint }>>(
+      `SELECT
+        COUNT(DISTINCT LOWER(TRIM("customerEmail"))) FILTER (WHERE "customerEmail" IS NOT NULL) AS "all",
+        COUNT(DISTINCT LOWER(TRIM("customerEmail"))) FILTER (WHERE status = 'CONFIRMED') AS confirmed,
+        COUNT(DISTINCT LOWER(TRIM("customerEmail"))) FILTER (WHERE status = 'PENDING_PAYMENT') AS pending,
+        COUNT(DISTINCT LOWER(TRIM("customerEmail"))) FILTER (WHERE "checkedInAt" IS NOT NULL) AS "checkedIn"
+      FROM "RegistrationEntry"
+      WHERE "productId" = $1 AND status != 'CANCELLED'`,
+      productId,
+    );
+    const tierCounts = await this.prisma.$queryRawUnsafe<Array<{ ticketTypeId: string; count: bigint }>>(
+      `SELECT "ticketTypeId", COUNT(DISTINCT LOWER(TRIM("customerEmail"))) AS count
+      FROM "RegistrationEntry"
+      WHERE "productId" = $1 AND status != 'CANCELLED' AND "ticketTypeId" IS NOT NULL
+      GROUP BY "ticketTypeId"`,
+      productId,
+    );
+    const countByTier = new Map(tierCounts.map((r) => [r.ticketTypeId, Number(r.count)]));
+
     const tiers = await prismaAny.registrationTicketType.findMany({ where: { productId, isActive: true }, select: { id: true, name: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] });
     return {
-      all: uniq(rows),
-      confirmed: uniq(rows.filter((r: any) => r.status === 'CONFIRMED')),
-      pending: uniq(rows.filter((r: any) => r.status === 'PENDING_PAYMENT')),
-      checkedIn: uniq(rows.filter((r: any) => r.checkedInAt)),
-      tiers: tiers.map((t: any) => ({ id: t.id, name: t.name, count: uniq(rows.filter((r: any) => r.ticketTypeId === t.id)) })),
+      all: Number(summary?.all ?? 0),
+      confirmed: Number(summary?.confirmed ?? 0),
+      pending: Number(summary?.pending ?? 0),
+      checkedIn: Number(summary?.checkedIn ?? 0),
+      tiers: tiers.map((t: any) => ({ id: t.id, name: t.name, count: countByTier.get(t.id) ?? 0 })),
     };
   }
 
@@ -1637,6 +2129,18 @@ export class RegistrationsService {
       if (em && !byEmail.has(em)) byEmail.set(em, e.customerName ?? null);
     }
     if (byEmail.size === 0) return { outcome: 'NO_RECIPIENTS', message: 'No attendees match that audience.' };
+
+    // Charged the same way as a Telegram broadcast — 50 free recipients/month across all comms,
+    // then ₦1/recipient. Throws (402 INSUFFICIENT_CREDITS) before anything is created if the org
+    // can't cover it, so a failed charge never leaves a half-sent announcement behind.
+    const announcementKey = `announcement_${randomBytes(12).toString('hex')}`;
+    await this.billing.chargeCommsRecipients({
+      organizationId: orgId,
+      recipientCount: byEmail.size,
+      commsType: 'EVENT_ANNOUNCEMENT',
+      idempotencyKey: announcementKey,
+      metadata: { productId },
+    });
 
     const ann = await prismaAny.eventAnnouncement.create({
       data: { orgId, productId, subject: dto.subject, body: dto.body, segment: dto.segment, tierId: dto.tierId ?? null, totalRecipients: byEmail.size, sentBy: sentBy ?? null },
@@ -1704,7 +2208,9 @@ export class RegistrationsService {
     const { tier, needsTierChoice } = this.resolveWaitlistTier(product, params.ticketTypeId, params.ticketTypeName);
     if (needsTierChoice) {
       const money = (m: number | null) => (m && m > 0 ? `${product.currency} ${(m / 100).toFixed(2)}` : 'Free');
-      const ticket_types = await Promise.all((product.ticketTypes as any[]).map(async (t) => ({ id: t.id, name: t.name, price: money(t.priceMinor), spots_left: t.capacity != null ? Math.max(0, t.capacity - (await this.getUsedSpots(product.id, undefined, t.id))) : null })));
+      const tierList = product.ticketTypes as any[];
+      const usedByTier = await this.getUsedSpotsByTier(product.id, tierList.map((t) => t.id));
+      const ticket_types = tierList.map((t) => ({ id: t.id, name: t.name, price: money(t.priceMinor), spots_left: t.capacity != null ? Math.max(0, t.capacity - (usedByTier.get(t.id) ?? 0)) : null }));
       return { outcome: 'NEEDS_TICKET_TYPE', ticket_types, message: 'This event has multiple ticket tiers — which one should the waitlist be for?' };
     }
     const ticketTypeId: string | null = tier?.id ?? null;

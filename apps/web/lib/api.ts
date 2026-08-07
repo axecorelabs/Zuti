@@ -5,6 +5,9 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 export const api = axios.create({
   baseURL: `${API_URL}/api`,
   headers: { 'Content-Type': 'application/json' },
+  // Sends/receives the httpOnly refresh-token cookie — required since the API is a different
+  // origin (port/domain) than this app.
+  withCredentials: true,
 });
 
 const ORGS_CACHE_TTL_MS = 45_000;
@@ -71,21 +74,17 @@ type RetryableConfig = {
 
 let refreshPromise: Promise<string | null> | null = null;
 
+// The refresh token itself is never seen by JS anymore — it lives in an httpOnly cookie the
+// browser attaches automatically (withCredentials above). This just asks the server to use it.
 async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) return refreshPromise;
 
-  const refreshToken = typeof window !== 'undefined' ? localStorage.getItem('refreshToken') : null;
-  if (!refreshToken) return null;
-
   refreshPromise = api
-    .post('/auth/refresh', { refreshToken })
+    .post('/auth/refresh')
     .then((res) => {
       const nextAccess = String(res.data?.accessToken ?? '');
-      const nextRefresh = String(res.data?.refreshToken ?? '');
-      if (!nextAccess || !nextRefresh) return null;
-
+      if (!nextAccess) return null;
       localStorage.setItem('accessToken', nextAccess);
-      localStorage.setItem('refreshToken', nextRefresh);
       return nextAccess;
     })
     .catch(() => null)
@@ -124,7 +123,8 @@ api.interceptors.response.use(
       }
 
       localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
+      // Best-effort: clear the now-invalid refresh-token cookie server-side too.
+      api.post('/auth/logout').catch(() => {});
       window.location.href = '/login';
     }
 
@@ -139,8 +139,8 @@ export const authApi = {
   login: (email: string, password: string) =>
     api.post('/auth/login', { email, password }),
   me: () => api.get('/auth/me'),
-  refresh: (refreshToken: string) =>
-    api.post('/auth/refresh', { refreshToken }),
+  refresh: () => api.post('/auth/refresh'),
+  logout: () => api.post('/auth/logout'),
   verifyEmail: (token: string) =>
     api.post('/auth/verify-email', { token }),
   resendVerification: (email: string) =>
@@ -625,6 +625,8 @@ export const billingApi = {
   }),
   verifyCheckout: (orgId: string, reference: string) =>
     api.post(`/organizations/${orgId}/billing/checkout/verify`, { reference }),
+  commsEstimate: (orgId: string, recipientCount: number) =>
+    api.get(`/organizations/${orgId}/billing/comms-estimate`, { params: { recipientCount } }),
 };
 
 // ── Notifications ─────────────────────────────────────────────────────────────

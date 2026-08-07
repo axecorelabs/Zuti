@@ -5,6 +5,8 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { MailModule } from '../mail/mail.module';
 import { EventsModule } from '../events/events.module';
 import { CustomersModule } from '../customers/customers.module';
+import { BillingModule } from '../billing/billing.module';
+import { CommunitiesModule } from '../communities/communities.module';
 import { RECEIPTS_QUEUE } from '../queue/queue.module';
 import { RegistrationsService } from './registrations.service';
 import { RegistrationsController } from './registrations.controller';
@@ -22,6 +24,8 @@ import { ReceiptsProcessor } from '../queue/receipts.processor';
     MailModule,
     EventsModule,
     CustomersModule,
+    BillingModule,
+    CommunitiesModule,
     BullModule.registerQueue({ name: RECEIPTS_QUEUE }),
   ],
   controllers: [RegistrationsController, TicketController, EventPublicController, ScanSessionPublicController, InternalRegistrationController],

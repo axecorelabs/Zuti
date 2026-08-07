@@ -1,4 +1,5 @@
-import { CalendarDays, CheckCircle2, Clock, XCircle } from 'lucide-react';
+import { CalendarDays, CheckCircle2, Clock, XCircle, Video, Send } from 'lucide-react';
+import EmailOptInButton from './email-optin-button';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
 
@@ -8,6 +9,11 @@ interface TicketData {
   eventEndDate?: string | null;
   eventDateHasTime?: boolean;
   venue?: string | null;
+  locationType?: string;
+  onlineMeetingUrl?: string | null;
+  onlineMeetingPlatform?: string | null;
+  joinLinkLocked?: boolean;
+  joinLinkUnlocksAt?: string | null;
   customerName: string | null;
   ticketType?: string | null;
   status: 'PENDING_PAYMENT' | 'AWAITING_APPROVAL' | 'CONFIRMED' | 'CANCELLED';
@@ -15,6 +21,8 @@ interface TicketData {
   reference: string;
   checkedInAt?: string | null;
   qrDataUrl?: string | null;
+  communityInvites?: Array<{ name: string; deepLink: string }>;
+  emailOptInAvailable?: boolean;
 }
 
 async function getTicket(entryId: string): Promise<TicketData | null> {
@@ -134,6 +142,32 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
           </span>
         </div>
 
+        {ticket.status === 'CONFIRMED' && (ticket.locationType === 'ONLINE' || ticket.locationType === 'HYBRID') && (
+          <div style={{ borderTop: '1px dashed #27272a', margin: '20px 0', paddingTop: 20, textAlign: 'center' }}>
+            <p style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, fontSize: 10, fontWeight: 600, color: '#52525b', letterSpacing: '0.15em', margin: '0 0 10px' }}>
+              <Video style={{ width: 12, height: 12 }} /> {(ticket.onlineMeetingPlatform || 'ONLINE EVENT').toUpperCase()}
+            </p>
+            {ticket.onlineMeetingUrl ? (
+              <a
+                href={ticket.onlineMeetingUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ display: 'block', padding: '12px 16px', borderRadius: 12, backgroundColor: '#4f46e5', color: '#fff', fontWeight: 600, fontSize: 14, textDecoration: 'none' }}
+              >
+                Join meeting
+              </a>
+            ) : (
+              <div style={{ padding: '14px 16px', borderRadius: 12, backgroundColor: 'rgba(161,161,170,0.08)', border: '1px solid rgba(161,161,170,0.2)' }}>
+                <p style={{ fontSize: 13, color: '#a1a1aa', margin: 0 }}>
+                  {ticket.joinLinkUnlocksAt
+                    ? `Join link unlocks ${new Date(ticket.joinLinkUnlocksAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
+                    : 'Join link unlocks shortly before the event starts'}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {ticket.status === 'CONFIRMED' && (ticket.qrDataUrl || ticket.checkedInAt) && (
           <div style={{ borderTop: '1px dashed #27272a', margin: '20px 0', paddingTop: 20, textAlign: 'center' }}>
             {ticket.checkedInAt ? (
@@ -152,6 +186,38 @@ export default async function TicketPage({ params }: { params: Promise<{ entryId
                 <p style={{ fontSize: 11, color: '#71717a', margin: '10px 0 0' }}>Present this code at the door for admission.</p>
               </>
             ) : null}
+          </div>
+        )}
+
+        {ticket.status === 'CONFIRMED' && ticket.communityInvites && ticket.communityInvites.length > 0 && (
+          <div style={{ borderTop: '1px dashed #27272a', margin: '20px 0', paddingTop: 20 }}>
+            <p style={{ fontSize: 10, fontWeight: 600, color: '#52525b', letterSpacing: '0.15em', margin: '0 0 10px', textAlign: 'center' }}>
+              STAY IN THE LOOP
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {ticket.communityInvites.map((invite) => (
+                <a
+                  key={invite.deepLink}
+                  href={invite.deepLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    padding: '11px 16px', borderRadius: 12, backgroundColor: 'rgba(56,189,248,0.10)',
+                    border: '1px solid rgba(56,189,248,0.25)', color: '#38bdf8', fontWeight: 600,
+                    fontSize: 13, textDecoration: 'none',
+                  }}
+                >
+                  <Send style={{ width: 14, height: 14 }} /> Join {invite.name} on Telegram
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {ticket.status === 'CONFIRMED' && ticket.emailOptInAvailable && (
+          <div style={{ borderTop: '1px dashed #27272a', margin: '20px 0', paddingTop: 20 }}>
+            <EmailOptInButton entryId={entryId} />
           </div>
         )}
 

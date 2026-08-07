@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
+import { BullModule } from '@nestjs/bull';
 import { BotsService } from './bots.service';
 import { BotsController } from './bots.controller';
 import { WidgetController } from './widget.controller';
@@ -12,11 +13,13 @@ import { ActivityModule } from '../activity/activity.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { ActionForwardingModule } from '../action-forwarding/action-forwarding.module';
 import { CustomersModule } from '../customers/customers.module';
+import { MARKETING_QUEUE } from '../queue/queue.module';
+import { MarketingBroadcastProcessor } from '../queue/marketing-broadcast.processor';
 
 @Module({
-  imports: [HttpModule, EventsModule, CannedResponsesModule, AiUsageModule, TeamChatModule, BillingModule, ActivityModule, OrganizationsModule, ActionForwardingModule, CustomersModule],
+  imports: [HttpModule, EventsModule, CannedResponsesModule, AiUsageModule, TeamChatModule, BillingModule, ActivityModule, OrganizationsModule, ActionForwardingModule, CustomersModule, BullModule.registerQueue({ name: MARKETING_QUEUE })],
   controllers: [BotsController, WidgetController],
-  providers: [BotsService],
+  providers: [BotsService, MarketingBroadcastProcessor],
   exports: [BotsService],
 })
 export class BotsModule {}

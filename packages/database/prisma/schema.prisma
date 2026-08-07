@@ -113,6 +113,9 @@ model Organization {
   payoutBankName         String?
   payoutAccountLast4     String?
   payoutAccountName      String?
+  // Internal Zuti/Tixtron-operated organization (e.g. the Tixtron platform community) — not a real
+  // customer. Excluded from cross-org admin metrics (org counts, cashflow totals, workspace lists).
+  isInternal  Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -149,6 +152,8 @@ model Organization {
   setupRequests WorkspaceSetupRequest[]
   commercePayments CommercePayment[]
   customers Customer[]
+  communities Community[]
+  promotionalPosts PromotionalPost[]
 }
 
 model OrganizationMember {
@@ -230,6 +235,9 @@ model Bot {
   id             String   @id @default(cuid())
   organizationId String
   name           String
+  // AI bots run the full LLM-driven agentic pipeline; COMMAND bots respond only to fixed
+  // Telegram /commands (no LLM call, no AI-usage billing) — used by Tixtron's ticketing bot.
+  botType        BotType  @default(AI)
   primaryChannel BotPrimaryChannel @default(TELEGRAM)
   telegramToken  String?  @unique
   telegramUsername String?
@@ -279,8 +287,138 @@ model Bot {
   bookings Booking[]
   salesOrders SalesOrder[]
   technicalIssues TechnicalIssue[]
+  commandBotEvents CommandBotEvent[]
+  marketingBroadcasts MarketingBroadcast[]
+  communities Community[]
 
   @@unique([organizationId, name])
+}
+
+// One row per command handled by a COMMAND-type bot (Tixtron's ticketing bot) — powers the bot
+// stats page (unique users, activity trend, command breakdown). AI bots never write this.
+model CommandBotEvent {
+  id         String   @id @default(cuid())
+  botId      String
+  orgId      String
+  customerId String?
+  command    String   // '/start' | '/events' | '/mytickets' | '/subscribe' | '/unsubscribe' | 'unknown'
+  resultMeta Json     @default("{}") // e.g. { found: true } for /mytickets hit-rate
+  createdAt  DateTime @default(now())
+
+  bot        Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([botId, createdAt])
+  @@index([botId, command])
+}
+
+// A Telegram marketing send to a bot's opted-in subscribers (Tixtron). Optionally "boosted" from a
+// real event (image + structured caption + a "Get Tickets" button, auto-filled from the event).
+// First SENT broadcast per bot is free; every one after that requires a paid Paystack charge.
+model MarketingBroadcast {
+  id                String   @id @default(cuid())
+  orgId             String
+  botId             String
+  eventId           String?
+  message           String
+  imageUrl          String?
+  ctaLabel          String?
+  ctaUrl            String?
+  status            String   @default("PENDING_PAYMENT") // PENDING_PAYMENT | SENDING | SENT | FAILED
+  amountMinor       Int      @default(0) // unused since the move to comms credits — kept for old rows
+  paystackReference String?  @unique       // unused since the move to comms credits — kept for old rows
+  paidAt            DateTime?
+  // Comms-credit units actually charged for this send (0 if fully covered by the monthly free
+  // allotment) — see BillingService.chargeCommsRecipients. 100 units = 1 credit = ₦10.
+  creditsChargedUnits Int    @default(0)
+  freeRecipientsApplied Int  @default(0)
+  recipientCount    Int      @default(0)
+  sentCount         Int      @default(0)
+  failedCount       Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  bot               Bot      @relation(fields: [botId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([botId, status])
+}
+
+// A Telegram channel an org's ticket buyers can opt into. orgId is null for exactly one row —
+// the platform-wide Tixtron community, spanning ticket buyers across every organizer. Every other
+// row is a single organizer's own community, scoped to their own ticket buyers.
+model Community {
+  id                   String   @id @default(cuid())
+  orgId                String?
+  botId                String
+  telegramChatId       String
+  telegramChatUsername String?
+  name                 String
+  isActive             Boolean  @default(true)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  organization  Organization?          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  bot           Bot                    @relation(fields: [botId], references: [id], onDelete: Cascade)
+  memberships   CommunityMembership[]
+  promotionalPosts PromotionalPost[]
+
+  @@unique([orgId])
+  @@index([botId])
+}
+
+// One row per Telegram user linked to a Community. This row IS the consent record — invitedAt +
+// sourceRegistrationEntryId prove why/when they were invited, status is the full lifecycle, no
+// separate consent-log table needed. Never created except by that person clicking a bot deep-link
+// (see command-bot.service.ts /start handling) — nobody is silently added to a channel.
+model CommunityMembership {
+  id                        String    @id @default(cuid())
+  communityId               String
+  telegramChatId            String
+  sourceRegistrationEntryId String?
+  status                    String    @default("INVITED") // INVITED | JOINED | LEFT | REVOKED
+  invitedAt                 DateTime  @default(now())
+  joinedAt                  DateTime?
+  leftAt                    DateTime?
+
+  community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@unique([communityId, telegramChatId])
+  @@index([communityId, status])
+}
+
+// An organizer-submitted promotional post requesting a paid slot in the platform-wide Tixtron
+// community channel. Reviewed/priced/scheduled by Tixtron ops (see TixtronOpsGuard) before
+// PromoPostProcessor posts it via Tixtron's own bot — unlike MarketingBroadcast (an org DMing its
+// own consented customers), this touches a SHARED channel so it needs a human approval gate.
+model PromotionalPost {
+  id                  String    @id @default(cuid())
+  orgId               String
+  communityId         String
+  submittedByUserId   String
+  title               String
+  body                String
+  mediaUrl            String?
+  ctaLabel            String?
+  ctaUrl              String?
+  status              String    @default("SUBMITTED") // SUBMITTED | APPROVED | REJECTED | SCHEDULED | POSTED | FAILED
+  // Comms-credit units charged on approval — see BillingService.chargeCommsRecipients with
+  // commsType 'COMMUNITY_AD_POST', drawn from its own free pool (Billing.commsAdFreeUnitsUsed),
+  // separate from the DM-broadcast free pool.
+  priceCreditsUnits   Int       @default(0)
+  freeUnitsApplied    Int       @default(0)
+  scheduledFor        DateTime?
+  reviewedByUserId    String?
+  reviewedAt          DateTime?
+  rejectionReason     String?
+  postedMessageId     String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  community    Community    @relation(fields: [communityId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([communityId, status])
 }
 
 enum BotTemplate {
@@ -297,6 +435,11 @@ enum BotPrimaryChannel {
   WEB_WIDGET
   EMAIL
   WHATSAPP
+}
+
+enum BotType {
+  AI
+  COMMAND
 }
 
 enum WhatsAppProvider {
@@ -1037,6 +1180,17 @@ model Billing {
   committedMonthlyCreditsUnits Int @default(0)
   commitmentRenewsAt DateTime?
   renewsAt       DateTime?
+  // Comms (Telegram broadcasts, event announcements) get 50 free recipients per calendar month,
+  // tracked separately from the general credit balance — use-it-or-lose-it, no rollover.
+  // commsFreeRecipientsMonthKey is "YYYY-MM"; the counter resets whenever that key is stale.
+  commsFreeRecipientsUsed     Int     @default(0)
+  commsFreeRecipientsMonthKey String?
+  // Separate free-allowance pool for PromotionalPost submissions (paid slots in the shared
+  // Tixtron community channel) — deliberately independent of commsFreeRecipientsUsed above,
+  // since "DM my own consented customers" and "pay for a slot in a shared channel" are different
+  // products and shouldn't compete for the same monthly quota.
+  commsAdFreeUnitsUsed     Int     @default(0)
+  commsAdFreeMonthKey      String?
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
 
@@ -1341,9 +1495,26 @@ model RegistrationProduct {
   bannerUrl           String?
   flierUrl            String?
   venue               String?
+  // Separate from venue (a building/place name, e.g. "Eko Hotel") so search/filtering/future
+  // city-based digests have something reliable to match on — venue text alone is too free-form.
+  city                String?
+  // Plain string + @IsIn(...) at the DTO layer, matching the locationType convention below —
+  // cheap to extend the list later without a migration.
+  category            String?
+  // Online/hybrid events. locationType: PHYSICAL | ONLINE | HYBRID. onlineMeetingUrl is the
+  // organizer's own Zoom/Meet/whatever link — deliberately kept OUT of the public event page and
+  // out of any find-many list responses; only surfaced on the ticket-holder's own private ticket
+  // page, gated by CONFIRMED status and a reveal-time window (see registrations.service.ts).
+  locationType         String    @default("PHYSICAL")
+  onlineMeetingUrl     String?
+  onlineMeetingPlatform String?
   // Automatic transactional reminders (opt-in per event). A periodic sweep sends these.
   reminderBeforeEvent Boolean   @default(false) // remind confirmed attendees ~24h before eventDate
   reminderUnpaidNudge Boolean   @default(false) // nudge pending-payment registrants after ~12h
+  // Tixtron-ops curation (see TixtronOpsGuard) — surfaced on the public discovery page and read by
+  // the platform community's digest job. Not settable by the organizer themselves.
+  isFeatured          Boolean   @default(false)
+  featuredOrder       Int?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -1356,6 +1527,9 @@ model RegistrationProduct {
 
   @@index([orgId, isActive])
   @@index([botId, isActive])
+  @@index([isFeatured, featuredOrder])
+  @@index([category])
+  @@index([city])
 }
 
 // A request to be notified when a spot frees up on a sold-out event/tier. FIFO by createdAt (strict —
@@ -1529,7 +1703,12 @@ model Customer {
   notes              String?
   // Consent / compliance (marketing sends MUST honor these)
   emailOptOut        Boolean  @default(false)
-  marketingConsentAt DateTime? // opt-in timestamp; null = no marketing consent
+  telegramOptOut     Boolean  @default(false)
+  marketingConsentAt DateTime? // opt-in timestamp (any channel); null = no marketing consent
+  // Telegram /subscribe prompt cadence — shown after /events replies until an explicit yes/no,
+  // then re-offered at most every ~2 weeks while undecided (never once they've answered).
+  lastMarketingPromptAt DateTime?
+  marketingPromptCount  Int      @default(0)
   firstSeenAt        DateTime @default(now())
   lastSeenAt         DateTime @default(now())
   createdAt          DateTime @default(now())

@@ -52,6 +52,9 @@ interface RegistrationProduct {
   bannerUrl?: string | null;
   flierUrl?: string | null;
   venue?: string | null;
+  locationType?: string;
+  onlineMeetingUrl?: string | null;
+  onlineMeetingPlatform?: string | null;
   reminderBeforeEvent?: boolean;
   reminderUnpaidNudge?: boolean;
   _count: { entries: number };
@@ -590,6 +593,9 @@ function useProductForm(existing?: RegistrationProduct) {
   const [isActive, setIsActive] = useState(existing?.isActive ?? true);
   const [isPublic, setIsPublic] = useState(existing?.isPublic ?? false);
   const [venue, setVenue] = useState(existing?.venue ?? '');
+  const [locationType, setLocationType] = useState(existing?.locationType ?? 'PHYSICAL');
+  const [onlineMeetingUrl, setOnlineMeetingUrl] = useState(existing?.onlineMeetingUrl ?? '');
+  const [onlineMeetingPlatform, setOnlineMeetingPlatform] = useState(existing?.onlineMeetingPlatform ?? '');
   const [bannerUrl, setBannerUrl] = useState(existing?.bannerUrl ?? '');
   const [flierUrl, setFlierUrl] = useState(existing?.flierUrl ?? '');
   // Ticket tiers drafted during CREATE (UI strings). Seed one row so pricing starts as a tier, not a
@@ -614,6 +620,9 @@ function useProductForm(existing?: RegistrationProduct) {
     isActive,
     isPublic,
     venue: venue.trim() || null,
+    locationType,
+    onlineMeetingUrl: locationType === 'PHYSICAL' ? null : (onlineMeetingUrl.trim() || null),
+    onlineMeetingPlatform: locationType === 'PHYSICAL' ? null : (onlineMeetingPlatform.trim() || null),
     bannerUrl: bannerUrl || null,
     flierUrl: flierUrl || null,
   });
@@ -626,6 +635,7 @@ function useProductForm(existing?: RegistrationProduct) {
     confirmationMessage, setConfirmationMessage,
     fields, setFields, botId, setBotId, isActive, setIsActive,
     isPublic, setIsPublic, venue, setVenue, bannerUrl, setBannerUrl, flierUrl, setFlierUrl,
+    locationType, setLocationType, onlineMeetingUrl, setOnlineMeetingUrl, onlineMeetingPlatform, setOnlineMeetingPlatform,
     draftTiers, setDraftTiers,
     buildPayload,
   };
@@ -941,9 +951,41 @@ function ProductFormFields({ form, bots, variant, orgId, product, wizardStep }: 
         <p className="text-xs text-amber-400">Your ticket types total {sumTierCap} but the overall cap is {eventCapNum} — you won&apos;t be able to sell more than {eventCapNum}.</p>
       )}
       <div>
-        <label className={labelCls}>Venue / location</label>
-        <input value={form.venue} onChange={(e) => form.setVenue(e.target.value)} placeholder="e.g. Eko Hotel, Lagos (or a virtual link)" className={inputCls} />
+        <label className={labelCls}>Event type</label>
+        <div className="flex gap-1.5">
+          {(['PHYSICAL', 'ONLINE', 'HYBRID'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => form.setLocationType(t)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${
+                form.locationType === t ? 'bg-blue-600 border-blue-600 text-white' : 'border-zinc-800 text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {t === 'PHYSICAL' ? 'In-person' : t === 'ONLINE' ? 'Online' : 'Hybrid'}
+            </button>
+          ))}
+        </div>
       </div>
+      {form.locationType !== 'ONLINE' && (
+        <div>
+          <label className={labelCls}>Venue / location</label>
+          <input value={form.venue} onChange={(e) => form.setVenue(e.target.value)} placeholder="e.g. Eko Hotel, Lagos" className={inputCls} />
+        </div>
+      )}
+      {form.locationType !== 'PHYSICAL' && (
+        <>
+          <div>
+            <label className={labelCls}>Meeting link</label>
+            <input value={form.onlineMeetingUrl} onChange={(e) => form.setOnlineMeetingUrl(e.target.value)} placeholder="https://meet.google.com/xxx-yyyy-zzz" className={inputCls} />
+            <p className="text-xs text-zinc-600 mt-1">Never shown on the public event page — only revealed on each attendee&apos;s own ticket page shortly before the event starts.</p>
+          </div>
+          <div>
+            <label className={labelCls}>Platform <span className="text-zinc-600">(optional)</span></label>
+            <input value={form.onlineMeetingPlatform} onChange={(e) => form.setOnlineMeetingPlatform(e.target.value)} placeholder="e.g. Google Meet, Zoom" className={inputCls} />
+          </div>
+        </>
+      )}
     </div>
   );
 

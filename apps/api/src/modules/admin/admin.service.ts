@@ -335,7 +335,7 @@ export class AdminService {
         _count: { _all: true },
       }),
       this.prisma.user.count(),
-      this.prisma.organization.count(),
+      this.prisma.organization.count({ where: { isInternal: false } }),
       this.prisma.bot.count({ where: { isActive: true } }),
       this.prisma.conversation.count({ where: { status: 'OPEN' } }),
       this.prisma.commerceStore.count({ where: { isActive: true } }),
@@ -502,6 +502,7 @@ export class AdminService {
     const limit = this.clampLimit(query.limit, 100);
 
     const items = await this.prisma.organization.findMany({
+      where: { isInternal: false },
       include: {
         _count: {
           select: {

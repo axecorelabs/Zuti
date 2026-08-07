@@ -2,10 +2,12 @@ import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { BullModule } from '@nestjs/bull';
 import { WebhooksController } from './webhooks.controller';
+import { CommandBotService } from './command-bot.service';
 import { TelegramProcessor } from '../queue/telegram.processor';
 import { EmailProcessor } from '../queue/email.processor';
 import { WhatsAppProcessor } from '../queue/whatsapp.processor';
-import { TELEGRAM_QUEUE, EMAIL_QUEUE, WHATSAPP_QUEUE } from '../queue/queue.module';
+import { PaystackWebhookProcessor } from '../queue/paystack-webhook.processor';
+import { TELEGRAM_QUEUE, EMAIL_QUEUE, WHATSAPP_QUEUE, PAYSTACK_WEBHOOK_QUEUE } from '../queue/queue.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CannedResponsesModule } from '../canned-responses/canned-responses.module';
@@ -17,6 +19,7 @@ import { ActivityModule } from '../activity/activity.module';
 import { ActionForwardingModule } from '../action-forwarding/action-forwarding.module';
 import { RegistrationsModule } from '../registrations/registrations.module';
 import { CustomersModule } from '../customers/customers.module';
+import { CommunitiesModule } from '../communities/communities.module';
 
 @Module({
   imports: [
@@ -24,6 +27,7 @@ import { CustomersModule } from '../customers/customers.module';
     BullModule.registerQueue({ name: TELEGRAM_QUEUE }),
     BullModule.registerQueue({ name: EMAIL_QUEUE }),
     BullModule.registerQueue({ name: WHATSAPP_QUEUE }),
+    BullModule.registerQueue({ name: PAYSTACK_WEBHOOK_QUEUE }),
     OrganizationsModule,
     NotificationsModule,
     CannedResponsesModule,
@@ -35,9 +39,10 @@ import { CustomersModule } from '../customers/customers.module';
     ActionForwardingModule,
     RegistrationsModule,
     CustomersModule,
+    CommunitiesModule,
   ],
   controllers: [WebhooksController],
-  providers: [TelegramProcessor, EmailProcessor, WhatsAppProcessor],
+  providers: [TelegramProcessor, EmailProcessor, WhatsAppProcessor, PaystackWebhookProcessor, CommandBotService],
   exports: [TelegramProcessor, EmailProcessor, WhatsAppProcessor],
 })
 export class WebhooksModule {}

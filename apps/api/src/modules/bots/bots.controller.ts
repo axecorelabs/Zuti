@@ -8,8 +8,7 @@ import { CreateBotDto, UpdateBotDto } from './dto/bot.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OrgMemberGuard } from '../../common/guards/org-member.guard';
 import { RolesGuard, RequireRole } from '../../common/guards/roles.guard';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { CompleteMetaEmbeddedSignupDto, CompleteMetaEmbeddedSelectionDto } from './dto/bot.dto';
+import { CompleteMetaEmbeddedSignupDto, CompleteMetaEmbeddedSelectionDto, CreateBroadcastDto } from './dto/bot.dto';
 
 @ApiTags('bots')
 @ApiBearerAuth()
@@ -70,6 +69,46 @@ export class BotsController {
   @ApiOperation({ summary: 'Register webhook with Telegram' })
   setWebhook(@Param('id') orgId: string, @Param('botId') botId: string) {
     return this.botsService.setWebhook(orgId, botId);
+  }
+
+  // ── Command bot stats + Telegram marketing (Tixtron) ──────────────────────
+
+  @Get(':botId/stats')
+  @ApiOperation({ summary: 'Command-bot usage stats (unique users, command breakdown, activity trend)' })
+  getStats(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.getCommandBotStats(orgId, botId);
+  }
+
+  @Get(':botId/marketing/recipients')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Count of opted-in Telegram marketing recipients for this bot' })
+  getMarketingRecipients(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.getMarketingRecipientCount(orgId, botId);
+  }
+
+  @Get(':botId/marketing/eligibility')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Credit cost preview for a broadcast to the bot\'s current subscriber list' })
+  getMarketingCostEstimate(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.getMarketingCostEstimate(orgId, botId);
+  }
+
+  @Get(':botId/marketing/broadcasts')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Broadcast history + aggregate stats (also used to poll live send progress)' })
+  listBroadcasts(@Param('id') orgId: string, @Param('botId') botId: string) {
+    return this.botsService.listBroadcasts(orgId, botId);
+  }
+
+  @Post(':botId/marketing/broadcasts')
+  @RequireRole('OWNER', 'ADMIN')
+  @ApiOperation({ summary: 'Create and send a broadcast — charged from comms credits (50 free recipients/month, then ₦1/recipient)' })
+  createBroadcast(
+    @Param('id') orgId: string,
+    @Param('botId') botId: string,
+    @Body() dto: CreateBroadcastDto,
+  ) {
+    return this.botsService.createBroadcast(orgId, botId, dto);
   }
 
   @Post(':botId/email/enable')

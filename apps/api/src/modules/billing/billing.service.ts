@@ -28,6 +28,8 @@ import { RECEIPT_JOB, RECEIPT_JOB_OPTIONS } from '../queue/receipts.processor';
 import {
   BASE_CREDIT_UNITS_DEFAULT,
   BASE_CREDIT_UNITS_PER_CUSTOMER_REPLY,
+  COMMS_CREDIT_UNITS_PER_RECIPIENT,
+  COMMS_FREE_RECIPIENTS_PER_MONTH,
   CREDIT_UNITS_PER_CREDIT,
   MEDIA_PROCESSING_CREDIT_UNITS,
   computeUsageOverageCredits,
@@ -127,8 +129,8 @@ export class BillingService {
     }
   }
 
-  async getWallet(organizationId: string) {
-    const billing = await this.ensureBilling(organizationId);
+  async getWallet(organizationId: string, orgVerified = false) {
+    const billing = await this.ensureBilling(organizationId, orgVerified);
     const recentLedger = await this.prisma.creditLedger.findMany({
       where: { organizationId },
       orderBy: { createdAt: 'desc' },
@@ -151,6 +153,39 @@ export class BillingService {
       committedMonthlyCredits: fromCreditUnits(billing.committedMonthlyCreditsUnits),
       commitmentRenewsAt: billing.commitmentRenewsAt,
       recentLedger: recentLedger.map((entry) => ({
+        ...entry,
+        creditsDelta: fromCreditUnits(entry.creditsDeltaUnits),
+        balanceAfter: fromCreditUnits(entry.balanceAfterUnits),
+      })),
+    };
+  }
+
+  /** Paginated ledger history — separate from getWallet's snapshot so paging through history
+   *  doesn't require re-fetching balance/plan each time. */
+  async listLedger(organizationId: string, limit: number, offset: number) {
+    const take = Math.min(Math.max(limit, 1), 100);
+    const skip = Math.max(offset, 0);
+    const [total, entries] = await Promise.all([
+      this.prisma.creditLedger.count({ where: { organizationId } }),
+      this.prisma.creditLedger.findMany({
+        where: { organizationId },
+        orderBy: { createdAt: 'desc' },
+        take,
+        skip,
+        select: {
+          id: true,
+          type: true,
+          creditsDeltaUnits: true,
+          balanceAfterUnits: true,
+          description: true,
+          createdAt: true,
+          transactionId: true,
+        },
+      }),
+    ]);
+    return {
+      total,
+      items: entries.map((entry) => ({
         ...entry,
         creditsDelta: fromCreditUnits(entry.creditsDeltaUnits),
         balanceAfter: fromCreditUnits(entry.balanceAfterUnits),
@@ -312,12 +347,147 @@ export class BillingService {
     });
   }
 
+  private currentMonthKey(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  /** Free-recipients-remaining this month, without mutating anything — resets are computed
+   *  lazily by comparing the stored month key, not by a cron job. */
+  private commsFreeRemaining(billing: { commsFreeRecipientsUsed: number; commsFreeRecipientsMonthKey: string | null }): number {
+    const usedThisMonth = billing.commsFreeRecipientsMonthKey === this.currentMonthKey() ? billing.commsFreeRecipientsUsed : 0;
+    return Math.max(0, COMMS_FREE_RECIPIENTS_PER_MONTH - usedThisMonth);
+  }
+
+  /** Dry-run pricing preview for a comms send — how many recipients are covered by this month's
+   *  free allotment, how many would be charged, and whether the org's credit balance covers it.
+   *  Call before actually sending so the UI can show cost/insufficient-credits upfront. */
+  async getCommsChargeEstimate(organizationId: string, recipientCount: number, orgVerified = false) {
+    const billing = await this.ensureBilling(organizationId, orgVerified);
+    const recipients = Math.max(0, Math.floor(recipientCount));
+    const freeRemaining = this.commsFreeRemaining(billing);
+    const freeApplied = Math.min(freeRemaining, recipients);
+    const chargeableRecipients = recipients - freeApplied;
+    const creditsRequiredUnits = chargeableRecipients * COMMS_CREDIT_UNITS_PER_RECIPIENT;
+    return {
+      recipientCount: recipients,
+      freeRemaining,
+      freeApplied,
+      chargeableRecipients,
+      creditsRequired: fromCreditUnits(creditsRequiredUnits),
+      creditBalance: fromCreditUnits(billing.creditBalanceUnits),
+      sufficient: billing.creditBalanceUnits >= creditsRequiredUnits,
+    };
+  }
+
+  /** Charges a comms send: the first 50 recipients/month (cumulative across all sends) are free,
+   *  everything beyond that is 10 units (₦1) per recipient from the org's real credit balance.
+   *  Idempotent the same way debitUsageCredits is — a repeated call with the same idempotencyKey
+   *  returns the original result instead of double-charging. */
+  async chargeCommsRecipients(input: { organizationId: string; recipientCount: number; commsType: string; idempotencyKey?: string; metadata?: Record<string, unknown> }) {
+    return this.prisma.$transaction(async (tx) => {
+      const billing = await tx.billing.findUnique({ where: { organizationId: input.organizationId } });
+      if (!billing) throw new NotFoundException('Billing record not found');
+
+      const ledgerKey = input.idempotencyKey ? `comms:${input.idempotencyKey}` : null;
+      if (ledgerKey) {
+        const existing = await tx.creditLedger.findUnique({ where: { idempotencyKey: ledgerKey } });
+        if (existing) {
+          const meta = existing.metadata as Record<string, unknown>;
+          return {
+            freeApplied: Number(meta?.freeApplied ?? 0),
+            chargeableRecipients: Number(meta?.chargeableRecipients ?? 0),
+            creditsDebited: Math.abs(fromCreditUnits(existing.creditsDeltaUnits)),
+            creditsDebitedUnits: Math.abs(existing.creditsDeltaUnits),
+            balanceAfter: fromCreditUnits(existing.balanceAfterUnits),
+            deduplicated: true,
+          };
+        }
+      }
+
+      const recipientCount = Math.max(0, Math.floor(input.recipientCount));
+      const monthKey = this.currentMonthKey();
+      const usedThisMonth = billing.commsFreeRecipientsMonthKey === monthKey ? billing.commsFreeRecipientsUsed : 0;
+      const freeRemaining = Math.max(0, COMMS_FREE_RECIPIENTS_PER_MONTH - usedThisMonth);
+      const freeApplied = Math.min(freeRemaining, recipientCount);
+      const chargeableRecipients = recipientCount - freeApplied;
+      const creditsToDebitUnits = chargeableRecipients * COMMS_CREDIT_UNITS_PER_RECIPIENT;
+      const creditsToDebit = fromCreditUnits(creditsToDebitUnits);
+
+      if (billing.creditBalanceUnits < creditsToDebitUnits) {
+        throw new HttpException(
+          {
+            code: 'INSUFFICIENT_CREDITS',
+            message: 'Insufficient credits to message everyone on this list. Please top up.',
+          },
+          HttpStatus.PAYMENT_REQUIRED,
+        );
+      }
+
+      const nextBalanceUnits = billing.creditBalanceUnits - creditsToDebitUnits;
+      const nextUsedThisMonth = usedThisMonth + freeApplied;
+
+      try {
+        await tx.creditLedger.create({
+          data: {
+            organizationId: input.organizationId,
+            billingId: billing.id,
+            type: CreditLedgerType.USAGE,
+            creditsDeltaUnits: -creditsToDebitUnits,
+            balanceAfterUnits: nextBalanceUnits,
+            description: `Comms send (${input.commsType})`,
+            idempotencyKey: ledgerKey,
+            metadata: {
+              commsType: input.commsType,
+              recipientCount,
+              freeApplied,
+              chargeableRecipients,
+              creditsDebited: creditsToDebit,
+              creditsDebitedUnits: creditsToDebitUnits,
+              ...(input.metadata ?? {}),
+            } as Prisma.InputJsonValue,
+          },
+        });
+      } catch (error) {
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+          if (ledgerKey) {
+            const existing = await tx.creditLedger.findUnique({ where: { idempotencyKey: ledgerKey } });
+            if (existing) {
+              const meta = existing.metadata as Record<string, unknown>;
+              return {
+                freeApplied: Number(meta?.freeApplied ?? 0),
+                chargeableRecipients: Number(meta?.chargeableRecipients ?? 0),
+                creditsDebited: Math.abs(fromCreditUnits(existing.creditsDeltaUnits)),
+                creditsDebitedUnits: Math.abs(existing.creditsDeltaUnits),
+                balanceAfter: fromCreditUnits(existing.balanceAfterUnits),
+                deduplicated: true,
+              };
+            }
+          }
+        }
+        throw error;
+      }
+
+      await tx.billing.update({
+        where: { id: billing.id },
+        data: {
+          creditBalanceUnits: nextBalanceUnits,
+          commsFreeRecipientsUsed: nextUsedThisMonth,
+          commsFreeRecipientsMonthKey: monthKey,
+        },
+      });
+
+      return { freeApplied, chargeableRecipients, creditsDebited: creditsToDebit, creditsDebitedUnits: creditsToDebitUnits, balanceAfter: fromCreditUnits(nextBalanceUnits), deduplicated: false };
+    });
+  }
+
   async initializePackCheckout(
     userId: string,
     organizationId: string,
     dto: CheckoutRequest & { packId: string },
+    orgVerified = false,
   ) {
-    const billing = await this.ensureBilling(organizationId);
+    const billing = await this.ensureBilling(organizationId, orgVerified);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
@@ -429,8 +599,9 @@ export class BillingService {
     userId: string,
     organizationId: string,
     dto: CheckoutRequest & { subscriptionId: string },
+    orgVerified = false,
   ) {
-    const billing = await this.ensureBilling(organizationId);
+    const billing = await this.ensureBilling(organizationId, orgVerified);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { email: true },
@@ -1045,12 +1216,18 @@ export class BillingService {
     return timingSafeEqual(digestBuf, signatureBuf);
   }
 
-  private async ensureBilling(organizationId: string) {
-    const orgExists = await this.prisma.organization.findUnique({
-      where: { id: organizationId },
-      select: { id: true },
-    });
-    if (!orgExists) throw new NotFoundException('Organization not found');
+  // orgVerified lets callers that already know the org exists (e.g. a controller sitting behind
+  // OrgMemberGuard, which fetches the org itself before the request even reaches here) skip a
+  // second, redundant lookup of the same row. Defaults to false so every other caller — queue
+  // processors, cross-service calls with no guard in front of them — keeps the safety check.
+  private async ensureBilling(organizationId: string, orgVerified = false) {
+    if (!orgVerified) {
+      const orgExists = await this.prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { id: true },
+      });
+      if (!orgExists) throw new NotFoundException('Organization not found');
+    }
 
     return this.prisma.billing.upsert({
       where: { organizationId },

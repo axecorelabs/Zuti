@@ -19,11 +19,10 @@ export default function LoginPage() {
     try {
       const res = await authApi.login(email, password);
       const accessToken = String(res.data?.accessToken ?? '');
-      const refreshToken = String(res.data?.refreshToken ?? '');
-      if (!accessToken || !refreshToken) {
+      if (!accessToken) {
         throw new Error('Invalid auth response');
       }
-      setAuthTokens(accessToken, refreshToken);
+      setAuthTokens(accessToken);
       router.push('/dashboard');
     } catch (err: any) {
       const msg = err?.response?.data?.message;

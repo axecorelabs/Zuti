@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Res } from '@nestjs/common';
+import { Controller, Get, Post, Param, Query, Res } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Public } from '../../common/decorators/public.decorator';
 import { RegistrationsService } from './registrations.service';
@@ -34,5 +34,11 @@ export class TicketController {
   @Get(':entryId')
   getTicket(@Param('entryId') entryId: string) {
     return this.svc.getPublicTicket(entryId);
+  }
+
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post(':entryId/email-optin')
+  optInEmail(@Param('entryId') entryId: string) {
+    return this.svc.optInTixtronEmail(entryId);
   }
 }

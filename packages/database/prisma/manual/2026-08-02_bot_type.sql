@@ -1,0 +1,7 @@
+DO $$ BEGIN
+  CREATE TYPE "BotType" AS ENUM ('AI', 'COMMAND');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+
+ALTER TABLE "Bot" ADD COLUMN IF NOT EXISTS "botType" "BotType" NOT NULL DEFAULT 'AI';

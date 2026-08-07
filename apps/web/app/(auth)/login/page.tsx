@@ -62,8 +62,8 @@ function LoginPageContent() {
     try {
       const normalizedEmail = email.trim().toLowerCase();
       const res = await authApi.login(normalizedEmail, password);
-      const { user, accessToken, refreshToken } = res.data;
-      setAuth(user, accessToken, refreshToken);
+      const { user, accessToken } = res.data;
+      setAuth(user, accessToken);
 
       const destination = await resolvePostAuthDestination(user);
       router.replace(destination);

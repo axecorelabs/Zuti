@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, Users, Activity, Wallet, LogOut, Leaf, Building2, Wrench, ShieldAlert, BarChart3, ShieldCheck, Bot } from 'lucide-react';
+import { LayoutDashboard, Users, Activity, Wallet, LogOut, Leaf, Building2, Wrench, ShieldAlert, BarChart3, ShieldCheck, Bot, Send, Users2, CalendarDays, Star, Mail } from 'lucide-react';
 import { clearAuthTokens } from '@/lib/session';
+import { authApi } from '@/lib/api';
 
 const NAV_ITEMS = [
   { href: '/dashboard', label: 'Overview', icon: LayoutDashboard },
@@ -18,11 +19,24 @@ const NAV_ITEMS = [
   { href: '/activity', label: 'Activity', icon: Activity },
 ];
 
+// Separate section, separate guard on the backend (TixtronOpsGuard, not SuperAdminGuard) — Zuti
+// infra access and Tixtron marketplace access are deliberately independent permissions that just
+// happen to share this app/login.
+const TIXTRON_NAV_ITEMS = [
+  { href: '/tixtron/bot', label: 'Bot', icon: Send },
+  { href: '/tixtron/community', label: 'Community', icon: Users2 },
+  { href: '/tixtron/events', label: 'Events', icon: CalendarDays },
+  { href: '/tixtron/organizers', label: 'Organizers', icon: Building2 },
+  { href: '/tixtron/featured', label: 'Featured events', icon: Star },
+  { href: '/tixtron/subscribers', label: 'Email list', icon: Mail },
+];
+
 export default function AdminShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
   const handleLogout = () => {
+    authApi.logout().catch(() => {});
     clearAuthTokens();
     router.push('/login');
   };
@@ -54,6 +68,26 @@ export default function AdminShell({ children }: { children: React.ReactNode }) 
                   active
                     ? 'bg-zinc-800 text-white'
                     : 'text-zinc-400 hover:text-white hover:bg-zinc-900'
+                }`}
+              >
+                <Icon className="w-4 h-4 shrink-0" />
+                {item.label}
+              </Link>
+            );
+          })}
+
+          <p className="px-3 pt-5 pb-1.5 text-[10.5px] font-semibold text-zinc-600 tracking-[0.12em]">TIXTRON</p>
+          {TIXTRON_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = pathname === item.href;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm transition-colors ${
+                  active
+                    ? 'bg-orange-950/60 text-orange-400'
+                    : 'text-zinc-400 hover:text-orange-400 hover:bg-zinc-900'
                 }`}
               >
                 <Icon className="w-4 h-4 shrink-0" />

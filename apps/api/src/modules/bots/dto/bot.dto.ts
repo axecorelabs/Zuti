@@ -24,6 +24,16 @@ export class CreateBotDto {
   telegramToken?: string;
 
   @ApiPropertyOptional({
+    description: 'AI runs the full LLM pipeline; COMMAND responds only to fixed /commands (no AI-usage billing) — used by Tixtron\'s ticketing bot.',
+    enum: ['AI', 'COMMAND'],
+    example: 'AI',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['AI', 'COMMAND'])
+  botType?: 'AI' | 'COMMAND';
+
+  @ApiPropertyOptional({
     description: 'Allowed website domains for embed usage (without protocol)',
     example: ['example.com', 'app.example.com'],
     isArray: true,
@@ -309,4 +319,17 @@ export class CompleteMetaEmbeddedSelectionDto {
   @IsOptional()
   @IsString()
   selectedBusinessAccountId?: string;
+}
+
+export class CreateBroadcastDto {
+  @ApiProperty({ example: 'New event just dropped — tickets are live!', description: 'Plain-text body, or the organizer\'s one-line hook when boosting an event' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  message!: string;
+
+  @ApiPropertyOptional({ description: 'Boost an existing event — auto-fills image, date, venue, price, and a "Get Tickets" button from it' })
+  @IsOptional()
+  @IsString()
+  eventId?: string;
 }

@@ -65,6 +65,8 @@ function timeAgo(iso: string | null) {
   return new Date(iso).toLocaleDateString();
 }
 
+const PAGE_SIZE = 50;
+
 export default function CustomersPage() {
   const { activeOrgId } = useAuthStore();
   const orgId = activeOrgId ?? '';
@@ -72,26 +74,36 @@ export default function CustomersPage() {
   const [rows, setRows] = useState<CustomerRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState<Lifecycle | 'ALL'>('ALL');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const fetchPage = useCallback(async (offset: number, limit: number, replace: boolean) => {
     if (!orgId) return;
-    setLoading(true);
+    if (replace) setLoading(true); else setLoadingMore(true);
     try {
       const res = await customersApi.list(orgId, {
         search: search.trim() || undefined,
         stage: stage === 'ALL' ? undefined : stage,
         includeLeads: stage === 'ALL' ? true : undefined,
-        limit: 100,
+        limit,
+        offset,
       });
-      setRows(res.data.items ?? []);
+      const items = res.data.items ?? [];
+      setRows((prev) => (replace ? items : [...prev, ...items]));
       setTotal(res.data.total ?? 0);
-    } catch { toast.error('Failed to load clients'); } finally { setLoading(false); }
+    } catch { toast.error('Failed to load clients'); }
+    finally { if (replace) setLoading(false); else setLoadingMore(false); }
   }, [orgId, search, stage]);
 
-  useEffect(() => { const t = setTimeout(load, search ? 250 : 0); return () => clearTimeout(t); }, [load, search]);
+  // Fresh page 1 whenever search/stage changes.
+  useEffect(() => { const t = setTimeout(() => fetchPage(0, PAGE_SIZE, true), search ? 250 : 0); return () => clearTimeout(t); }, [fetchPage, search]);
+
+  const loadMore = () => fetchPage(rows.length, PAGE_SIZE, false);
+  // Re-fetch exactly what's currently visible in place, e.g. after an edit/delete — keeps
+  // pagination position instead of collapsing back to page 1.
+  const refresh = () => fetchPage(0, Math.max(rows.length, PAGE_SIZE), true);
 
   return (
     <div className="flex h-full min-h-0">
@@ -162,6 +174,15 @@ export default function CustomersPage() {
                   </button>
                 );
               })}
+              {rows.length < total && (
+                <button
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                  className="w-full py-2.5 text-zinc-500 hover:text-zinc-300 disabled:opacity-50 text-xs font-medium transition-colors"
+                >
+                  {loadingMore ? 'Loading…' : `Load more (${rows.length} of ${total})`}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -175,8 +196,8 @@ export default function CustomersPage() {
             orgId={orgId}
             customerId={selectedId}
             onClose={() => setSelectedId(null)}
-            onChanged={load}
-            onDeleted={() => { setSelectedId(null); load(); }}
+            onChanged={refresh}
+            onDeleted={() => { setSelectedId(null); refresh(); }}
           />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center text-center">

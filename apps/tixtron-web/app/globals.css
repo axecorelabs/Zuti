@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-poppins: 'Poppins', ui-sans-serif, system-ui, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    background-color: #0F1115; /* Charcoal */
+    color: #FAFAFB; /* Off White */
+    font-family: var(--font-poppins), system-ui, sans-serif;
+    font-weight: 300;
+  }
+
+  ::-webkit-scrollbar {
+    width: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #1D2023;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #4B5257;
+    border-radius: 2px;
+  }
+}
+
+@layer components {
+  .brand-font {
+    font-family: var(--font-poppins), ui-sans-serif, sans-serif;
+  }
+
+  .card {
+    @apply bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl;
+  }
+
+  .input-base {
+    @apply w-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl px-4 py-3 text-zinc-900 dark:text-white
+           text-sm font-light placeholder:text-zinc-400 dark:placeholder:text-zinc-600
+           focus:outline-none focus:border-zinc-400 dark:focus:border-zinc-600 focus:ring-1 focus:ring-zinc-300 dark:focus:ring-zinc-700
+           transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-brand-600 text-white px-8 py-3 rounded-xl text-sm font-medium
+           hover:bg-brand-500 transition-all duration-200 disabled:opacity-50
+           disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply border border-zinc-200 dark:border-zinc-800 text-zinc-900 dark:text-white px-8 py-3 rounded-xl text-sm font-medium
+           hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-all duration-200;
+  }
+
+  .btn-ghost {
+    @apply text-zinc-600 dark:text-zinc-400 px-3 py-2 rounded-lg text-sm font-light
+           hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-zinc-900 transition-all duration-200;
+  }
+
+  /* Horizontally-scrollable rows (e.g. the events-page category pills) that shouldn't show a
+     visible scrollbar track — the overflow is still fully scrollable/swipeable, just not drawn. */
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Hero dot-grid corner pulses (HeroDotGrid.tsx) — a quick "lub-dub" swell then a long rest,
+   like a heartbeat, rather than a smooth single-peak fade. */
+@keyframes hero-pulse-beat {
+  0%   { transform: scale(0.15); opacity: 0; }
+  4%   { opacity: 0.9; }
+  9%   { transform: scale(0.55); opacity: 0.45; }
+  14%  { transform: scale(0.3); opacity: 0.85; }
+  26%  { transform: scale(1.15); opacity: 0; }
+  100% { transform: scale(1.15); opacity: 0; }
+}
+
+/* Slower, softer ambient pulse from bottom-centre — adds a background layer of depth underneath
+   the two corner heartbeats rather than a second identical beat. */
+@keyframes hero-pulse-ambient {
+  0%   { transform: scale(0.2); opacity: 0; }
+  30%  { opacity: 0.35; }
+  70%  { transform: scale(1.3); opacity: 0.15; }
+  100% { transform: scale(1.5); opacity: 0; }
+}

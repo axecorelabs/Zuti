@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { CalendarDays, MapPin, Building2 } from 'lucide-react';
+import { CalendarDays, MapPin, Building2, Video } from 'lucide-react';
 import RegisterForm from './register-form';
 import EventDescription from './description';
 import ShareButton from './share-button';
@@ -13,7 +13,7 @@ interface Tier {
 interface EventData {
   slug: string; name: string; description: string | null; eventDate: string | null;
   eventEndDate: string | null; eventDateHasTime: boolean;
-  venue: string | null; bannerUrl: string | null; flierUrl: string | null;
+  venue: string | null; locationType?: string; bannerUrl: string | null; flierUrl: string | null;
   currency: string; isFree: boolean; priceMinor: number; requiresApproval: boolean;
   fields: Array<{ key: string; label: string; type: string; required: boolean; options?: string[] }>;
   hasTiers: boolean; ticketTypes: Tier[]; capacity: number | null; spotsLeft: number | null; soldOut: boolean;
@@ -104,6 +104,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
   const multiPriced = ev.hasTiers && ev.ticketTypes.length > 1 && !allFree;
   const priceLabel = allFree ? 'Free' : `${ev.currency} ${(minMinor / 100).toLocaleString()}`;
   const heroImg = ev.bannerUrl ?? ev.flierUrl;
+  const isOnline = ev.locationType === 'ONLINE' || ev.locationType === 'HYBRID';
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a0e', fontFamily }}>
@@ -124,6 +125,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
             <div className="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 pb-5 lg:pb-8">
               <h1 style={titleStyle}>{ev.name}</h1>
               {ev.venue && <p className="mt-2" style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)', textShadow: '0 1px 8px rgba(0,0,0,0.5)' }}>{ev.venue}</p>}
+              {isOnline && !ev.venue && <p className="mt-2" style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)', textShadow: '0 1px 8px rgba(0,0,0,0.5)' }}>Online event</p>}
             </div>
           </div>
         </div>
@@ -135,6 +137,7 @@ export default async function EventPage({ params }: { params: Promise<{ slug: st
             <div style={sheet} className="p-5 flex flex-col gap-4">
               {eventDate && <InfoRow icon={CalendarDays} title={eventDate} />}
               {ev.venue && <InfoRow icon={MapPin} title={ev.venue} subtitle="Location" />}
+              {isOnline && <InfoRow icon={Video} title="Online event" subtitle="Join link sent with your ticket" />}
               {ev.organizerName && <InfoRow icon={Building2} title={ev.organizerName} subtitle="Organizer" />}
             </div>
 

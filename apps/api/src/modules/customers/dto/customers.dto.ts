@@ -10,6 +10,7 @@ export class UpdateCustomerDto {
   @IsOptional() @IsArray() @IsString({ each: true }) tags?: string[];
   @IsOptional() @IsString() @MaxLength(5000) notes?: string;
   @IsOptional() @IsBoolean() emailOptOut?: boolean;
+  @IsOptional() @IsBoolean() telegramOptOut?: boolean;
   @IsOptional() @IsBoolean() marketingConsent?: boolean;
 }
 

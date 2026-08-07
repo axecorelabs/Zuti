@@ -1,6 +1,13 @@
 import { IsString, IsOptional, IsBoolean, IsInt, IsArray, IsDateString, IsEmail, Min, Max, MaxLength, ValidateNested, IsIn, IsObject } from 'class-validator';
 import { Type } from 'class-transformer';
 
+// Plain string + @IsIn(...), same convention as locationType — cheap to extend later without a
+// migration. Kept broad/Eventbrite-style rather than narrowly tuned to what's hosted today.
+export const EVENT_CATEGORIES = [
+  'MUSIC', 'NIGHTLIFE', 'ARTS_CULTURE', 'BUSINESS', 'FOOD_DRINK', 'SPORTS_FITNESS',
+  'COMMUNITY', 'EDUCATION', 'COMEDY', 'FESTIVAL', 'FAMILY_KIDS', 'RELIGIOUS', 'OTHER',
+] as const;
+
 export class RegistrationFieldDto {
   @IsString() key: string;
   @IsString() label: string;
@@ -31,6 +38,11 @@ export class CreateRegistrationProductDto {
   @IsOptional() @IsString() bannerUrl?: string;
   @IsOptional() @IsString() flierUrl?: string;
   @IsOptional() @IsString() @MaxLength(200) venue?: string;
+  @IsOptional() @IsString() @MaxLength(100) city?: string;
+  @IsOptional() @IsIn(EVENT_CATEGORIES) category?: string;
+  @IsOptional() @IsIn(['PHYSICAL', 'ONLINE', 'HYBRID']) locationType?: string;
+  @IsOptional() @IsString() @MaxLength(500) onlineMeetingUrl?: string;
+  @IsOptional() @IsString() @MaxLength(40) onlineMeetingPlatform?: string;
   // Optional ticket tiers to create alongside the event (atomic). When present they supersede the
   // single price above.
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => CreateTicketTypeDto) ticketTypes?: CreateTicketTypeDto[];
@@ -57,6 +69,11 @@ export class UpdateRegistrationProductDto {
   @IsOptional() @IsString() bannerUrl?: string;
   @IsOptional() @IsString() flierUrl?: string;
   @IsOptional() @IsString() @MaxLength(200) venue?: string;
+  @IsOptional() @IsString() @MaxLength(100) city?: string;
+  @IsOptional() @IsIn(EVENT_CATEGORIES) category?: string;
+  @IsOptional() @IsIn(['PHYSICAL', 'ONLINE', 'HYBRID']) locationType?: string;
+  @IsOptional() @IsString() @MaxLength(500) onlineMeetingUrl?: string;
+  @IsOptional() @IsString() @MaxLength(40) onlineMeetingPlatform?: string;
   @IsOptional() @IsBoolean() reminderBeforeEvent?: boolean;
   @IsOptional() @IsBoolean() reminderUnpaidNudge?: boolean;
 }
