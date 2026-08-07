@@ -1284,8 +1284,12 @@ function ProductModal({ orgId, bots, onSaved, onClose }: ProductModalProps) {
     const isFree = tiers.every((t) => !t.priceMinor);
     setSaving(true);
     try {
-      await registrationsApi.createProduct(orgId, { ...form.buildPayload(), isFree, priceMinor: null, ticketTypes: tiers });
-      toast.success('Event created');
+      const res = await registrationsApi.createProduct(orgId, { ...form.buildPayload(), isFree, priceMinor: null, ticketTypes: tiers });
+      if ((res.data as { payoutRequired?: boolean })?.payoutRequired) {
+        toast.success('Event saved as a draft (inactive) — connect a payout account under Payouts to activate it and start selling.', { duration: 6000 });
+      } else {
+        toast.success('Event created');
+      }
       onSaved();
     } catch (err: unknown) {
       const msg = (err as { response?: { data?: { message?: unknown } } })?.response?.data?.message;

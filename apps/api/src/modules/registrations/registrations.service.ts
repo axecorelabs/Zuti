@@ -94,16 +94,16 @@ export class RegistrationsService {
       const bot = await this.prisma.bot.findFirst({ where: { id: dto.botId, organizationId: orgId }, select: { id: true } });
       if (!bot) throw new NotFoundException('Bot not found');
     }
-    // Gate: a paid event can't go public until the org can actually receive the money.
+    // Gate: a paid event can't go live until the org can actually receive the money. Rather than
+    // rejecting the whole (fully-filled-out) form, save it as an inactive, unpublished draft — the
+    // organizer keeps everything they entered and can activate it later once payout is connected.
     const createPaid = (!dto.isFree && (dto.priceMinor ?? 0) > 0) || (dto.ticketTypes?.some((t) => (t.priceMinor ?? 0) > 0) ?? false);
-    if (dto.isPublic && createPaid && !(await this.orgHasPayout(orgId))) {
-      throw new ForbiddenException(this.PAYOUT_GATE_MSG);
-    }
+    const payoutRequired = createPaid && !(await this.orgHasPayout(orgId));
     // A public event needs a shareable slug; generate one from the name if none was supplied.
     const slug = dto.slug?.trim()
       ? await this.ensureUniqueSlug(this.slugifyBase(dto.slug))
       : (dto.isPublic ? await this.ensureUniqueSlug(this.slugifyBase(dto.name)) : null);
-    return this.prisma.registrationProduct.create({
+    const created = await this.prisma.registrationProduct.create({
       data: {
         orgId,
         botId: dto.botId ?? null,
@@ -120,8 +120,8 @@ export class RegistrationsService {
         allowDuplicateRegistrations: dto.allowDuplicateRegistrations ?? false,
         confirmationMessage: dto.confirmationMessage ?? null,
         fields: (dto.fields ?? []) as any,
-        isActive: dto.isActive ?? true,
-        isPublic: dto.isPublic ?? false,
+        isActive: payoutRequired ? false : (dto.isActive ?? true),
+        isPublic: payoutRequired ? false : (dto.isPublic ?? false),
         slug,
         bannerUrl: dto.bannerUrl ?? null,
         flierUrl: dto.flierUrl ?? null,
@@ -149,6 +149,9 @@ export class RegistrationsService {
       },
       include: { ticketTypes: { where: { isActive: true }, orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }] } },
     });
+    // payoutRequired tells the frontend this was saved as a draft (not the caller's requested
+    // active/public state) purely because payout isn't connected yet — not a DB column.
+    return { ...created, payoutRequired };
   }
 
   // ── Public-page slug helpers ────────────────────────────────────────────────
@@ -372,8 +375,10 @@ export class RegistrationsService {
   async updateProduct(orgId: string, productId: string, dto: UpdateRegistrationProductDto) {
     const existing = await this.prisma.registrationProduct.findFirst({ where: { id: productId, orgId } });
     if (!existing) throw new NotFoundException('Registration product not found');
-    // Gate: publishing a PAID event (single price or any paid tier) requires a connected payout account.
-    if (dto.isPublic === true && !existing.isPublic) {
+    // Gate: activating a PAID event (single price or any paid tier) — whether by publishing it or by
+    // flipping it active — requires a connected payout account, with a clear error either way.
+    const activating = (dto.isPublic === true && !existing.isPublic) || (dto.isActive === true && !existing.isActive);
+    if (activating) {
       const willBeFree = dto.isFree ?? existing.isFree;
       const price = dto.priceMinor ?? existing.priceMinor;
       const paidTiers = await this.prisma.registrationTicketType.count({ where: { productId, isActive: true, priceMinor: { gt: 0 } } });
@@ -555,8 +560,8 @@ export class RegistrationsService {
     // Gate: adding a PAID tier to an already-public event requires a connected payout account —
     // otherwise it bypasses the publish gate and paid tickets would sell into the platform account.
     if ((dto.priceMinor ?? 0) > 0) {
-      const product = await this.prisma.registrationProduct.findUnique({ where: { id: productId }, select: { isPublic: true } });
-      if (product?.isPublic && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
+      const product = await this.prisma.registrationProduct.findUnique({ where: { id: productId }, select: { isPublic: true, isActive: true } });
+      if ((product?.isPublic || product?.isActive) && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
     }
     return this.prisma.registrationTicketType.create({
       data: {
@@ -579,8 +584,8 @@ export class RegistrationsService {
     if (!tier) throw new NotFoundException('Ticket type not found');
     // Gate: turning a tier paid (or re-pricing it up) on a public event requires a payout account.
     if (dto.priceMinor !== undefined && dto.priceMinor > 0) {
-      const product = await this.prisma.registrationProduct.findUnique({ where: { id: tier.productId }, select: { isPublic: true } });
-      if (product?.isPublic && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
+      const product = await this.prisma.registrationProduct.findUnique({ where: { id: tier.productId }, select: { isPublic: true, isActive: true } });
+      if ((product?.isPublic || product?.isActive) && !(await this.orgHasPayout(orgId))) throw new ForbiddenException(this.PAYOUT_GATE_MSG);
     }
     // Capacity can be raised, lowered, or removed (null = unlimited) — but never set below the number
     // already sold or held for this tier, or those tickets would be stranded above the cap.
@@ -1265,7 +1270,7 @@ export class RegistrationsService {
     return computeGrossUpForSubaccount(ticketMinor);
   }
 
-  private readonly PAYOUT_GATE_MSG = 'Connect a payout account (Billing → Payouts) before publishing a paid event, so ticket money reaches your bank.';
+  private readonly PAYOUT_GATE_MSG = 'Connect a payout account (Billing → Payouts) before activating a paid event, so ticket money reaches your bank.';
 
   private async initializeGroupPayment(groupId: string, email: string, totalMinor: number, currency: string, orgId: string): Promise<{ paymentUrl: string; reference: string; accessCode: string; chargedAmount: number }> {
     const paystackSecret = this.config.get<string>('PAYSTACK_SECRET_KEY');
