@@ -156,11 +156,16 @@ export default function OverviewPage() {
 
   useEffect(() => {
     if (!activeOrgId) return;
+    // Guard against an out-of-order response from a previous org overwriting this one's data if a
+    // stale request resolves after a newer org switch — never trust a response for an org we've
+    // since navigated away from.
+    let cancelled = false;
     setLoading(true);
     registrationsApi.overview(activeOrgId)
-      .then((res) => setData(res.data))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
+      .then((res) => { if (!cancelled) setData(res.data); })
+      .catch(() => { if (!cancelled) setData(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
   }, [activeOrgId]);
 
   const chartData = (data?.registrationsOverTime ?? []).map((b) => ({

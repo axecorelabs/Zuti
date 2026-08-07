@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { Menu } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Sidebar from '@/components/sidebar';
@@ -15,6 +15,13 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [roleCheckLoading, setRoleCheckLoading] = useState(true);
   const orgIdFromUrl = searchParams.get('org');
+  // The org switcher updates `activeOrgId` synchronously but navigates asynchronously — reading it
+  // via a ref (instead of depending on it below) means the role-check effect only ever reconciles
+  // against genuine URL navigation, never against its own just-changed value before the URL catches up.
+  const activeOrgIdRef = useRef(activeOrgId);
+  useEffect(() => {
+    activeOrgIdRef.current = activeOrgId;
+  }, [activeOrgId]);
 
   useEffect(() => {
     loadFromStorage();
@@ -29,9 +36,12 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
       let navigatingAway = false;
       try {
         const res = await orgsApi.listSummary();
+        // A newer org switch superseded this run (e.g. its `orgIdFromUrl` closure is already stale) —
+        // acting on it now would revert `activeOrgId` back to the org this run started for.
+        if (!active) return;
         const list = res.data as Array<{ id: string; role: string }>;
 
-        if (active && list.length === 0) {
+        if (list.length === 0) {
           setActiveOrgId(null);
           router.replace('/onboarding');
           navigatingAway = true;
@@ -42,10 +52,11 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
         list.forEach((org) => { roles[org.id] = org.role; });
         setOrgRoles(roles);
 
+        const currentOrgId = activeOrgIdRef.current;
         const selectedFromUrl = orgIdFromUrl ? list.find((org) => org.id === orgIdFromUrl) ?? null : null;
-        const preferredOrg = selectedFromUrl ?? (activeOrgId ? list.find((org) => org.id === activeOrgId) ?? null : null) ?? list[0];
+        const preferredOrg = selectedFromUrl ?? (currentOrgId ? list.find((org) => org.id === currentOrgId) ?? null : null) ?? list[0];
 
-        if (preferredOrg?.id && preferredOrg.id !== activeOrgId) {
+        if (preferredOrg?.id && preferredOrg.id !== currentOrgId) {
           setActiveOrgId(preferredOrg.id);
         }
       } catch {
@@ -62,7 +73,11 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
     return () => {
       active = false;
     };
-  }, [activeOrgId, isLoading, orgIdFromUrl, user, router, setActiveOrgId, setOrgRoles]);
+    // Deliberately excludes `activeOrgId` — it's read via `activeOrgIdRef` above. Depending on it
+    // directly would re-run this effect on every org switch, before the URL has updated to match,
+    // and the resulting stale `orgIdFromUrl` would revert the switch back to the previous org.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading, orgIdFromUrl, user, router, setActiveOrgId, setOrgRoles]);
 
   useEffect(() => {
     if (!isLoading && !user) {

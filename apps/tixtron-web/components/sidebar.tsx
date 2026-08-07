@@ -57,9 +57,13 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
 
   useEffect(() => {
     if (!activeOrgId) return;
+    // Guard against an out-of-order response from a previously-selected org overwriting this one's
+    // balance if a stale request resolves after a newer org switch (the sidebar never unmounts).
+    let cancelled = false;
     billingApi.wallet(activeOrgId)
-      .then((res) => setCreditBalance(res.data?.creditBalance ?? null))
-      .catch(() => setCreditBalance(null));
+      .then((res) => { if (!cancelled) setCreditBalance(res.data?.creditBalance ?? null); })
+      .catch(() => { if (!cancelled) setCreditBalance(null); });
+    return () => { cancelled = true; };
   }, [activeOrgId]);
 
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
