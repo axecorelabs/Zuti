@@ -39,7 +39,7 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
         // A newer org switch superseded this run (e.g. its `orgIdFromUrl` closure is already stale) —
         // acting on it now would revert `activeOrgId` back to the org this run started for.
         if (!active) return;
-        const list = res.data as Array<{ id: string; role: string }>;
+        const list = res.data as Array<{ id: string; role: string; deletedAt: string | null }>;
 
         if (list.length === 0) {
           setActiveOrgId(null);
@@ -52,9 +52,13 @@ function DashboardLayoutContent({ children }: { children: React.ReactNode }) {
         list.forEach((org) => { roles[org.id] = org.role; });
         setOrgRoles(roles);
 
+        // Never auto-select a deleted org — it would land the user on a dashboard that 404s on
+        // every data fetch. Only an explicit switcher click (which shows a restore prompt instead
+        // of navigating in) can "select" one.
         const currentOrgId = activeOrgIdRef.current;
-        const selectedFromUrl = orgIdFromUrl ? list.find((org) => org.id === orgIdFromUrl) ?? null : null;
-        const preferredOrg = selectedFromUrl ?? (currentOrgId ? list.find((org) => org.id === currentOrgId) ?? null : null) ?? list[0];
+        const liveOrgs = list.filter((org) => !org.deletedAt);
+        const selectedFromUrl = orgIdFromUrl ? liveOrgs.find((org) => org.id === orgIdFromUrl) ?? null : null;
+        const preferredOrg = selectedFromUrl ?? (currentOrgId ? liveOrgs.find((org) => org.id === currentOrgId) ?? null : null) ?? liveOrgs[0];
 
         if (preferredOrg?.id && preferredOrg.id !== currentOrgId) {
           setActiveOrgId(preferredOrg.id);

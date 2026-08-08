@@ -43,6 +43,7 @@ export class OrgMemberGuard implements CanActivate {
 
     if (!member) throw new ForbiddenException('Not a member of this organization');
     if (!member.organization) throw new NotFoundException('Organization not found');
+    if (member.organization.deletedAt) throw new NotFoundException('This organization has been deleted');
 
     // Attach org + role to request for use in controllers/services
     request.organization = member.organization;

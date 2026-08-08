@@ -17,6 +17,10 @@ class TransferOwnershipDto {
   declare targetUserId: string;
 }
 
+class DeleteOrganizationDto {
+  @IsString() @IsNotEmpty() declare confirmName: string;
+}
+
 class SetupPayoutAccountDto {
   @IsString() @MinLength(2) @MaxLength(120) declare businessName: string;
   @IsString() @IsNotEmpty() declare settlementBank: string; // Paystack bank code
@@ -366,6 +370,22 @@ export class OrganizationsController {
     @Body() dto: TransferOwnershipDto,
   ) {
     return this.organizationsService.transferOwnership(orgId, user.id, dto.targetUserId);
+  }
+
+  @Post(':id/delete')
+  @ApiOperation({ summary: 'Soft-delete the organization (OWNER only) — recoverable for 30 days' })
+  deleteOrganization(
+    @Param('id') orgId: string,
+    @CurrentUser() user: { id: string },
+    @Body() dto: DeleteOrganizationDto,
+  ) {
+    return this.organizationsService.deleteOrganization(orgId, user.id, dto.confirmName);
+  }
+
+  @Post(':id/restore')
+  @ApiOperation({ summary: 'Restore a soft-deleted organization within its 30-day grace period (OWNER only)' })
+  restoreOrganization(@Param('id') orgId: string, @CurrentUser() user: { id: string }) {
+    return this.organizationsService.restoreOrganization(orgId, user.id);
   }
 
   @Delete(':id/members/:userId')

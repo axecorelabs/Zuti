@@ -116,6 +116,10 @@ model Organization {
   // Internal Zuti/Tixtron-operated organization (e.g. the Tixtron platform community) — not a real
   // customer. Excluded from cross-org admin metrics (org counts, cashflow totals, workspace lists).
   isInternal  Boolean  @default(false)
+  // Soft-delete: null = active. Set on owner-initiated deletion; blocks dashboard/management access
+  // immediately (OrgMemberGuard) but leaves data intact for a 30-day grace period so it's restorable,
+  // then a scheduled purge (OrganizationsScheduler) hard-deletes the row (cascades everywhere).
+  deletedAt   DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

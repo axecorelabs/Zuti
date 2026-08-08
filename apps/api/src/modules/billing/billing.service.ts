@@ -909,6 +909,9 @@ export class BillingService {
       where: {
         committedMonthlyCreditsUnits: { gt: 0 },
         commitmentRenewsAt: { lte: new Date() },
+        // A soft-deleted org is in its 30-day grace period — don't keep charging its card while
+        // it's pending purge or possible restoration.
+        organization: { deletedAt: null },
       },
       select: {
         id: true,

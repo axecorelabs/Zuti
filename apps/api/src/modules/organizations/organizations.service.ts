@@ -1250,6 +1250,7 @@ export class OrganizationsService {
             id: true,
             name: true,
             slug: true,
+            deletedAt: true,
             _count: {
               select: {
                 members: true,
@@ -1294,6 +1295,7 @@ export class OrganizationsService {
       id: membership.organization.id,
       name: membership.organization.name,
       slug: membership.organization.slug,
+      deletedAt: membership.organization.deletedAt,
       role: membership.role,
       memberCount: membership.organization._count.members,
       botCount: membership.organization._count.bots,
@@ -1569,6 +1571,52 @@ export class OrganizationsService {
     );
 
     return updated;
+  }
+
+  /** Soft-delete: blocks dashboard/management access immediately (OrgMemberGuard) but keeps data
+   * intact for a 30-day grace period (see OrganizationsScheduler.purgeExpiredDeletions) so an
+   * accidental or reconsidered deletion is recoverable via restoreOrganization. */
+  async deleteOrganization(orgId: string, userId: string, confirmName: string) {
+    await this.assertOrgRole(orgId, userId, ['OWNER']);
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { name: true, deletedAt: true } });
+    if (!org) throw new NotFoundException('Organization not found');
+    if (org.deletedAt) throw new ConflictException('Organization is already deleted');
+    if (confirmName !== org.name) throw new BadRequestException('Confirmation text does not match the organization name');
+
+    await this.prisma.organization.update({ where: { id: orgId }, data: { deletedAt: new Date() } });
+    return { deleted: true };
+  }
+
+  async restoreOrganization(orgId: string, userId: string) {
+    await this.assertOrgRole(orgId, userId, ['OWNER']);
+    const org = await this.prisma.organization.findUnique({ where: { id: orgId }, select: { deletedAt: true } });
+    if (!org) throw new NotFoundException('Organization not found');
+    if (!org.deletedAt) throw new ConflictException('Organization is not deleted');
+
+    await this.prisma.organization.update({ where: { id: orgId }, data: { deletedAt: null } });
+    return { restored: true };
+  }
+
+  /** Runs daily (OrganizationsScheduler) — hard-deletes orgs past their 30-day grace period.
+   * Safe as a plain `organization.delete()`: every one of the 41 tenant-scoped models either has a
+   * direct `onDelete: Cascade` relation to Organization, or cascades transitively through a real
+   * parent (Bot/RegistrationProduct/Customer) that itself cascades from Organization — verified
+   * against the schema, not assumed. */
+  async purgeExpiredDeletions() {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const dueOrgs = await this.prisma.organization.findMany({
+      where: { deletedAt: { lte: cutoff } },
+      select: { id: true },
+      take: 50,
+    });
+    for (const org of dueOrgs) {
+      try {
+        await this.prisma.organization.delete({ where: { id: org.id } });
+      } catch (error) {
+        this.logger.error(`Failed to purge org ${org.id}: ${(error as Error).message}`);
+      }
+    }
+    return { purged: dueOrgs.length };
   }
 
   async transferOwnership(orgId: string, requestingUserId: string, targetUserId: string) {

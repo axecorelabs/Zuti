@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
+import toast from 'react-hot-toast';
 import {
   LayoutDashboard, CalendarDays, CreditCard, Users, Settings, LogOut, ChevronDown, X, Check, Plus,
   Send, Megaphone, Contact, Wallet,
@@ -12,7 +13,7 @@ import { orgsApi, billingApi, authApi } from '@/lib/api';
 import { ThemeToggle } from './ThemeToggle';
 import { useTheme } from '@/lib/theme';
 
-interface Org { id: string; name: string; slug: string }
+interface Org { id: string; name: string; slug: string; deletedAt?: string | null }
 
 const NAV_GROUPS = [
   {
@@ -50,6 +51,8 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
   const [orgs, setOrgs] = useState<Org[]>([]);
   const [orgMenuOpen, setOrgMenuOpen] = useState(false);
   const [creditBalance, setCreditBalance] = useState<number | null>(null);
+  const [restoreCandidate, setRestoreCandidate] = useState<Org | null>(null);
+  const [restoringOrg, setRestoringOrg] = useState(false);
 
   useEffect(() => {
     orgsApi.list().then((res) => setOrgs(res.data as Org[])).catch(() => setOrgs([]));
@@ -71,10 +74,28 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
   const isActive = (href: string) =>
     href === '/dashboard' ? pathname === '/dashboard' || pathname.startsWith('/dashboard/') : pathname.startsWith(href);
 
-  const switchOrg = (orgId: string) => {
-    setActiveOrgId(orgId);
+  const switchOrg = (org: Org) => {
+    if (org.deletedAt) {
+      setOrgMenuOpen(false);
+      setRestoreCandidate(org);
+      return;
+    }
+    setActiveOrgId(org.id);
     setOrgMenuOpen(false);
-    router.push(`/dashboard?org=${orgId}`);
+    router.push(`/dashboard?org=${org.id}`);
+  };
+
+  const handleRestore = async () => {
+    if (!restoreCandidate) return;
+    setRestoringOrg(true);
+    try {
+      await orgsApi.restoreOrg(restoreCandidate.id);
+      toast.success(`${restoreCandidate.name} restored`);
+      setOrgs((prev) => prev.map((o) => (o.id === restoreCandidate.id ? { ...o, deletedAt: null } : o)));
+      setRestoreCandidate(null);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.message ?? 'Could not restore organization');
+    } finally { setRestoringOrg(false); }
   };
 
   const createNewOrg = () => {
@@ -89,6 +110,7 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
   };
 
   return (
+    <>
     <aside className={`fixed md:static inset-y-0 left-0 z-50 w-64 shrink-0 bg-zinc-50 dark:bg-[#121417] border-r border-zinc-200/60 dark:border-zinc-800/60 flex flex-col transition-transform md:translate-x-0 ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
       <div className="flex items-center justify-between px-4 pt-5 pb-4 mb-1 border-b border-zinc-200/40 dark:border-zinc-800/40">
         <div className="flex items-center gap-2.5">
@@ -118,11 +140,19 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
             {orgs.map((org) => (
               <button
                 key={org.id}
-                onClick={() => switchOrg(org.id)}
-                className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800 transition-colors"
+                onClick={() => switchOrg(org)}
+                className={`w-full flex items-center justify-between gap-2 px-3 py-2 text-sm transition-colors ${
+                  org.deletedAt
+                    ? 'text-zinc-400 dark:text-zinc-600 hover:bg-zinc-200 dark:hover:bg-zinc-800'
+                    : 'text-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-800'
+                }`}
               >
                 <span className="truncate">{org.name}</span>
-                {org.id === activeOrgId && <Check className="w-3.5 h-3.5 text-brand-400 shrink-0" />}
+                {org.deletedAt ? (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-500 shrink-0">Deleted</span>
+                ) : org.id === activeOrgId ? (
+                  <Check className="w-3.5 h-3.5 text-brand-400 shrink-0" />
+                ) : null}
               </button>
             ))}
             <div className="border-t border-zinc-200 dark:border-zinc-800 mt-1 pt-1">
@@ -191,5 +221,35 @@ export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose:
         </div>
       </div>
     </aside>
+
+    {restoreCandidate && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4">
+        <div className="w-full max-w-sm rounded-xl bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-5 space-y-4">
+          <div>
+            <h3 className="text-sm font-medium text-zinc-900 dark:text-white">Restore {restoreCandidate.name}?</h3>
+            <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
+              This organization was deleted and is pending permanent removal. Restoring it brings back
+              full access immediately.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setRestoreCandidate(null)}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleRestore}
+              disabled={restoringOrg}
+              className="px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm font-medium"
+            >
+              {restoringOrg ? 'Restoring…' : 'Restore'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

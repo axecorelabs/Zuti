@@ -185,6 +185,17 @@ export const orgsApi = {
       clearOrgsCache();
       return res;
     }),
+  // Soft-delete: recoverable for 30 days via restore, then permanently purged.
+  deleteOrg: (orgId: string, confirmName: string) =>
+    api.post(`/organizations/${orgId}/delete`, { confirmName }).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
+  restoreOrg: (orgId: string) =>
+    api.post(`/organizations/${orgId}/restore`).then((res) => {
+      clearOrgsCache();
+      return res;
+    }),
 };
 
 // ── Team invitations ────────────────────────────────────────────────────────
